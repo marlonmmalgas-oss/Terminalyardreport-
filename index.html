@@ -206,6 +206,27 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 .table-wrapper td:first-child{min-width:160px;text-align:left;}
 .voyage{display:block;font-size:11px;color:#c0392b;font-weight:700;white-space:normal;}
 
+/* ── YARD TABLE INPUT STYLING ── */
+.table-wrapper td input[type=number],.table-wrapper td input[type=text]{
+  width:100%;padding:5px 4px;font-size:12px;border:1px solid #ccc;border-radius:4px;
+  box-sizing:border-box;text-align:center;background:#f9f9f9;display:block;
+}
+.table-wrapper td input[type=number]:focus,.table-wrapper td input[type=text]:focus{
+  outline:none;border-color:#1F3864;background:#fff;
+}
+/* Vessel name / voyage inputs — transparent inline */
+.table-wrapper td:first-child input{
+  text-align:left;background:transparent;border:1px solid transparent;padding:2px 0;
+}
+.table-wrapper td:first-child input:focus{
+  border-color:transparent;border-bottom:1px solid #1F3864;background:transparent;outline:none;
+}
+/* Add-type / add-col inputs */
+input[id^="nt_"],input[id^="nc_"]{
+  flex:1;padding:5px 8px;font-size:11px;border:1.5px solid #ccc;border-radius:7px;
+  box-sizing:border-box;
+}
+
 /* ── YARD STATUS ── */
 .yd-upload{border:2px dashed var(--navy);border-radius:12px;padding:24px;text-align:center;cursor:pointer;background:white;margin:10px;transition:background .2s;}
 .yd-upload:hover{background:#f0f4ff;}
@@ -1662,7 +1683,7 @@ function renderYardReport(report){
       YARD_COLS.forEach(function(col){
         var isDep=col.key==='departed';
         h+='<td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0'+(isDep?';background:#fff5f5':'')+'">';
-        h+='<input type="number" value="'+(data[col.key]||'')+'" placeholder="-" oninput="updateYardCell('+report.id+','+vi+',\''+t+'\',\''+col.key+'\',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>';
+        h+='<input type="number" value="'+(data[col.key]||'')+'" placeholder="-" oninput="updateYardCell('+report.id+','+vi+',\''+t+'\',\''+col.key+'\',this.value)" />';
         h+='</td>';
       });
       h+='</tr>';
@@ -2302,25 +2323,12 @@ async function shareYardReport(reportId){
   var el=document.getElementById('ycap_'+reportId);
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-  var W=420;
-  var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;';
+  var nc=ST.settings.reportNumColor||'#000000';
   var clone=el.cloneNode(true);
   clone.querySelectorAll('button,.rh-share').forEach(function(b){b.remove();});
-  var nc=ST.settings.reportNumColor||'#000000';
   clone.querySelectorAll('.twrap').forEach(function(t){t.style.overflow='visible';});
-  // Force table-wrapper and table to full width so all columns appear in share image
-  clone.querySelectorAll('.table-wrapper').forEach(function(tw){
-    tw.style.overflow='visible';tw.style.width='100%';
-  });
-  clone.querySelectorAll('.table-wrapper table').forEach(function(t){
-    t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';
-  });
-  clone.querySelectorAll('table').forEach(function(t){t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';});
-  clone.querySelectorAll('th').forEach(function(t){t.style.padding='6px 4px';t.style.fontSize='11px';});
-  clone.querySelectorAll('td').forEach(function(t){t.style.padding='5px 4px';t.style.fontSize='12px';t.style.color=nc;});
   // Remove elements marked no-share (edit sections, type management)
-  clone.querySelectorAll('.no-share').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
+  clone.querySelectorAll('.no-share').forEach(function(nsEl){nsEl.parentNode&&nsEl.parentNode.removeChild(nsEl);});
   // Convert vessel inline edit inputs to styled text spans
   clone.querySelectorAll('.vessel-name').forEach(function(inp){
     var s=document.createElement('span');
@@ -2338,9 +2346,8 @@ async function shareYardReport(reportId){
   // Handle POD chart toggle - remove pods marked as excluded from share
   clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
     var excluded=pod.getAttribute('data-share')==='0';
-    if(excluded) pod.parentNode&&pod.parentNode.removeChild(pod);
+    if(excluded){pod.parentNode&&pod.parentNode.removeChild(pod);}
     else{
-      // Remove the toggle button from the chart in the shared image
       pod.querySelectorAll('button').forEach(function(b){b.remove();});
     }
   });
@@ -2351,16 +2358,75 @@ async function shareYardReport(reportId){
       if(d.style.overflow==='hidden')d.style.overflow='visible';
     });
   });
-  wrapper.appendChild(clone);
-  document.body.appendChild(wrapper);
-  // Let browser fully paint all elements before measuring
-  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);})});
+
+  // ── FULL-WIDTH PORTRAIT CAPTURE ──
+  // Step 1: measure the real table scroll width BEFORE creating capture container
+  var tableWrapper=clone.querySelector('.table-wrapper');
+  var tableEl=tableWrapper?tableWrapper.querySelector('table'):null;
+  // Temporarily attach clone off-screen to measure scrollWidth
+  var measurer=document.createElement('div');
+  measurer.style.cssText='position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
+  measurer.appendChild(clone);
+  document.body.appendChild(measurer);
+  // Force table visible so scrollWidth is accurate
+  if(tableWrapper){tableWrapper.style.overflow='visible';}
+  if(tableEl){tableEl.style.width='auto';}
+  var tableScrollW=tableEl?tableEl.scrollWidth:420;
+  document.body.removeChild(measurer);
+
+  // Step 2: build capture container sized to full table width
+  var W=Math.max(tableScrollW+20,420);
+  // Re-prepare clone (re-clone since we moved it)
+  var clone2=el.cloneNode(true);
+  clone2.querySelectorAll('button,.rh-share').forEach(function(b){b.remove();});
+  clone2.querySelectorAll('.twrap').forEach(function(t){t.style.overflow='visible';});
+  clone2.querySelectorAll('.no-share').forEach(function(nsEl){nsEl.parentNode&&nsEl.parentNode.removeChild(nsEl);});
+  clone2.querySelectorAll('.vessel-name').forEach(function(inp){
+    var s=document.createElement('span');s.textContent=inp.value||'';
+    s.style.cssText='font-size:11px;font-weight:800;color:#1F3864';inp.parentNode.replaceChild(s,inp);
+  });
+  clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){
+    var s=document.createElement('span');s.textContent=inp.value||'';
+    s.style.cssText='font-size:10px;font-weight:700;color:#c0392b';inp.parentNode.replaceChild(s,inp);
+  });
+  clone2.querySelectorAll('input').forEach(function(inp){
+    var s=document.createElement('div');var v=inp.value||'';
+    s.textContent=v&&v!=='0'?v:'\u2014';
+    s.style.cssText='font-size:13px;font-weight:800;text-align:center;color:'+nc+';';
+    inp.parentNode.replaceChild(s,inp);
+  });
+  clone2.querySelectorAll('[id^="pod_"]').forEach(function(pod){
+    var excluded=pod.getAttribute('data-share')==='0';
+    if(excluded){pod.parentNode&&pod.parentNode.removeChild(pod);}
+    else{pod.querySelectorAll('button').forEach(function(b){b.remove();});}
+  });
+  clone2.querySelectorAll('[id^="pod_"]').forEach(function(pod){
+    pod.style.overflow='visible';
+    pod.querySelectorAll('div').forEach(function(d){if(d.style.overflow==='hidden')d.style.overflow='visible';});
+  });
+  // Force table-wrapper and table to full width
+  var tw2=clone2.querySelector('.table-wrapper');
+  if(tw2){tw2.style.overflow='visible';tw2.style.width=tableScrollW+'px';}
+  var t2=tw2?tw2.querySelector('table'):null;
+  if(t2){t2.style.width=tableScrollW+'px';t2.style.minWidth='unset';}
+  clone2.querySelectorAll('th').forEach(function(t){t.style.padding='6px 4px';t.style.fontSize='11px';});
+  clone2.querySelectorAll('td').forEach(function(t){t.style.padding='5px 4px';t.style.fontSize='12px';t.style.color=nc;});
+
+  // Step 3: create clean portrait container
+  var container=document.createElement('div');
+  container.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;';
+  container.appendChild(clone2);
+  document.body.appendChild(container);
+
+  // Step 4: double rAF wait for full paint (CRITICAL)
+  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
   await new Promise(function(r){setTimeout(r,200);});
-  // Set wrapper to full content height so html2canvas captures everything
-  var h=clone.scrollHeight;
-  wrapper.style.height=h+'px';
+
+  var H=container.scrollHeight;
+  container.style.height=H+'px';
+
   try{
-    var canvas=await html2canvas(wrapper,{scale:3,useCORS:true,backgroundColor:'#f0f2f7',width:W,height:h,windowWidth:W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
+    var canvas=await html2canvas(container,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:W,height:H,windowWidth:W,windowHeight:H,scrollX:0,scrollY:0,allowTaint:true,logging:false});
     canvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
@@ -2368,7 +2434,7 @@ async function shareYardReport(reportId){
       else{var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Yard-Status.png';document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(a.href);},1000);}
     },'image/png',0.96);
   }catch(e){alert('Share failed: '+e.message);}
-  finally{document.body.removeChild(wrapper);}
+  finally{document.body.removeChild(container);}
 }
 
 // ════════════════════════════════════
