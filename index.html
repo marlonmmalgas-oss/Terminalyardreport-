@@ -199,6 +199,13 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-heig
 input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 @media(max-width:380px){.rt td,.rt th{font-size:9.5px;padding:4px 2px;}.dt input[type=time]{width:70px;}}
 
+/* ── YARD TABLE WRAPPER ── */
+.table-wrapper{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.table-wrapper table{width:100%;min-width:600px;border-collapse:collapse;}
+.table-wrapper th,.table-wrapper td{white-space:nowrap;text-align:center;}
+.table-wrapper td:first-child{min-width:160px;text-align:left;}
+.voyage{display:block;font-size:11px;color:#c0392b;font-weight:700;white-space:normal;}
+
 /* ── YARD STATUS ── */
 .yd-upload{border:2px dashed var(--navy);border-radius:12px;padding:24px;text-align:center;cursor:pointer;background:white;margin:10px;transition:background .2s;}
 .yd-upload:hover{background:#f0f4ff;}
@@ -808,6 +815,10 @@ function rhHTML(title,slot,capId){
       <span class="rh-date">${doc}</span>
       <span class="rh-slot">${fs(slot)}</span>
     </div>
+    ${sess&&(sess.firstLift||sess.lastLift)?`<div style="display:flex;gap:14px;padding:6px 14px 0;font-size:11px;color:rgba(255,255,255,.85)">
+      ${sess.firstLift?`<span>🟢 First Lift: <strong>${sess.firstLift}</strong></span>`:''}
+      ${sess.lastLift?`<span>🔴 Last Lift: <strong>${sess.lastLift}</strong></span>`:''}
+    </div>`:''}
   </div>`;
 }
 
@@ -1593,57 +1604,79 @@ function renderYardReport(report){
   h+='<div style="display:flex;gap:6px">';
   h+='<input id="nt_'+report.id+'" placeholder="New type e.g. HAZMAT" style="flex:1;padding:5px 8px;border:1.5px solid #ccc;border-radius:7px;font-size:11px">';
   h+='<button onclick="addYardType('+report.id+')" style="padding:5px 10px;background:var(--navy);color:white;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer">+ Add</button>';
+  // Custom columns management (between EXPORT and IMPORT)
+  var customCols=report.customCols||[];
+  h+='<div style="margin-top:8px;padding-top:6px;border-top:1px solid #ddd">';
+  h+='<div style="font-size:10px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Extra Columns (between Export &amp; Import)</div>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">';
+  customCols.forEach(function(col,ci){
+    h+='<span style="background:#2d6a8a;color:white;border-radius:5px;padding:3px 8px;font-size:10px;font-weight:700;display:flex;align-items:center;gap:4px">'+col.label;
+    h+='<button onclick="removeYardCol('+report.id+','+ci+')" style="background:none;border:none;color:rgba(255,255,255,.8);cursor:pointer;font-size:13px;padding:0">×</button>';
+    h+='</span>';
+  });
+  h+='</div>';
+  h+='<div style="display:flex;gap:6px">';
+  h+='<input id="nc_'+report.id+'" placeholder="Column name e.g. STORAGE" style="flex:1;padding:5px 8px;border:1.5px solid #ccc;border-radius:7px;font-size:11px">';
+  h+='<button onclick="addYardCol('+report.id+')" style="padding:5px 10px;background:#2d6a8a;color:white;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer">+ Add</button>';
   h+='</div></div>';
-  h+=`<div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed">
+  h+='</div></div>';
+  // ── Build COLUMNS from base set + customCols inserted between EXPORT and IMPORT ──
+  var YARD_COLS=[{key:'export',label:'EXPORT'}];
+  (report.customCols||[]).forEach(function(c){YARD_COLS.push({key:c.key,label:c.label});});
+  YARD_COLS.push({key:'import',label:'IMPORT'});
+  YARD_COLS.push({key:'departed',label:'DEPARTED'});
+  // Ensure all vessel data objects have every column key
+  vessels.forEach(function(v){
+    types.forEach(function(t){
+      if(!v.data[t])v.data[t]={};
+      YARD_COLS.forEach(function(col){if(v.data[t][col.key]===undefined)v.data[t][col.key]=0;});
+    });
+  });
+  // Grand totals object
+  var grandTotals={};
+  YARD_COLS.forEach(function(col){grandTotals[col.key]=0;});
+  h+=`<div class="table-wrapper">
+    <table style="font-size:11px;">
       <thead>
         <tr>
-          <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px;width:38%">VESSELS</th>
-          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:17%">TYPE</th>
-          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">EXPORT</th>
-          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">IMPORT</th>
-          <th style="background:#c0392b;color:white;padding:8px 4px;text-align:center;font-weight:800;width:15%">DEPARTED</th>
+          <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px;min-width:160px">VESSELS</th>
+          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;min-width:70px">TYPE</th>
+          ${YARD_COLS.map(function(col){var isDep=col.key==='departed';return'<th style="background:'+(isDep?'#c0392b':'var(--navy)')+';color:white;padding:8px 4px;text-align:center;min-width:60px">'+col.label+'</th>';}).join('')}
         </tr>
       </thead>
       <tbody>`;
-  let grandEx=0,grandIm=0,grandDep=0;
-  vessels.forEach((v,vi)=>{
-    types.forEach((t,ti)=>{
-      const data=v.data[t]||{export:0,import:0,departed:0};
-      grandEx+=data.export||0;grandIm+=data.import||0;grandDep+=data.departed||0;
-      const isFirst=ti===0;
-      const isLast=ti===types.length-1;
-      const rowBg=vi%2===0?'#f8f9fc':'white';
-      h+=`<tr style="background:${rowBg}">
-        ${isFirst?`<td rowspan="${types.length}" style="font-weight:800;color:var(--navy);padding:6px 10px;border-right:1px solid var(--lb);vertical-align:top;min-width:120px;word-break:break-word">
-          <input class="vessel-inline-edit" value="${v.name}" oninput="editYardField(${report.id},${vi},'name',this.value)" style="border:none;outline:none;font-weight:800;font-size:11px;color:var(--navy);background:transparent;width:100%;padding:0"/>
-          <input class="vessel-inline-edit" value="${v.voyage||''}" placeholder="Voyage" oninput="editYardField(${report.id},${vi},'voyage',this.value)" style="border:none;outline:none;font-size:10px;color:#c0392b;font-weight:700;background:transparent;width:100%;padding:0;margin-top:2px;display:block"/>
-        </td>`:''}
-        <td style="padding:5px 6px;text-align:center;color:#555;font-size:10.5px;border-bottom:1px solid #f0f0f0">${t}</td>
-        <td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.export||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','export',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
-        </td>
-        <td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.import||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','import',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
-        </td>
-        <td style="padding:5px 6px;text-align:center;background:#fff5f5;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.departed||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','departed',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
-        </td>
-      </tr>`;
+  vessels.forEach(function(v,vi){
+    types.forEach(function(t,ti){
+      var data=v.data[t]||{};
+      YARD_COLS.forEach(function(col){grandTotals[col.key]+=(data[col.key]||0);});
+      var isFirst=ti===0;
+      var rowBg=vi%2===0?'#f8f9fc':'white';
+      h+='<tr style="background:'+rowBg+'">';
+      if(isFirst){
+        h+='<td rowspan="'+types.length+'" style="font-weight:800;color:var(--navy);padding:6px 10px;border-right:1px solid var(--lb);vertical-align:top;white-space:normal">';
+        h+='<input class="vessel-inline-edit vessel-name" value="'+v.name+'" oninput="editYardField('+report.id+','+vi+',\'name\',this.value)" style="border:none;outline:none;font-weight:800;font-size:11px;color:var(--navy);background:transparent;padding:0;width:100%;display:block"/>';
+        if(v.voyage){h+='<input class="vessel-inline-edit vessel-voyage" value="'+v.voyage+'" oninput="editYardField('+report.id+','+vi+',\'voyage\',this.value)" style="border:none;outline:none;font-size:10px;color:#c0392b;font-weight:700;background:transparent;padding:0;width:100%;display:block"/>';}
+        h+='</td>';
+      }
+      h+='<td style="padding:5px 6px;text-align:center;color:#555;font-size:10.5px;border-bottom:1px solid #f0f0f0">'+t+'</td>';
+      YARD_COLS.forEach(function(col){
+        var isDep=col.key==='departed';
+        h+='<td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0'+(isDep?';background:#fff5f5':'')+'">';
+        h+='<input type="number" value="'+(data[col.key]||'')+'" placeholder="-" oninput="updateYardCell('+report.id+','+vi+',\''+t+'\',\''+col.key+'\',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>';
+        h+='</td>';
+      });
+      h+='</tr>';
     });
-    // Vessel total row
-    let vEx=0,vIm=0,vDep=0;
-    types.forEach(t=>{const d=v.data[t]||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
-    h+=`<tr style="background:var(--yellow)">
-      <td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>
-      <td style="text-align:center;font-weight:800">${vEx||0}</td>
-      <td style="text-align:center;font-weight:800">${vIm||0}</td>
-      <td style="text-align:center;font-weight:800">${vDep||0}</td>
-    </tr>`;
-    // Add vessel button row
-    h+=`<tr><td colspan="5" style="padding:4px 8px">
-      <button onclick="removeYardVessel(${report.id},${vi})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;font-weight:700">Remove ${v.name}</button>
-    </td></tr>`;
+    // Vessel total row — computed dynamically
+    var vTotals={};
+    YARD_COLS.forEach(function(col){vTotals[col.key]=0;});
+    types.forEach(function(t){YARD_COLS.forEach(function(col){vTotals[col.key]+=(v.data&&v.data[t]?v.data[t][col.key]||0:0);});});
+    h+='<tr style="background:var(--yellow)">';
+    h+='<td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>';
+    YARD_COLS.forEach(function(col){h+='<td style="text-align:center;font-weight:800">'+(vTotals[col.key]||0)+'</td>';});
+    h+='</tr>';
+    var colSpanTotal=2+YARD_COLS.length;
+    h+='<tr><td colspan="'+colSpanTotal+'" style="padding:4px 8px"><button onclick="removeYardVessel('+report.id+','+vi+')" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;font-weight:700">Remove '+v.name+'</button></td></tr>';
   });
   h+=`</tbody></table></div>`;
 
@@ -1652,50 +1685,40 @@ function renderYardReport(report){
     <button onclick="addYardVessel(${report.id})" style="background:var(--navy);color:white;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:800;cursor:pointer">+ Add Vessel</button>
   </div>`;
 
-  // ── Summary totals (matches template bottom section) ──
-  let totalGP=0,totalReef=0,totalMty=0,totalInYard=0;
-  vessels.forEach(v=>{
-    totalGP+=(v.data['GP/DRY']?.export||0)+(v.data['GP/DRY']?.import||0);
-    totalReef+=(v.data['REEFER']?.export||0)+(v.data['REEFER']?.import||0);
-    totalMty+=(v.data['EMPTY']?.export||0)+(v.data['EMPTY']?.import||0);
+  // ── Summary totals — fully dynamic from grandTotals ──
+  var totalGP=0,totalReef=0,totalMty=0;
+  vessels.forEach(function(v){
+    totalGP+=(v.data['GP/DRY']?v.data['GP/DRY'].export||0:0)+(v.data['GP/DRY']?v.data['GP/DRY'].import||0:0);
+    totalReef+=(v.data['REEFER']?v.data['REEFER'].export||0:0)+(v.data['REEFER']?v.data['REEFER'].import||0:0);
+    totalMty+=(v.data['EMPTY']?v.data['EMPTY'].export||0:0)+(v.data['EMPTY']?v.data['EMPTY'].import||0:0);
   });
-  totalInYard=grandEx+grandIm; // export+import = in yard
-
-  h+=`<div style="padding:12px;border-top:2px solid var(--lb)">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL EXPORTS</span>
-        <span style="font-size:16px;font-weight:900">${grandEx}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL "GP"</span>
-        <span style="font-size:16px;font-weight:900">${totalGP}</span>
-      </div>
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL IMPORTS</span>
-        <span style="font-size:16px;font-weight:900">${grandIm}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL REEF</span>
-        <span style="font-size:16px;font-weight:900">${totalReef}</span>
-      </div>
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL DEPARTED</span>
-        <span style="font-size:16px;font-weight:900">${grandDep}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">TOTAL MTY</span>
-        <span style="font-size:16px;font-weight:900">${totalMty}</span>
-      </div>
-    </div>
-    <div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px">
-      <span style="font-size:13px;font-weight:900;color:white">IN YARD</span>
-      <span style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
-    </div>
-    <div style="margin-top:8px;display:flex;gap:6px">
-      <button onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
-    </div>
-  </div></div></div>`;
+  var grandEx=grandTotals.export||0;
+  var grandIm=grandTotals.import||0;
+  var grandDep=grandTotals.departed||0;
+  var totalInYard=grandEx+grandIm;
+  // Build extra-column totals rows for any custom columns
+  var extraColSummary='';
+  YARD_COLS.forEach(function(col){
+    if(col.key==='export'||col.key==='import'||col.key==='departed')return;
+    var colBg=YARD_COLS.indexOf(col)%2===0?'var(--yellow)':'var(--lb)';
+    extraColSummary+='<div style="background:'+colBg+';border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">'
+      +'<span style="font-size:11px;font-weight:800">TOTAL '+col.label+'</span>'
+      +'<span style="font-size:16px;font-weight:900">'+(grandTotals[col.key]||0)+'</span>'
+      +'</div>';
+  });
+  h+='<div style="padding:12px;border-top:2px solid var(--lb)">';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+  h+='<div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL EXPORTS</span><span style="font-size:16px;font-weight:900">'+grandEx+'</span></div>';
+  h+='<div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL "GP"</span><span style="font-size:16px;font-weight:900">'+totalGP+'</span></div>';
+  h+='<div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL IMPORTS</span><span style="font-size:16px;font-weight:900">'+grandIm+'</span></div>';
+  h+='<div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL REEF</span><span style="font-size:16px;font-weight:900">'+totalReef+'</span></div>';
+  h+='<div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL DEPARTED</span><span style="font-size:16px;font-weight:900">'+grandDep+'</span></div>';
+  h+='<div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between"><span style="font-size:11px;font-weight:800">TOTAL MTY</span><span style="font-size:16px;font-weight:900">'+totalMty+'</span></div>';
+  h+=extraColSummary;
+  h+='</div>';
+  h+='<div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px"><span style="font-size:13px;font-weight:900;color:white">IN YARD</span><span style="font-size:22px;font-weight:900;color:white">'+totalInYard+'</span></div>';
+  h+='<div style="margin-top:8px;display:flex;gap:6px"><button onclick="deleteYardReport('+report.id+')" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button></div>';
+  h+='</div></div></div>';
   h+=_podHtml;
   h+='</div>';
   return h;
@@ -1704,11 +1727,11 @@ function renderYardReport(report){
 // ── Yard data helpers ──
 function updateYardCell(reportId,vi,type,field,val){
   const r=ST.yardReports.find(x=>x.id===reportId);if(!r)return;
-  if(!r.vessels[vi].data[type])r.vessels[vi].data[type]={export:0,import:0,departed:0};
+  if(!r.vessels[vi].data[type])r.vessels[vi].data[type]={};
   r.vessels[vi].data[type][field]=parseFloat(val)||0;
   sv();
-  // re-render summaries without full re-render
-  renderYard();
+  // Only update the summary totals, not full re-render (avoids lag with large Excel data)
+  updateYardSummary(reportId);
 }
 function editYardFuel(reportId){
   const r=ST.yardReports.find(x=>x.id===reportId);if(!r)return;
@@ -2286,17 +2309,29 @@ async function shareYardReport(reportId){
   clone.querySelectorAll('button,.rh-share').forEach(function(b){b.remove();});
   var nc=ST.settings.reportNumColor||'#000000';
   clone.querySelectorAll('.twrap').forEach(function(t){t.style.overflow='visible';});
+  // Force table-wrapper and table to full width so all columns appear in share image
+  clone.querySelectorAll('.table-wrapper').forEach(function(tw){
+    tw.style.overflow='visible';tw.style.width='100%';
+  });
+  clone.querySelectorAll('.table-wrapper table').forEach(function(t){
+    t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';
+  });
   clone.querySelectorAll('table').forEach(function(t){t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';});
   clone.querySelectorAll('th').forEach(function(t){t.style.padding='6px 4px';t.style.fontSize='11px';});
   clone.querySelectorAll('td').forEach(function(t){t.style.padding='5px 4px';t.style.fontSize='12px';t.style.color=nc;});
   // Remove elements marked no-share (edit sections, type management)
   clone.querySelectorAll('.no-share').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
   // Convert vessel inline edit inputs to styled text spans
-  clone.querySelectorAll('.vessel-inline-edit').forEach(function(inp){
-    var s=document.createElement('div');
+  clone.querySelectorAll('.vessel-name').forEach(function(inp){
+    var s=document.createElement('span');
     s.textContent=inp.value||'';
-    var isVoyage=inp.style.color==='rgb(192, 57, 43)'||inp.placeholder==='Voyage';
-    s.style.cssText=isVoyage?'font-size:10px;color:#c0392b;font-weight:700;margin-top:2px':'font-size:11px;font-weight:800;color:#1F3864';
+    s.style.cssText='font-size:11px;font-weight:800;color:#1F3864';
+    inp.parentNode.replaceChild(s,inp);
+  });
+  clone.querySelectorAll('.vessel-voyage').forEach(function(inp){
+    var s=document.createElement('span');
+    s.textContent=inp.value||'';
+    s.style.cssText='font-size:10px;font-weight:700;color:#c0392b';
     inp.parentNode.replaceChild(s,inp);
   });
   clone.querySelectorAll('input').forEach(function(inp){var s=document.createElement('div');var v=inp.value||'';s.textContent=v&&v!=='0'?v:'\u2014';s.style.cssText='font-size:13px;font-weight:800;text-align:center;color:'+nc+';';inp.parentNode.replaceChild(s,inp);});
@@ -2481,8 +2516,15 @@ function addYardType(reportId){
   var nt=inp.value.trim().toUpperCase();
   if(rpt.customTypes.indexOf(nt)<0){
     rpt.customTypes.push(nt);
+    // Build current column keys for this report
+    var baseCols=['export','import','departed'];
+    (rpt.customCols||[]).forEach(function(c){baseCols.push(c.key);});
     (rpt.vessels||[]).forEach(function(v){
-      if(v.data&&!v.data[nt])v.data[nt]={export:0,import:0,departed:0};
+      if(!v.data)v.data={};
+      if(!v.data[nt]){
+        v.data[nt]={};
+        baseCols.forEach(function(k){v.data[nt][k]=0;});
+      }
     });
     sv();
     renderYard();
@@ -2495,6 +2537,75 @@ function removeYardType(reportId,ti){
   rpt.customTypes.splice(ti,1);
   sv();
   renderYard();
+}
+
+// Update yard summary totals without full re-render (fast, no lag)
+function updateYardSummary(reportId){
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt)return;
+  // Build dynamic column list for this report
+  var YCOLS=[{key:'export'},{key:'import'},{key:'departed'}];
+  (rpt.customCols||[]).forEach(function(c){YCOLS.push({key:c.key});});
+  // Recalc totals
+  var grandEx=0,grandIm=0,grandDep=0;
+  var totalGP=0,totalReef=0,totalMty=0;
+  (rpt.vessels||[]).forEach(function(v){
+    var types=rpt.customTypes&&rpt.customTypes.length?rpt.customTypes:['GP/DRY','REEFER','EMPTY','OOG'];
+    types.forEach(function(t){
+      var d=v.data&&v.data[t]?v.data[t]:{};
+      grandEx+=(d.export||0);grandIm+=(d.import||0);grandDep+=(d.departed||0);
+    });
+    var gpd=v.data&&v.data['GP/DRY']?v.data['GP/DRY']:{};
+    var rfd=v.data&&v.data['REEFER']?v.data['REEFER']:{};
+    var mty=v.data&&v.data['EMPTY']?v.data['EMPTY']:{};
+    totalGP+=(gpd.export||0)+(gpd.import||0);
+    totalReef+=(rfd.export||0)+(rfd.import||0);
+    totalMty+=(mty.export||0)+(mty.import||0);
+  });
+  // Update summary elements if they exist in DOM
+  var cap=document.getElementById('ycap_'+reportId);
+  if(!cap)return;
+  var sums=cap.querySelectorAll('[data-sum]');
+  sums.forEach(function(el){
+    var key=el.getAttribute('data-sum');
+    if(key==='ex')el.textContent=grandEx;
+    else if(key==='im')el.textContent=grandIm;
+    else if(key==='dep')el.textContent=grandDep;
+    else if(key==='gp')el.textContent=totalGP;
+    else if(key==='reef')el.textContent=totalReef;
+    else if(key==='mty')el.textContent=totalMty;
+    else if(key==='yard')el.textContent=grandEx+grandIm;
+  });
+}
+
+function addYardCol(reportId){
+  var inp=document.getElementById('nc_'+reportId);
+  if(!inp||!inp.value.trim())return;
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt)return;
+  if(!rpt.customCols)rpt.customCols=[];
+  var label=inp.value.trim().toUpperCase();
+  var key=label.toLowerCase().replace(/[^a-z0-9]/g,'_');
+  if(!rpt.customCols.find(function(c){return c.key===key;})){
+    rpt.customCols.push({label:label,key:key});
+    // Initialise new column key on all existing vessel+type data
+    var types=(rpt.customTypes&&rpt.customTypes.length)?rpt.customTypes:['GP/DRY','REEFER','EMPTY','OOG'];
+    (rpt.vessels||[]).forEach(function(v){
+      types.forEach(function(t){
+        if(!v.data)v.data={};
+        if(!v.data[t])v.data[t]={};
+        if(v.data[t][key]===undefined)v.data[t][key]=0;
+      });
+    });
+    sv();renderYard();
+  }
+  inp.value='';
+}
+function removeYardCol(reportId,ci){
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt||!rpt.customCols)return;
+  rpt.customCols.splice(ci,1);
+  sv();renderYard();
 }
 
 </script>
