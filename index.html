@@ -69,6 +69,14 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-heig
 /* Share button — hidden during capture */
 .rh-share{background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.3);color:white;padding:8px 14px;border-radius:9px;font-size:13px;font-weight:800;cursor:pointer;}
 .rh-share.hide-for-capture{display:none!important;}
+/* Yard table wrapper - scrolls on mobile */
+.yard-twrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.yard-twrap table{width:100%;min-width:520px;border-collapse:collapse;}
+.yard-twrap th,.yard-twrap td{white-space:nowrap;}
+.yard-twrap td:first-child{min-width:150px;text-align:left;}
+/* Yard cell inputs */
+.yard-input{width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:3px 2px;font-size:11px;background:#f9f9f9;box-sizing:border-box;}
+.yard-input:focus{outline:none;border-color:var(--navy);background:#fff;}
 .rh2{display:flex;align-items:center;gap:8px;margin-top:9px;flex-wrap:wrap;}
 .rh-vessel{color:#ff5252;font-weight:900;font-size:15px;}
 .rh-date{color:#ff8080;font-size:12px;}
@@ -368,7 +376,8 @@ function initSync(){
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
-          ST[k]=remote[k];
+          // Deep-clone to prevent shared references with Firebase raw objects
+          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
       });
       // Restore local images after remote data applied
@@ -411,7 +420,7 @@ function initSync(){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
         if(Array.isArray(remoteYard)){
-          ST.yardReports=remoteYard;
+          ST.yardReports=JSON.parse(JSON.stringify(remoteYard));
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
@@ -567,6 +576,9 @@ function doLogin(){
 }
 function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
 function initApp(){
+  // Prevent browser from opening dragged files
+  document.addEventListener('dragover',function(e){e.preventDefault();});
+  document.addEventListener('drop',function(e){e.preventDefault();});
   // Reload images from localStorage (they don't come from Firebase)
   try{
     var saved=JSON.parse(localStorage.getItem(SK)||'{}');
@@ -747,15 +759,24 @@ function saveSession(){
     craneBalances:cb,locked:true,savedAt:new Date().toISOString()};
   // Snapshot results and delays for history
   var sl_=shiftSlots();s._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[k]=ST.hourly[k];});}});
-  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=Object.assign({},ST.delays[dk]);});}
+  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[k]=parseFloat(ST.hourly[k])||0;});}});
+  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));});}
   ST.activeId=id;
   const idx=ST.sessions.findIndex(x=>x.id===id);
-  if(idx>=0)ST.sessions[idx]=s;else ST.sessions.unshift(s);
+  if(idx>=0)ST.sessions[idx]=JSON.parse(JSON.stringify(s));else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();renderInput();
 }
 function unlockSess(){const s=getSess();if(s){s.locked=false;sv();renderInput();}}
-function newSess(){ST.activeId=null;sv();renderInput();}
+function newSess(){
+  ST.activeId=null;
+  // Clear all working state so the new session starts completely empty
+  ST.hourly={};
+  ST.delays={};
+  ST.delayRows={};
+  ST.delayRowIds={};
+  sv();
+  renderInput();
+}
 
 // ═══════════ RESULTS ═══════════
 function renderResults(){
@@ -808,6 +829,10 @@ function rhHTML(title,slot,capId){
       <span class="rh-date">${doc}</span>
       <span class="rh-slot">${fs(slot)}</span>
     </div>
+    ${sess&&(sess.firstLift||sess.lastLift)?`<div style="display:flex;gap:14px;padding:6px 14px 0;font-size:11px;color:rgba(255,255,255,.85)">
+      ${sess.firstLift?`<span>🟢 First Lift: <strong>${sess.firstLift}</strong></span>`:''}
+      ${sess.lastLift?`<span>🔴 Last Lift: <strong>${sess.lastLift}</strong></span>`:''}
+    </div>`:''}
   </div>`;
 }
 
@@ -1040,8 +1065,8 @@ function renderHistory(){
   if(!list.length){h+=noSess('🗂️','No sessions recorded yet.');$('sc-history').innerHTML=h;return;}
   list.forEach(s=>{
     let td=0,tl=0;
-    // Use snapshotted results if available, else live hourly data
-    var hData=s._results?s._results.hourly:ST.hourly;
+    // Always use snapshotted results — never bleed live ST.hourly into history
+    var hData=(s._results&&s._results.hourly)?s._results.hourly:{};
     for(let i=1;i<=s.numCranes;i++)ALL.forEach(sl=>{td+=hData[sl+'_'+i+'_discharge']||0;tl+=hData[sl+'_'+i+'_load']||0;});
     const tot=td+tl,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
@@ -1060,7 +1085,24 @@ function renderHistory(){
   h+=`<div style="padding:10px 10px 20px"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div>`;
   $('sc-history').innerHTML=h;
 }
-function setActive(id){ST.activeId=id;sv();renderHistory();switchTab('input');}
+function setActive(id){
+  ST.activeId=id;
+  // Restore snapshotted hourly + delay data for this session
+  // so results/hourly screens reflect the correct session data
+  var sess=ST.sessions.find(function(s){return s.id==id;});
+  if(sess&&sess._results){
+    // Deep-clone the snapshot back into working state
+    ST.hourly=JSON.parse(JSON.stringify(sess._results.hourly||{}));
+    ST.delays=JSON.parse(JSON.stringify(sess._results.delays||{}));
+  } else {
+    // Session has no snapshot — start clean
+    ST.hourly={};
+    ST.delays={};
+  }
+  sv();
+  renderHistory();
+  switchTab('input');
+}
 function delSess(id){if(confirm('Delete this session?')){ST.sessions=ST.sessions.filter(s=>s.id!=id);if(ST.activeId==id)ST.activeId=null;sv();renderHistory();}}
 
 // ═══════════ AI ANALYSIS ═══════════
@@ -1457,9 +1499,9 @@ function renderYard(){
   let h=`<div class="ph"><div class="ph-row"><h2>🏗️ Yard Status</h2><span class="pill pblue">${ST.yardReports.length} Report${ST.yardReports.length!==1?'s':''}</span></div></div>`;
   // Upload + manual entry options
   h+=`<div style="padding:8px 10px 6px">
-    <div id="yDZ" ondragover="event.preventDefault();this.style.borderColor='#2980b9';this.style.background='#e8f4ff'"
-      ondragleave="this.style.borderColor='var(--navy)';this.style.background='white'"
-      ondrop="event.preventDefault();this.style.borderColor='var(--navy)';this.style.background='white';uploadYardExcelMulti({files:event.dataTransfer.files})"
+    <div id="yDZ" ondragenter="event.preventDefault();event.stopPropagation();this.style.borderColor='#2980b9';this.style.background='#e8f4ff'" ondragover="event.preventDefault();event.stopPropagation();this.style.borderColor='#2980b9';this.style.background='#e8f4ff'"
+      ondragleave="event.preventDefault();event.stopPropagation();this.style.borderColor='var(--navy)';this.style.background='white'"
+      ondrop="event.preventDefault();event.stopPropagation();this.style.borderColor='var(--navy)';this.style.background='white';uploadYardExcelMulti({files:event.dataTransfer.files})"
       style="border:2px dashed var(--navy);border-radius:12px;padding:16px;text-align:center;background:white;margin-bottom:8px">
       <div style="font-size:24px;margin-bottom:5px">📂</div>
       <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:3px">Drag &amp; drop Excel here</div>
@@ -1593,14 +1635,30 @@ function renderYardReport(report){
   h+='<div style="display:flex;gap:6px">';
   h+='<input id="nt_'+report.id+'" placeholder="New type e.g. HAZMAT" style="flex:1;padding:5px 8px;border:1.5px solid #ccc;border-radius:7px;font-size:11px">';
   h+='<button onclick="addYardType('+report.id+')" style="padding:5px 10px;background:var(--navy);color:white;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer">+ Add</button>';
+  // Custom columns management (between EXPORT and IMPORT)
+  var customCols=report.customCols||[];
+  h+='<div style="margin-top:8px;padding-top:6px;border-top:1px solid #ddd">';
+  h+='<div style="font-size:10px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Extra Columns (between Export &amp; Import)</div>';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px">';
+  customCols.forEach(function(col,ci){
+    h+='<span style="background:#2d6a8a;color:white;border-radius:5px;padding:3px 8px;font-size:10px;font-weight:700;display:flex;align-items:center;gap:4px">'+col.label;
+    h+='<button onclick="removeYardCol('+report.id+','+ci+')" style="background:none;border:none;color:rgba(255,255,255,.8);cursor:pointer;font-size:13px;padding:0">×</button>';
+    h+='</span>';
+  });
+  h+='</div>';
+  h+='<div style="display:flex;gap:6px">';
+  h+='<input id="nc_'+report.id+'" placeholder="Column name e.g. STORAGE" style="flex:1;padding:5px 8px;border:1.5px solid #ccc;border-radius:7px;font-size:11px">';
+  h+='<button onclick="addYardCol('+report.id+')" style="padding:5px 10px;background:#2d6a8a;color:white;border:none;border-radius:7px;font-size:11px;font-weight:800;cursor:pointer">+ Add</button>';
   h+='</div></div>';
-  h+=`<div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed">
+  h+='</div></div>';
+  h+=`<div class="yard-twrap">
+    <table style="font-size:11px;">
       <thead>
         <tr>
           <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px;width:38%">VESSELS</th>
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:17%">TYPE</th>
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">EXPORT</th>
+          ${(report.customCols||[]).map(c=>`<th style="background:var(--navy);color:white;padding:8px 4px;text-align:center">${c.label}</th>`).join('')}
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">IMPORT</th>
           <th style="background:#c0392b;color:white;padding:8px 4px;text-align:center;font-weight:800;width:15%">DEPARTED</th>
         </tr>
@@ -1616,27 +1674,32 @@ function renderYardReport(report){
       const rowBg=vi%2===0?'#f8f9fc':'white';
       h+=`<tr style="background:${rowBg}">
         ${isFirst?`<td rowspan="${types.length}" style="font-weight:800;color:var(--navy);padding:6px 10px;border-right:1px solid var(--lb);vertical-align:top;min-width:120px;word-break:break-word">
-          <input class="vessel-inline-edit" value="${v.name}" oninput="editYardField(${report.id},${vi},'name',this.value)" style="border:none;outline:none;font-weight:800;font-size:11px;color:var(--navy);background:transparent;width:100%;padding:0"/>
-          <input class="vessel-inline-edit" value="${v.voyage||''}" placeholder="Voyage" oninput="editYardField(${report.id},${vi},'voyage',this.value)" style="border:none;outline:none;font-size:10px;color:#c0392b;font-weight:700;background:transparent;width:100%;padding:0;margin-top:2px;display:block"/>
+          <div style="display:flex;align-items:baseline;gap:4px;flex-wrap:wrap">
+            <input class="vessel-inline-edit vessel-name" value="${v.name}" oninput="editYardField(${report.id},${vi},'name',this.value)" style="border:none;outline:none;font-weight:800;font-size:11px;color:var(--navy);background:transparent;padding:0;min-width:40px;width:auto"/>
+            ${v.voyage?`<span style="color:#999;font-size:10px">|</span><input class="vessel-inline-edit vessel-voyage" value="${v.voyage}" oninput="editYardField(${report.id},${vi},'voyage',this.value)" style="border:none;outline:none;font-size:10px;color:#c0392b;font-weight:700;background:transparent;padding:0;min-width:30px;width:auto"/>`:''}
+          </div>
         </td>`:''}
         <td style="padding:5px 6px;text-align:center;color:#555;font-size:10.5px;border-bottom:1px solid #f0f0f0">${t}</td>
         <td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.export||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','export',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
+          <input type="number" value="${data.export||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','export',this.value)" class="yard-input"/>
         </td>
+        ${(report.customCols||[]).map(c=>`<td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0"><input type="number" value="${data[c.key]||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','${c.key}',this.value)" class="yard-input"/></td>`).join('')}
         <td style="padding:5px 6px;text-align:center;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.import||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','import',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
+          <input type="number" value="${data.import||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','import',this.value)" class="yard-input"/>
         </td>
         <td style="padding:5px 6px;text-align:center;background:#fff5f5;border-bottom:1px solid #f0f0f0">
-          <input type="number" value="${data.departed||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','departed',this.value)" style="width:44px;text-align:center;border:1px solid #ddd;border-radius:4px;padding:2px;font-size:11px"/>
+          <input type="number" value="${data.departed||''}" placeholder="-" oninput="updateYardCell(${report.id},${vi},'${t}','departed',this.value)" class="yard-input"/>
         </td>
       </tr>`;
     });
     // Vessel total row
     let vEx=0,vIm=0,vDep=0;
     types.forEach(t=>{const d=v.data[t]||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
+    let vCustom=(report.customCols||[]).map(c=>{let s=0;types.forEach(t=>{const d=v.data&&v.data[t]?v.data[t]:{};s+=d[c.key]||0;});return s;});
     h+=`<tr style="background:var(--yellow)">
       <td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>
       <td style="text-align:center;font-weight:800">${vEx||0}</td>
+      ${(report.customCols||[]).map((c,ci)=>`<td style="text-align:center;font-weight:800">${vCustom[ci]||0}</td>`).join('')}
       <td style="text-align:center;font-weight:800">${vIm||0}</td>
       <td style="text-align:center;font-weight:800">${vDep||0}</td>
     </tr>`;
@@ -1707,8 +1770,8 @@ function updateYardCell(reportId,vi,type,field,val){
   if(!r.vessels[vi].data[type])r.vessels[vi].data[type]={export:0,import:0,departed:0};
   r.vessels[vi].data[type][field]=parseFloat(val)||0;
   sv();
-  // re-render summaries without full re-render
-  renderYard();
+  // Only update the summary totals, not full re-render (avoids lag with large Excel data)
+  updateYardSummary(reportId);
 }
 function editYardFuel(reportId){
   const r=ST.yardReports.find(x=>x.id===reportId);if(!r)return;
@@ -2292,11 +2355,16 @@ async function shareYardReport(reportId){
   // Remove elements marked no-share (edit sections, type management)
   clone.querySelectorAll('.no-share').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
   // Convert vessel inline edit inputs to styled text spans
-  clone.querySelectorAll('.vessel-inline-edit').forEach(function(inp){
-    var s=document.createElement('div');
+  clone.querySelectorAll('.vessel-name').forEach(function(inp){
+    var s=document.createElement('span');
     s.textContent=inp.value||'';
-    var isVoyage=inp.style.color==='rgb(192, 57, 43)'||inp.placeholder==='Voyage';
-    s.style.cssText=isVoyage?'font-size:10px;color:#c0392b;font-weight:700;margin-top:2px':'font-size:11px;font-weight:800;color:#1F3864';
+    s.style.cssText='font-size:11px;font-weight:800;color:#1F3864';
+    inp.parentNode.replaceChild(s,inp);
+  });
+  clone.querySelectorAll('.vessel-voyage').forEach(function(inp){
+    var s=document.createElement('span');
+    s.textContent=inp.value||'';
+    s.style.cssText='font-size:10px;font-weight:700;color:#c0392b';
     inp.parentNode.replaceChild(s,inp);
   });
   clone.querySelectorAll('input').forEach(function(inp){var s=document.createElement('div');var v=inp.value||'';s.textContent=v&&v!=='0'?v:'\u2014';s.style.cssText='font-size:13px;font-weight:800;text-align:center;color:'+nc+';';inp.parentNode.replaceChild(s,inp);});
@@ -2316,16 +2384,24 @@ async function shareYardReport(reportId){
       if(d.style.overflow==='hidden')d.style.overflow='visible';
     });
   });
+  // Make all yard-twrap divs overflow visible so table is fully measured
+  clone.querySelectorAll('.yard-twrap').forEach(function(tw){
+    tw.style.overflow='visible';
+    var tbl=tw.querySelector('table');
+    if(tbl)tbl.style.width=tbl.scrollWidth+'px';
+  });
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
-  // Let browser fully paint all elements before measuring
+  // Wait two frames so browser fully lays out the clone
   await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);})});
-  await new Promise(function(r){setTimeout(r,200);});
-  // Set wrapper to full content height so html2canvas captures everything
+  await new Promise(function(r){setTimeout(r,250);});
+  // Measure full dimensions after layout
+  var W2=Math.max(W,clone.scrollWidth);
+  wrapper.style.width=W2+'px';
   var h=clone.scrollHeight;
   wrapper.style.height=h+'px';
   try{
-    var canvas=await html2canvas(wrapper,{scale:3,useCORS:true,backgroundColor:'#f0f2f7',width:W,height:h,windowWidth:W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
+    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:W2,height:h,windowWidth:W2,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
     canvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
@@ -2426,11 +2502,17 @@ function markVesselComplete(){
   sess.completedAt=new Date().toISOString();
   // Snapshot final results
   var sl_=shiftSlots();sess._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=sess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])sess._results.hourly[k]=ST.hourly[k];});}});
+  sl_.forEach(function(slot){for(var ci=1;ci<=sess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])sess._results.hourly[k]=parseFloat(ST.hourly[k])||0;});}});
+  // Also snapshot delays into _results
+  for(var ci=1;ci<=sess.numCranes;ci++){var rk=sess.id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=sess.id+'_'+ci+'_'+r;if(ST.delays[dk])sess._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));});}
   var idx=ST.sessions.findIndex(function(x){return x.id===sess.id;});
-  if(idx>=0)ST.sessions[idx]=sess;
-  // Clear active session
+  if(idx>=0)ST.sessions[idx]=JSON.parse(JSON.stringify(sess));
+  // Clear active session and all working state
   ST.activeId=null;
+  ST.hourly={};
+  ST.delays={};
+  ST.delayRows={};
+  ST.delayRowIds={};
   sv();
   alert('Vessel '+sess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
@@ -2495,6 +2577,63 @@ function removeYardType(reportId,ti){
   rpt.customTypes.splice(ti,1);
   sv();
   renderYard();
+}
+
+// Update yard summary totals without full re-render (fast, no lag)
+function updateYardSummary(reportId){
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt)return;
+  // Recalc totals
+  var grandEx=0,grandIm=0,grandDep=0;
+  var totalGP=0,totalReef=0,totalMty=0;
+  (rpt.vessels||[]).forEach(function(v){
+    var types=rpt.customTypes&&rpt.customTypes.length?rpt.customTypes:['GP/DRY','REEFER','EMPTY','OOG'];
+    types.forEach(function(t){
+      var d=v.data&&v.data[t]?v.data[t]:{};
+      grandEx+=(d.export||0);grandIm+=(d.import||0);grandDep+=(d.departed||0);
+    });
+    var gpd=v.data&&v.data['GP/DRY']?v.data['GP/DRY']:{};
+    var rfd=v.data&&v.data['REEFER']?v.data['REEFER']:{};
+    var mty=v.data&&v.data['EMPTY']?v.data['EMPTY']:{};
+    totalGP+=(gpd.export||0)+(gpd.import||0);
+    totalReef+=(rfd.export||0)+(rfd.import||0);
+    totalMty+=(mty.export||0)+(mty.import||0);
+  });
+  // Update summary elements if they exist in DOM
+  var cap=document.getElementById('ycap_'+reportId);
+  if(!cap)return;
+  var sums=cap.querySelectorAll('[data-sum]');
+  sums.forEach(function(el){
+    var key=el.getAttribute('data-sum');
+    if(key==='ex')el.textContent=grandEx;
+    else if(key==='im')el.textContent=grandIm;
+    else if(key==='dep')el.textContent=grandDep;
+    else if(key==='gp')el.textContent=totalGP;
+    else if(key==='reef')el.textContent=totalReef;
+    else if(key==='mty')el.textContent=totalMty;
+    else if(key==='yard')el.textContent=grandEx+grandIm;
+  });
+}
+
+function addYardCol(reportId){
+  var inp=document.getElementById('nc_'+reportId);
+  if(!inp||!inp.value.trim())return;
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt)return;
+  if(!rpt.customCols)rpt.customCols=[];
+  var label=inp.value.trim().toUpperCase();
+  var key=label.toLowerCase().replace(/[^a-z0-9]/g,'_');
+  if(!rpt.customCols.find(function(c){return c.key===key;})){
+    rpt.customCols.push({label:label,key:key});
+    sv();renderYard();
+  }
+  inp.value='';
+}
+function removeYardCol(reportId,ci){
+  var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
+  if(!rpt||!rpt.customCols)return;
+  rpt.customCols.splice(ci,1);
+  sv();renderYard();
 }
 
 </script>
