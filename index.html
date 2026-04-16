@@ -376,9 +376,7 @@ function initSync(){
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
-          // Deep-clone: Firebase objects are live references — never assign directly
-          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}
-          catch(e){ST[k]=remote[k];}
+          ST[k]=remote[k];
         }
       });
       // Restore local images after remote data applied
@@ -421,9 +419,7 @@ function initSync(){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
         if(Array.isArray(remoteYard)){
-          // Deep-clone: never assign Firebase live reference directly
-          try{ST.yardReports=JSON.parse(JSON.stringify(remoteYard));}
-          catch(e){ST.yardReports=remoteYard;}
+          ST.yardReports=remoteYard;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
@@ -760,28 +756,17 @@ function saveSession(){
     firstLift:$('ffl')?.value||'',
     lastLift:$('fll')?.value||'',
     craneBalances:cb,locked:true,savedAt:new Date().toISOString()};
-  // Snapshot results and delays for history — use primitives/deep-clone, never live refs
+  // Snapshot results and delays for history
   var sl_=shiftSlots();s._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;var v=ST.hourly[k];if(v)s._results.hourly[k]=parseFloat(v)||0;});}});
-  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk]){try{s._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));}catch(e){s._results.delays[dk]=Object.assign({},ST.delays[dk]);}}});}
-  // Deep-clone session before storing so later edits don't mutate history
-  var sClone;try{sClone=JSON.parse(JSON.stringify(s));}catch(e){sClone=s;}
+  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[k]=ST.hourly[k];});}});
+  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=Object.assign({},ST.delays[dk]);});}
   ST.activeId=id;
   const idx=ST.sessions.findIndex(x=>x.id===id);
-  if(idx>=0)ST.sessions[idx]=sClone;else ST.sessions.unshift(sClone);
+  if(idx>=0)ST.sessions[idx]=s;else ST.sessions.unshift(s);
   sv();renderInput();
 }
 function unlockSess(){const s=getSess();if(s){s.locked=false;sv();renderInput();}}
-function newSess(){
-  // Clear ALL working data so new vessel starts from zero
-  ST.activeId=null;
-  ST.hourly={};
-  ST.delays={};
-  ST.delayRows={};
-  ST.delayRowIds={};
-  sv();
-  renderInput();
-}
+function newSess(){ST.activeId=null;sv();renderInput();}
 
 // ═══════════ RESULTS ═══════════
 function renderResults(){
@@ -1070,8 +1055,8 @@ function renderHistory(){
   if(!list.length){h+=noSess('🗂️','No sessions recorded yet.');$('sc-history').innerHTML=h;return;}
   list.forEach(s=>{
     let td=0,tl=0;
-    // Use ONLY snapshotted data — never fall back to live ST.hourly
-    var hData=(s._results&&s._results.hourly)?s._results.hourly:{};
+    // Use snapshotted results if available, else live hourly data
+    var hData=s._results?s._results.hourly:ST.hourly;
     for(let i=1;i<=s.numCranes;i++)ALL.forEach(sl=>{td+=hData[sl+'_'+i+'_discharge']||0;tl+=hData[sl+'_'+i+'_load']||0;});
     const tot=td+tl,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
@@ -1090,27 +1075,7 @@ function renderHistory(){
   h+=`<div style="padding:10px 10px 20px"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div>`;
   $('sc-history').innerHTML=h;
 }
-function setActive(id){
-  ST.activeId=id;
-  // Restore snapshotted hourly+delays from history into working state
-  var sess=ST.sessions.find(function(s){return s.id===id;});
-  if(sess&&sess._results){
-    // Deep-clone snapshot back into working state
-    try{ST.hourly=JSON.parse(JSON.stringify(sess._results.hourly||{}));}
-    catch(e){ST.hourly={};}
-    try{ST.delays=JSON.parse(JSON.stringify(sess._results.delays||{}));}
-    catch(e){ST.delays={};}
-  } else {
-    // No snapshot — start clean
-    ST.hourly={};
-    ST.delays={};
-    ST.delayRows={};
-    ST.delayRowIds={};
-  }
-  sv();
-  renderHistory();
-  switchTab('input');
-}
+function setActive(id){ST.activeId=id;sv();renderHistory();switchTab('input');}
 function delSess(id){if(confirm('Delete this session?')){ST.sessions=ST.sessions.filter(s=>s.id!=id);if(ST.activeId==id)ST.activeId=null;sv();renderHistory();}}
 
 // ═══════════ AI ANALYSIS ═══════════
@@ -2350,66 +2315,92 @@ async function shareYardReport(reportId){
   var el=document.getElementById('ycap_'+reportId);
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-  var W=420;
-  var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;';
-  var clone=el.cloneNode(true);
-  clone.querySelectorAll('button,.rh-share').forEach(function(b){b.remove();});
   var nc=ST.settings.reportNumColor||'#000000';
-  clone.querySelectorAll('.twrap').forEach(function(t){t.style.overflow='visible';});
-  clone.querySelectorAll('table').forEach(function(t){t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';});
-  clone.querySelectorAll('th').forEach(function(t){t.style.padding='6px 4px';t.style.fontSize='11px';});
-  clone.querySelectorAll('td').forEach(function(t){t.style.padding='5px 4px';t.style.fontSize='12px';t.style.color=nc;});
-  // Remove elements marked no-share (edit sections, type management)
-  clone.querySelectorAll('.no-share').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
-  // Convert vessel inline edit inputs to styled text spans
+
+  // ── Measure the LIVE table width before cloning ──
+  var liveTwrap=el.querySelector('.yard-twrap');
+  var liveTable=liveTwrap?liveTwrap.querySelector('table'):null;
+  // Temporarily make overflow visible to get true scrollWidth
+  var origOverflow='';
+  if(liveTwrap){origOverflow=liveTwrap.style.overflow;liveTwrap.style.overflow='visible';}
+  var tableW=liveTable?liveTable.scrollWidth:0;
+  if(liveTwrap)liveTwrap.style.overflow=origOverflow;
+  var W=Math.max(tableW+32,420);
+
+  // ── Clone ──
+  var clone=el.cloneNode(true);
+
+  // ── Remove UI outside the table ──
+  // Remove the .no-share section (type/column management controls above the table)
+  clone.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
+  // Remove all buttons outside of table cells
+  clone.querySelectorAll('button').forEach(function(b){
+    // Only remove if NOT inside a <td> or <th>
+    if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);
+  });
+  // Remove the rh-share button (share button in header)
+  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // Remove POD toggle buttons that are outside table
+  clone.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+
+  // ── Handle POD chart include/exclude ──
+  clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
+    if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
+    else{pod.style.overflow='visible';pod.querySelectorAll('div').forEach(function(d){if(d.style.overflow==='hidden')d.style.overflow='visible';});}
+  });
+
+  // ── Convert vessel name + voyage inputs to text (keep in their flex container) ──
   clone.querySelectorAll('.vessel-name').forEach(function(inp){
-    var s=document.createElement('span');
-    s.textContent=inp.value||'';
-    s.style.cssText='font-size:11px;font-weight:800;color:#1F3864';
-    inp.parentNode.replaceChild(s,inp);
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-weight:800;font-size:11px;color:#1F3864;';
+    inp.parentNode.replaceChild(span,inp);
   });
   clone.querySelectorAll('.vessel-voyage').forEach(function(inp){
-    var s=document.createElement('span');
-    s.textContent=inp.value||'';
-    s.style.cssText='font-size:10px;font-weight:700;color:#c0392b';
-    inp.parentNode.replaceChild(s,inp);
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-size:10px;font-weight:700;color:#c0392b;';
+    inp.parentNode.replaceChild(span,inp);
   });
-  clone.querySelectorAll('input').forEach(function(inp){var s=document.createElement('div');var v=inp.value||'';s.textContent=v&&v!=='0'?v:'\u2014';s.style.cssText='font-size:13px;font-weight:800;text-align:center;color:'+nc+';';inp.parentNode.replaceChild(s,inp);});
-  // Handle POD chart toggle - remove pods marked as excluded from share
-  clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
-    var excluded=pod.getAttribute('data-share')==='0';
-    if(excluded) pod.parentNode&&pod.parentNode.removeChild(pod);
-    else{
-      // Remove the toggle button from the chart in the shared image
-      pod.querySelectorAll('button').forEach(function(b){b.remove();});
-    }
+
+  // ── Convert remaining inputs (number cells) to plain text ──
+  clone.querySelectorAll('input').forEach(function(inp){
+    var div=document.createElement('div');
+    var v=inp.value||'';
+    div.textContent=(v&&v!=='0')?v:'—';
+    div.style.cssText='font-size:12px;font-weight:800;text-align:center;color:'+nc+';';
+    inp.parentNode.replaceChild(div,inp);
   });
-  // Ensure POD chart bars are not clipped in the clone
-  clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
-    pod.style.overflow='visible';
-    pod.querySelectorAll('div').forEach(function(d){
-      if(d.style.overflow==='hidden')d.style.overflow='visible';
-    });
-  });
-  // Make all yard-twrap divs overflow visible so table is fully measured
+
+  // ── Fix table width so DEPARTED and all columns are fully visible ──
   clone.querySelectorAll('.yard-twrap').forEach(function(tw){
     tw.style.overflow='visible';
+    tw.style.width=W+'px';
     var tbl=tw.querySelector('table');
-    if(tbl)tbl.style.width=tbl.scrollWidth+'px';
+    if(tbl){
+      tbl.style.width=W+'px';
+      tbl.style.minWidth='unset';
+      tbl.style.tableLayout='fixed';
+    }
   });
+  // Also expand any generic .twrap (for other tables in the report)
+  clone.querySelectorAll('.twrap').forEach(function(tw){tw.style.overflow='visible';});
+
+  // ── Build capture container ──
+  var wrapper=document.createElement('div');
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
-  // Wait two frames so browser fully lays out the clone
-  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);})});
+
+  // ── Wait for full layout paint ──
+  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
   await new Promise(function(r){setTimeout(r,250);});
-  // Measure full dimensions after layout
-  var W2=Math.max(W,clone.scrollWidth);
-  wrapper.style.width=W2+'px';
-  var h=clone.scrollHeight;
+
+  var h=wrapper.scrollHeight;
   wrapper.style.height=h+'px';
+
   try{
-    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:W2,height:h,windowWidth:W2,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
+    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:W,height:h,windowWidth:W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
     canvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
@@ -2419,7 +2410,6 @@ async function shareYardReport(reportId){
   }catch(e){alert('Share failed: '+e.message);}
   finally{document.body.removeChild(wrapper);}
 }
-
 // ════════════════════════════════════
 // EXPORT / IMPORT (manual fallback)
 // ════════════════════════════════════
@@ -2508,37 +2498,13 @@ function markVesselComplete(){
   if(!confirm('Mark this vessel as COMPLETE?\n\nThis will save it to history and clear the active session so you can start a new vessel.'))return;
   sess.completed=true;
   sess.completedAt=new Date().toISOString();
-  // Snapshot final results — deep-clone, not live refs
+  // Snapshot final results
   var sl_=shiftSlots();sess._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){
-    for(var ci=1;ci<=sess.numCranes;ci++){
-      ['discharge','load'].forEach(function(t){
-        var k=slot+'_'+ci+'_'+t;
-        var v=ST.hourly[k];
-        if(v)sess._results.hourly[k]=parseFloat(v)||0;
-      });
-    }
-  });
-  // Snapshot delays too
-  for(var ci=1;ci<=sess.numCranes;ci++){
-    var rk=sess.id+'_c'+ci;
-    (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
-      var dk=sess.id+'_'+ci+'_'+r;
-      if(ST.delays[dk]){
-        try{sess._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));}
-        catch(e){sess._results.delays[dk]=Object.assign({},ST.delays[dk]);}
-      }
-    });
-  }
-  var sessClone;try{sessClone=JSON.parse(JSON.stringify(sess));}catch(e){sessClone=sess;}
+  sl_.forEach(function(slot){for(var ci=1;ci<=sess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])sess._results.hourly[k]=ST.hourly[k];});}});
   var idx=ST.sessions.findIndex(function(x){return x.id===sess.id;});
-  if(idx>=0)ST.sessions[idx]=sessClone;
-  // Clear ALL working state — clean slate for next vessel (Fix 8)
+  if(idx>=0)ST.sessions[idx]=sess;
+  // Clear active session
   ST.activeId=null;
-  ST.hourly={};
-  ST.delays={};
-  ST.delayRows={};
-  ST.delayRowIds={};
   sv();
   alert('Vessel '+sess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
