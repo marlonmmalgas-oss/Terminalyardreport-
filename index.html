@@ -376,8 +376,9 @@ function initSync(){
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
-          // Deep-clone to prevent shared references with Firebase raw objects
-          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
+          // Deep-clone: Firebase objects are live references — never assign directly
+          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}
+          catch(e){ST[k]=remote[k];}
         }
       });
       // Restore local images after remote data applied
@@ -420,7 +421,9 @@ function initSync(){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
         if(Array.isArray(remoteYard)){
-          ST.yardReports=JSON.parse(JSON.stringify(remoteYard));
+          // Deep-clone: never assign Firebase live reference directly
+          try{ST.yardReports=JSON.parse(JSON.stringify(remoteYard));}
+          catch(e){ST.yardReports=remoteYard;}
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
@@ -757,19 +760,21 @@ function saveSession(){
     firstLift:$('ffl')?.value||'',
     lastLift:$('fll')?.value||'',
     craneBalances:cb,locked:true,savedAt:new Date().toISOString()};
-  // Snapshot results and delays for history
+  // Snapshot results and delays for history — use primitives/deep-clone, never live refs
   var sl_=shiftSlots();s._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[k]=parseFloat(ST.hourly[k])||0;});}});
-  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));});}
+  sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;var v=ST.hourly[k];if(v)s._results.hourly[k]=parseFloat(v)||0;});}});
+  for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk]){try{s._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));}catch(e){s._results.delays[dk]=Object.assign({},ST.delays[dk]);}}});}
+  // Deep-clone session before storing so later edits don't mutate history
+  var sClone;try{sClone=JSON.parse(JSON.stringify(s));}catch(e){sClone=s;}
   ST.activeId=id;
   const idx=ST.sessions.findIndex(x=>x.id===id);
-  if(idx>=0)ST.sessions[idx]=JSON.parse(JSON.stringify(s));else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
+  if(idx>=0)ST.sessions[idx]=sClone;else ST.sessions.unshift(sClone);
   sv();renderInput();
 }
 function unlockSess(){const s=getSess();if(s){s.locked=false;sv();renderInput();}}
 function newSess(){
+  // Clear ALL working data so new vessel starts from zero
   ST.activeId=null;
-  // Clear all working state so the new session starts completely empty
   ST.hourly={};
   ST.delays={};
   ST.delayRows={};
@@ -1065,7 +1070,7 @@ function renderHistory(){
   if(!list.length){h+=noSess('🗂️','No sessions recorded yet.');$('sc-history').innerHTML=h;return;}
   list.forEach(s=>{
     let td=0,tl=0;
-    // Always use snapshotted results — never bleed live ST.hourly into history
+    // Use ONLY snapshotted data — never fall back to live ST.hourly
     var hData=(s._results&&s._results.hourly)?s._results.hourly:{};
     for(let i=1;i<=s.numCranes;i++)ALL.forEach(sl=>{td+=hData[sl+'_'+i+'_discharge']||0;tl+=hData[sl+'_'+i+'_load']||0;});
     const tot=td+tl,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
@@ -1087,17 +1092,20 @@ function renderHistory(){
 }
 function setActive(id){
   ST.activeId=id;
-  // Restore snapshotted hourly + delay data for this session
-  // so results/hourly screens reflect the correct session data
-  var sess=ST.sessions.find(function(s){return s.id==id;});
+  // Restore snapshotted hourly+delays from history into working state
+  var sess=ST.sessions.find(function(s){return s.id===id;});
   if(sess&&sess._results){
-    // Deep-clone the snapshot back into working state
-    ST.hourly=JSON.parse(JSON.stringify(sess._results.hourly||{}));
-    ST.delays=JSON.parse(JSON.stringify(sess._results.delays||{}));
+    // Deep-clone snapshot back into working state
+    try{ST.hourly=JSON.parse(JSON.stringify(sess._results.hourly||{}));}
+    catch(e){ST.hourly={};}
+    try{ST.delays=JSON.parse(JSON.stringify(sess._results.delays||{}));}
+    catch(e){ST.delays={};}
   } else {
-    // Session has no snapshot — start clean
+    // No snapshot — start clean
     ST.hourly={};
     ST.delays={};
+    ST.delayRows={};
+    ST.delayRowIds={};
   }
   sv();
   renderHistory();
@@ -2500,14 +2508,32 @@ function markVesselComplete(){
   if(!confirm('Mark this vessel as COMPLETE?\n\nThis will save it to history and clear the active session so you can start a new vessel.'))return;
   sess.completed=true;
   sess.completedAt=new Date().toISOString();
-  // Snapshot final results
+  // Snapshot final results — deep-clone, not live refs
   var sl_=shiftSlots();sess._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=sess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])sess._results.hourly[k]=parseFloat(ST.hourly[k])||0;});}});
-  // Also snapshot delays into _results
-  for(var ci=1;ci<=sess.numCranes;ci++){var rk=sess.id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=sess.id+'_'+ci+'_'+r;if(ST.delays[dk])sess._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));});}
+  sl_.forEach(function(slot){
+    for(var ci=1;ci<=sess.numCranes;ci++){
+      ['discharge','load'].forEach(function(t){
+        var k=slot+'_'+ci+'_'+t;
+        var v=ST.hourly[k];
+        if(v)sess._results.hourly[k]=parseFloat(v)||0;
+      });
+    }
+  });
+  // Snapshot delays too
+  for(var ci=1;ci<=sess.numCranes;ci++){
+    var rk=sess.id+'_c'+ci;
+    (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
+      var dk=sess.id+'_'+ci+'_'+r;
+      if(ST.delays[dk]){
+        try{sess._results.delays[dk]=JSON.parse(JSON.stringify(ST.delays[dk]));}
+        catch(e){sess._results.delays[dk]=Object.assign({},ST.delays[dk]);}
+      }
+    });
+  }
+  var sessClone;try{sessClone=JSON.parse(JSON.stringify(sess));}catch(e){sessClone=sess;}
   var idx=ST.sessions.findIndex(function(x){return x.id===sess.id;});
-  if(idx>=0)ST.sessions[idx]=JSON.parse(JSON.stringify(sess));
-  // Clear active session and all working state
+  if(idx>=0)ST.sessions[idx]=sessClone;
+  // Clear ALL working state — clean slate for next vessel (Fix 8)
   ST.activeId=null;
   ST.hourly={};
   ST.delays={};
