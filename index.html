@@ -1727,14 +1727,25 @@ function resolveVesselAbbrev(raw){
   // Extract abbrev after 4 leading digits: "2610anaetc" -> "ana"
   const match=s.toLowerCase().match(/^\d{4}([a-z]+)/);
   if(!match)return s;
-  const full=match[1]; // e.g. "anaza602a"
-  // Extract voyage: ZA/ZB/ZS + 3 digits + 1 letter = 6 chars
-  const voyMatch=full.toUpperCase().match(/(Z[ABSCD]\d{3}[A-Z])/);
-  const voyage=voyMatch?voyMatch[1]:'';
-  // Vessel abbrev is what's left before the voyage
-  const abbrev=voyMatch?full.substring(0,full.toUpperCase().indexOf(voyMatch[1])).toLowerCase():full;
-  const found=(ST.vesselAbbrevs||[]).find(v=>v.abbrev.toLowerCase()===abbrev.toLowerCase());
-  return {vessel:found?found.full:abbrev.toUpperCase(),voyage};
+  const full=match[1]; // e.g. "anaza613a" or "anacam001"
+  // Try known abbrevs — find longest matching prefix
+  const abbrevs=ST.vesselAbbrevs||[];
+  let foundEntry=null,bestLen=0;
+  abbrevs.forEach(function(v){
+    const a=v.abbrev.toLowerCase();
+    if(full.startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
+  });
+  let vessel,voyage;
+  if(foundEntry){
+    vessel=foundEntry.full;
+    // Everything after the abbrev is the voyage (e.g. "za613a" or "cam001")
+    voyage=full.substring(bestLen).toUpperCase()||'';
+  } else {
+    // No known abbrev - use full string, no voyage
+    vessel=full.toUpperCase();
+    voyage='';
+  }
+  return {vessel,voyage};
 }
 
 // ═══════════ ISO TYPE HELPERS ═══════════
@@ -2236,14 +2247,29 @@ async function shareReport(capId){
 
   const clone=el.cloneNode(true);
 
+  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
+  var liveInputs=el.querySelectorAll('input,select,textarea');
+  var cloneInputs=clone.querySelectorAll('input,select,textarea');
+  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
+
   // Remove share button, UI controls outside table
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
-    var span=document.createElement('span');
-    span.textContent=inp.value||'';
-    span.style.cssText='font-size:12px;font-weight:600;';
-    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
+  // Replace ALL inputs with plain text spans (using stamped values)
+  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
+    if(inp.closest('td')||inp.closest('th')){
+      // Inside table cell — replace with plain text div
+      var div=document.createElement('div');
+      div.textContent=inp.value||'';
+      div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
+      if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
+    } else {
+      var span=document.createElement('span');
+      span.textContent=inp.value||'';
+      span.style.cssText='font-size:12px;font-weight:600;';
+      if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
+    }
   });
+  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // Make all wrappers non-scrolling so full table is visible
