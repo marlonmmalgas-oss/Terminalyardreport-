@@ -389,7 +389,7 @@ function initSync(){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
-          if(isOwnSave2&&(k==='sessions'||k==='activeId'))return;
+          if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
           // Deep clone to prevent Firebase object mutation bleeding into ST
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
@@ -2586,126 +2586,65 @@ async function shareYardReport(reportId){
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
   var nc=ST.settings.reportNumColor||'#000000';
-  var PORTRAIT_W=420;
+  var W=800;
 
-  // ── Clone first, then measure inside the render wrapper ──
-  // (avoids relying on live DOM scrollWidth which can be clipped)
-  var clone=el.cloneNode(true);
-
-  // ── Remove UI outside the table ──
-  clone.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
-  clone.querySelectorAll('button').forEach(function(b){
-    if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);
-  });
-  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  clone.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-
-  // ── Handle POD chart ──
-  clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
-    if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
-    else{pod.style.overflow='visible';pod.querySelectorAll('div').forEach(function(d){if(d.style.overflow==='hidden')d.style.overflow='visible';});}
-  });
-
-  // ── Convert vessel name + voyage inputs to text ──
-  clone.querySelectorAll('.vessel-name').forEach(function(inp){
-    var span=document.createElement('span');
-    span.textContent=inp.value||'';
-    span.style.cssText='font-weight:800;font-size:11px;color:#1F3864;';
-    inp.parentNode.replaceChild(span,inp);
-  });
-  clone.querySelectorAll('.vessel-voyage').forEach(function(inp){
-    var span=document.createElement('span');
-    span.textContent=inp.value||'';
-    span.style.cssText='font-size:10px;font-weight:700;color:#c0392b;';
-    inp.parentNode.replaceChild(span,inp);
-  });
-
-  // ── Convert all remaining inputs to plain text ──
-  clone.querySelectorAll('input').forEach(function(inp){
-    var div=document.createElement('div');
-    var v=inp.value||'';
-    div.textContent=(v&&v!=='0')?v:'—';
-    div.style.cssText='font-size:12px;font-weight:800;text-align:center;color:'+nc+';';
-    inp.parentNode.replaceChild(div,inp);
-  });
-
-  // ── Make all wrappers fully visible so nothing clips ──
-  clone.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
-    tw.style.overflow='visible';
-    tw.style.width='auto';
-    tw.style.maxWidth='none';
-  });
-  // Remove min-width constraint so table can be measured naturally
-  clone.querySelectorAll('.yard-twrap table').forEach(function(tbl){
-    tbl.style.minWidth='unset';
-    tbl.style.whiteSpace='nowrap';
-  });
-
-  // ── Mount in a very wide off-screen div to get TRUE scrollWidth ──
-  var measureWrapper=document.createElement('div');
-  measureWrapper.style.cssText='position:fixed;left:-9999px;top:0;width:3000px;overflow:visible;z-index:-1;';
-  measureWrapper.appendChild(clone);
-  document.body.appendChild(measureWrapper);
-
-  // Wait for full paint before measuring
-  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-  await new Promise(function(r){setTimeout(r,150);});
-
-  // Measure true table width AFTER full layout in unconstrained container
-  var cloneTable=clone.querySelector('.yard-twrap table');
-  var trueTableW=cloneTable?cloneTable.scrollWidth:PORTRAIT_W;
-  document.body.removeChild(measureWrapper);
-
-  // ── Re-clone fresh (measurement clone may have been mutated) ──
+  // ── Clone the element ──
   var clone2=el.cloneNode(true);
+
+  // ── Remove UI-only elements (buttons, no-share sections) ──
   clone2.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
   clone2.querySelectorAll('button').forEach(function(b){if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);});
   clone2.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
   clone2.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+
+  // ── Handle POD charts ──
   clone2.querySelectorAll('[id^="pod_"]').forEach(function(pod){
     if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
     else{pod.style.overflow='visible';}
   });
-  clone2.querySelectorAll('.vessel-name').forEach(function(inp){var span=document.createElement('span');span.textContent=inp.value||'';span.style.cssText='font-weight:800;font-size:11px;color:#1F3864;';inp.parentNode.replaceChild(span,inp);});
-  clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){var span=document.createElement('span');span.textContent=inp.value||'';span.style.cssText='font-size:10px;font-weight:700;color:#c0392b;';inp.parentNode.replaceChild(span,inp);});
-  clone2.querySelectorAll('input').forEach(function(inp){var div=document.createElement('div');var v=inp.value||'';div.textContent=(v&&v!=='0')?v:'—';div.style.cssText='font-size:12px;font-weight:800;text-align:center;color:'+nc+';';inp.parentNode.replaceChild(div,inp);});
 
-  // ── Apply portrait scaling to capture clone ──
-  var contentW=PORTRAIT_W-16;
+  // ── Convert vessel name + voyage inputs to plain text ──
+  clone2.querySelectorAll('.vessel-name').forEach(function(inp){
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-weight:800;font-size:13px;color:#1F3864;';
+    inp.parentNode.replaceChild(span,inp);
+  });
+  clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-size:11px;font-weight:700;color:#c0392b;';
+    inp.parentNode.replaceChild(span,inp);
+  });
+
+  // ── Convert all remaining inputs to plain text ──
+  clone2.querySelectorAll('input').forEach(function(inp){
+    var div=document.createElement('div');
+    var v=inp.value||'';
+    div.textContent=(v&&v!=='0')?v:'—';
+    div.style.cssText='font-size:14px;font-weight:800;text-align:center;color:'+nc+';';
+    inp.parentNode.replaceChild(div,inp);
+  });
+
+  // ── Make table wrappers fully visible at full width ──
   clone2.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
     tw.style.overflow='visible';
-    tw.style.width=contentW+'px';
+    tw.style.width='100%';
     tw.style.maxWidth='none';
   });
-  if(trueTableW>contentW){
-    // Scale table down so every column fits in portrait width
-    var scale=contentW/trueTableW;
-    clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
-      tbl.style.minWidth='unset';
-      tbl.style.width=trueTableW+'px';
-      tbl.style.transformOrigin='top left';
-      tbl.style.transform='scale('+scale+')';
-      // Collapse vertical dead space after transform
-      var tblH=tbl.offsetHeight||200;
-      tbl.style.marginBottom='-'+Math.round(tblH*(1-scale)+4)+'px';
-    });
-  } else {
-    clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
-      tbl.style.width='100%';
-      tbl.style.minWidth='unset';
-    });
-  }
-
-  var W=PORTRAIT_W;
+  clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
+    tbl.style.width='100%';
+    tbl.style.minWidth='unset';
+  });
   // ── Build final capture container ──
   var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;padding:8px;';
   wrapper.appendChild(clone2);
   document.body.appendChild(wrapper);
 
   // ── Wait for full layout paint ──
   await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-  await new Promise(function(r){setTimeout(r,250);});
+  await new Promise(function(r){setTimeout(r,300);});
 
   var h=wrapper.scrollHeight;
   wrapper.style.height=h+'px';
