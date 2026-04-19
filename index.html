@@ -2262,29 +2262,33 @@ async function shareReport(capId){
   // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
 
+  // Stamp live .value into the DOM attributes BEFORE cloning
+  // (cloneNode copies attributes but not live .value for time/text inputs)
+  el.querySelectorAll('input,select,textarea').forEach(function(inp){
+    inp.setAttribute('value', inp.value||'');
+    if(inp.tagName==='SELECT'){
+      Array.from(inp.options).forEach(function(opt){
+        opt.selected = (opt.value===inp.value);
+      });
+    }
+  });
+
   const clone=el.cloneNode(true);
 
-  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
-  var liveInputs=el.querySelectorAll('input,select,textarea');
-  var cloneInputs=clone.querySelectorAll('input,select,textarea');
-  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
-
-  // Remove share button, UI controls outside table
+  // Remove share button
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Replace ALL inputs with plain text spans (using stamped values)
-  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
-    if(inp.closest('td')||inp.closest('th')){
-      // Inside table cell — replace with plain text div
-      var div=document.createElement('div');
-      div.textContent=inp.value||'';
-      div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
-      if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
-    } else {
-      var span=document.createElement('span');
-      span.textContent=inp.value||'';
-      span.style.cssText='font-size:12px;font-weight:600;';
-      if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
-    }
+  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-size:12px;font-weight:600;';
+    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
+  });
+  // Replace inputs inside table cells with plain text
+  clone.querySelectorAll('td input, td select, td textarea, th input').forEach(function(inp){
+    var div=document.createElement('div');
+    div.textContent=inp.value||'';
+    div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
+    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
   });
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
