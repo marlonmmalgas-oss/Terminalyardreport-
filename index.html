@@ -390,6 +390,20 @@ function initSync(){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
+          // Extra guard: never let a remote echo unlock a session that is currently locked locally.
+          // This prevents a delayed Firebase echo from unlockSess() overwriting the locked:true
+          // state set by a subsequent saveSession() call.
+          if(k==='sessions'&&Array.isArray(remote[k])&&ST.activeId){
+            var remoteArr=remote[k];
+            var localActive=ST.sessions.find(function(s){return s.id===ST.activeId;});
+            if(localActive&&localActive.locked){
+              var remoteActive=remoteArr.find(function(s){return s.id===ST.activeId;});
+              if(remoteActive&&!remoteActive.locked){
+                // Remote has unlocked version but local is locked — keep local, skip overwrite
+                return;
+              }
+            }
+          }
           // Deep clone to prevent Firebase object mutation bleeding into ST
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
@@ -2274,19 +2288,23 @@ async function shareReport(capId){
 
   // Remove share button
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Replace inputs outside table with plain text spans
-  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
+  // Remove delete row buttons and add-row buttons inside table cells
+  clone.querySelectorAll('td button, td .del-row-btn, .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // Remove the last <th> (delete column header) from delay tables
+  clone.querySelectorAll('.dt thead tr th:last-child').forEach(function(th){th.parentNode&&th.parentNode.removeChild(th);});
+  // FIRST: Replace inputs inside table cells with plain text divs (must run before the outer-input pass)
+  clone.querySelectorAll('td input, td select, td textarea, th input').forEach(function(inp){
+    var div=document.createElement('div');
+    div.textContent=inp.value||'';
+    div.style.cssText='font-size:11px;font-weight:700;text-align:center;word-break:break-word;white-space:normal;';
+    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
+  });
+  // THEN: Replace any remaining inputs outside table cells with plain text spans
+  clone.querySelectorAll('input, select, textarea').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
     span.style.cssText='font-size:12px;font-weight:600;';
     if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
-  });
-  // Replace inputs inside table cells with plain text divs
-  clone.querySelectorAll('td input, td select, td textarea, th input').forEach(function(inp){
-    var div=document.createElement('div');
-    div.textContent=inp.value||'';
-    div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
-    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
   });
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
