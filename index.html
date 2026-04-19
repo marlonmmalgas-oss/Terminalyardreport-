@@ -957,6 +957,10 @@ function saveSession(){
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();renderInput();
+  // Re-render after short delays to override any Firebase echo that fires and
+  // incorrectly restores the unlocked (locked:false) state from a prior unlockSess save.
+  setTimeout(function(){if(RT.tab==='input'){renderInput();}},600);
+  setTimeout(function(){if(RT.tab==='input'){renderInput();}},1800);
 }
 function unlockSess(){
   // Must mutate the raw session in ST.sessions — getSess() returns a clone
@@ -2342,14 +2346,14 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.style.cssText='position:absolute;left:0;top:-99999px;width:'+PORTRAIT_W+'px;background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,200);});
-    const h=wrapper.scrollHeight;
+    await new Promise(function(r){setTimeout(r,400);});
+    const h=Math.max(wrapper.scrollHeight, wrapper.offsetHeight, 200);
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
