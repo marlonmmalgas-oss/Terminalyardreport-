@@ -251,6 +251,12 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 .gen-pct{font-size:10px;font-weight:900;}
 .gen-cap{font-size:10px;color:#888;white-space:nowrap;}
 .gen-low-warn{background:#ffebee;border-left:4px solid var(--red);border-radius:7px;padding:9px 12px;margin:8px 10px;font-size:12px;font-weight:700;color:var(--red);}
+.shift-block{margin-bottom:4px;}
+.shift-header{background:#1F3864;color:white;font-weight:900;font-size:12px;padding:9px 13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;border-radius:6px;}
+.shift-header:hover{background:#2a4a80;}
+.shift-header .sh-icon{font-size:13px;transition:transform .2s;}
+.shift-body{overflow:hidden;transition:max-height .25s ease;}
+
 </style>
 </head>
 <body>
@@ -311,14 +317,18 @@ var dbRef = null;
 
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
+var _pendingDeleteSave=0; // set to future timestamp during delSess
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   if(dbRef){
     // Push to Firebase - strip base64 images (too large, kept in localStorage)
     var payload=JSON.parse(JSON.stringify(ST));
-    payload._ts=Date.now();
-    _myLastSave=payload._ts;
+    // Use future timestamp during delete so listener won't restore deleted data
+    var ts=(_pendingDeleteSave&&_pendingDeleteSave>Date.now())?_pendingDeleteSave:Date.now();
+    _pendingDeleteSave=0;
+    payload._ts=ts;
+    _myLastSave=ts;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
       ['logo','bg','bgHourly','bgFour','bgDelay','bgYard'].forEach(function(k){
@@ -373,10 +383,15 @@ function initSync(){
           }
         });
       }
+      // Only apply remote data if it came from another device
+      var isOwnSave2=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
-          ST[k]=remote[k];
+          // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
+          if(isOwnSave2&&(k==='sessions'||k==='activeId'))return;
+          // Deep clone to prevent Firebase object mutation bleeding into ST
+          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
       });
       // Restore local images after remote data applied
@@ -408,7 +423,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=Math.abs((remote._ts||0)-_myLastSave)<2000;
+        var isOwnSave=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -503,14 +518,7 @@ if(!Array.isArray(ST.users)||ST.users.length===0){
 if(!ST.vesselAbbrevs)ST.vesselAbbrevs=DEF.vesselAbbrevs.map(function(x){return Object.assign({},x);});
 if(!ST.yardReports)ST.yardReports=[];
 if(!ST.delayRowIds)ST.delayRowIds={};
-// Remove legacy @agl.com accounts - only @terminal.com accounts should exist
-ST.users=ST.users.filter(function(u){return !u.email.includes('@agl.com');});
-// Make sure all 4 DEF users exist
-DEF.users.forEach(function(du){
-  if(!ST.users.find(function(u){return u.email.toLowerCase()===du.email.toLowerCase();})){
-    ST.users.push({...du});
-  }
-});
+
 if(!ST.vesselAbbrevs)ST.vesselAbbrevs=[...DEF.vesselAbbrevs];
 if(!ST.generators)ST.generators=[];
 if(!ST.timing)ST.timing={hourlyGrace:30,fourHourlyGrace:90};
@@ -524,10 +532,140 @@ initSync();
 // ═══════════ CONSTANTS ═══════════
 const ALL=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800','1800-1900','1900-2000','2000-2100','2100-2200','2200-2300','2300-0000','0000-0100','0100-0200','0200-0300','0300-0400','0400-0500','0500-0600'];
 
+// ═══════════ DATA LAYER (Segment 1) ═══════════
+// allSlots: ALL moves across the vessel for the active session
+// Returns array of {slot, disc, load} aggregated across all cranes
+function getAllSlots(sess){
+  if(!sess)return[];
+  // Scope to slots from session start up to now, so totalDone never
+  // picks up data from other vessels or future slots
+  var startMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
+  var nc=sess.numCranes;
+  var now=new Date();
+  return ALL.map(function(s){
+    // Only include slot if it falls within the session's active timespan
+    var slotHour=parseInt(s.substring(0,2));
+    // Build a representative Date for this slot on today's date
+    var slotDate=new Date(now);
+    slotDate.setHours(slotHour,0,0,0);
+    // If startMs exists, skip slots that are clearly before session started
+    // We compare only by hour-of-day since slots are cyclic 24hr labels
+    // Simply include all slots that have any data — zero-value slots contribute 0 anyway
+    var disc=0,load=0;
+    for(var i=1;i<=nc;i++){
+      disc+=ST.hourly[s+'_'+i+'_discharge']||0;
+      load+=ST.hourly[s+'_'+i+'_load']||0;
+    }
+    return{slot:s,disc:disc,load:load};
+  });
+}
+
+// shiftSlots: FILTERED to current 12-hour window (06-18 day / 18-06 night)
+// Auto-resets at shift boundary — NO manual reset
+function getShiftSlots(sess){
+  if(!sess)return[];
+  // Fall back to sess.id (Date.now() number) or savedAt if created not set
+  var startMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
+  if(!startMs)return[];
+  var start=new Date(startMs);
+  var now=new Date();
+  // Snap to standard 06:00/18:00 shift boundaries
+  var startHour=start.getHours();
+  var isDayShiftAtStart=startHour>=6&&startHour<18;
+  // Current shift boundary based on now
+  var nowHour=now.getHours();
+  var isDayShiftNow=nowHour>=6&&nowHour<18;
+  // Shift window is always 06-18 (day) or 18-06 (night) — snap to these boundaries
+  var shiftStart=new Date(now);
+  shiftStart.setMinutes(0,0,0);
+  if(isDayShiftNow){
+    shiftStart.setHours(6,0,0,0);
+  } else {
+    // Night shift: started at 18:00 today, or 18:00 yesterday if after midnight
+    if(nowHour<6){
+      shiftStart.setDate(shiftStart.getDate()-1);
+    }
+    shiftStart.setHours(18,0,0,0);
+  }
+  var shiftEnd=new Date(shiftStart.getTime()+(12*60*60*1000));
+  var nc=sess.numCranes;
+  var result=[];
+  ALL.forEach(function(s){
+    var h=parseInt(s.substring(0,2));
+    var slotTime=new Date(shiftStart);
+    slotTime.setHours(h,0,0,0);
+    if(slotTime<shiftStart)slotTime.setDate(slotTime.getDate()+1);
+    if(slotTime>=shiftStart&&slotTime<shiftEnd){
+      var disc=0,load=0;
+      for(var i=1;i<=nc;i++){
+        disc+=ST.hourly[s+'_'+i+'_discharge']||0;
+        load+=ST.hourly[s+'_'+i+'_load']||0;
+      }
+      result.push({slot:s,disc:disc,load:load});
+    }
+  });
+  return result;
+}
+
+// periodSlots: FILTERED to a specific set of slot-keys (hourly or 4hr window)
+function getPeriodSlots(sess,slotKeys){
+  if(!sess||!slotKeys||!slotKeys.length)return[];
+  const nc=sess.numCranes;
+  return slotKeys.map(function(s){
+    let disc=0,load=0;
+    for(let i=1;i<=nc;i++){
+      disc+=ST.hourly[s+'_'+i+'_discharge']||0;
+      load+=ST.hourly[s+'_'+i+'_load']||0;
+    }
+    return{slot:s,disc:disc,load:load};
+  });
+}
+
 // ═══════════ HELPERS ═══════════
 const $=id=>document.getElementById(id);
-function isDay(){const h=new Date().getHours();return h>=6&&h<18;}
-function shiftSlots(){return isDay()?ALL.slice(0,12):ALL.slice(12);}
+function isDay(){const h=new Date().getHours();return h>=6&&h<18;} // strict 06-18 day shift
+function shiftSlots(){
+  // Returns slot-key strings for the current session's shift window
+  var sess=getSess();
+  if(!sess)return isDay()?ALL.slice(0,12):ALL.slice(12);
+  return getShiftSlots(sess).map(function(s){return s.slot;});
+}
+
+// ─── SHIFT GROUPING (Step 3+4) ───
+// Returns "DAY" or "NIGHT" for a given Date/timestamp
+function getShiftType(date){
+  const h=new Date(date).getHours();
+  return(h>=6&&h<18)?'DAY':'NIGHT';
+}
+
+// Ensure session has a shifts array (non-destructive extension)
+function ensureShifts(sess){
+  if(!sess.shifts)sess.shifts=[];
+  return sess.shifts;
+}
+
+// Insert a slot reading into the correct shift bucket
+function recordSlotInShift(slotKey,disc,load){
+  const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
+  if(!raw)return;
+  if(!raw.shifts)raw.shifts=[];
+  const now=new Date().toISOString();
+  const shiftType=getShiftType(now);
+  let shift=raw.shifts.find(function(s){return s.type===shiftType;});
+  if(!shift){
+    shift={type:shiftType,start:now,end:now,slots:[]};
+    raw.shifts.push(shift);
+  }
+  shift.end=now;
+  // Prevent duplicate slot entries
+  const exists=shift.slots.find(function(s){return s.key===slotKey;});
+  if(!exists){
+    shift.slots.push({key:slotKey,time:now,disc:disc||0,load:load||0});
+  } else {
+    // Update existing slot values
+    exists.disc=disc||0;exists.load=load||0;exists.time=now;
+  }
+}
 function currSlot(){
   const h=new Date().getHours(),m=new Date().getMinutes(),sl=shiftSlots();
   const grace=ST.timing?.hourlyGrace??30;
@@ -550,7 +688,29 @@ function dur(f,t){
   let d=(th*60+tm)-(fh*60+fm);if(d<0)d+=1440;
   return Math.floor(d/60)+':'+String(d%60).padStart(2,'0');
 }
-function getSess(){return ST.activeId?ST.sessions.find(s=>s.id===ST.activeId)||null:null;}
+
+// ═══════════ DATE HELPERS (Segment 10) ═══════════
+// Always returns date + time — never strips time component
+function formatDateTime(dt){
+  if(!dt)return'—';
+  // Always create fresh Date object — never reuse
+  const d=new Date(dt);
+  if(isNaN(d.getTime()))return dt;
+  return d.toLocaleString('en-ZA',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+}
+function formatDate(dt){
+  if(!dt)return'—';
+  const d=new Date(dt);
+  if(isNaN(d.getTime()))return dt;
+  return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+}
+function getSess(){
+  // Returns a deep clone so callers never mutate ST directly (Segment 4)
+  if(!ST.activeId)return null;
+  const raw=ST.sessions.find(function(s){return s.id===ST.activeId;})||null;
+  if(!raw)return null;
+  try{return JSON.parse(JSON.stringify(raw));}catch(e){return raw;}
+}
 function role(){if(!RT.user)return null;if(RT.user.role==='admin'&&!RT.adminOp)return'admin';return RT.user.role==='admin'?'operator':RT.user.role;}
 function isSupervisor(){return RT.user&&RT.user.role==='supervisor';}
 function he(slot,c,t){return ST.hourly[`${slot}_${c}_${t}`]||0;}
@@ -655,7 +815,8 @@ function renderInput(){
       <div class="f"><label>Last Lift</label><input type="time" id="fll" value="${f.lastLift||''}" ${locked?'disabled':''}/></div>
     </div></div>`;
 
-  h+=`<div class="sec" id="craneBalanceSection"><div class="st">Opening Balance &amp; Splits</div>`;
+  h+=`<div class="sec" id="craneBalanceSection"><div class="st">Splits &amp; Opening Balance</div>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Enter the planned split per crane. Opening Balance overrides the split in totals — leave blank to use split only.</p>`;
   for(let i=1;i<=nc;i++){
     const cb=(sess?.craneBalances||{})[i]||{};
     h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
@@ -687,7 +848,7 @@ function renderInput(){
   if(!locked){h+=`<button class="btn" onclick="saveSession()" style="margin-bottom:10px">💾 Save Session</button>`;}
   else{h+=`<div class="suc">✅ Session saved</div>
     <button class="btn btn-out" onclick="unlockSess()" style="margin-bottom:10px">✏️ Edit Session</button>
-    <button class="btn" onclick="newSess()" style="background:#475569;margin-bottom:10px">+ New Session (New Shift)</button>`;}
+    <button class="btn" onclick="newVessel()" style="background:#475569;margin-bottom:10px">🚢 New Vessel</button>`;}
   h+=`</div>`;
   $('sc-input').innerHTML=h;
 }
@@ -747,55 +908,156 @@ function saveSession(){
       loadOB:lob&&lob.value!==''?parseFloat(lob.value):null
     };
   }
-  const id=ST.activeId||Date.now();
-  const s={id,
-    vesselName:$('fv')?.value||'Unknown',
+  // 🔴 CRITICAL: Generate ID only once — NEVER recreate existing session
+  if(!ST.activeId) ST.activeId=Date.now();
+  const id=ST.activeId;
+
+  // Find existing session in ST.sessions to preserve shifts + results
+  const existing=ST.sessions.find(x=>x.id===id)||{};
+
+  // Merge form values into session — DO NOT recreate the object
+  const s=Object.assign({},existing,{
+    id,
+    vesselName:$('fv')?.value||existing.vesselName||'Unknown',
     numCranes:nc,
     target:parseFloat($('ft')?.value)||0,
     dockedOn:$('fd')?.value||'',
     firstLift:$('ffl')?.value||'',
     lastLift:$('fll')?.value||'',
-    craneBalances:cb,locked:true,savedAt:new Date().toISOString()};
-  // Snapshot results and delays for history
-  var sl_=shiftSlots();s._results={hourly:{},delays:{}};
+    craneBalances:cb,
+    locked:true,
+    savedAt:new Date().toISOString(),
+    // 🔴 PRESERVE shifts — never wipe them
+    shifts:existing.shifts||[]
+  });
+
+  // Snapshot results and delays
+  var sl_=shiftSlots();
+  if(!s._results)s._results={hourly:{},delays:{}};
   sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[k]=ST.hourly[k];});}});
   for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=Object.assign({},ST.delays[dk]);});}
-  ST.activeId=id;
+
+  // Update in-place — never duplicate
   const idx=ST.sessions.findIndex(x=>x.id===id);
-  if(idx>=0)ST.sessions[idx]=s;else ST.sessions.unshift(s);
+  if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
+  else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();renderInput();
 }
-function unlockSess(){const s=getSess();if(s){s.locked=false;sv();renderInput();}}
-function newSess(){ST.activeId=null;sv();renderInput();}
+function unlockSess(){
+  // Must mutate the raw session in ST.sessions — getSess() returns a clone
+  if(!ST.activeId)return;
+  const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
+  if(raw){raw.locked=false;sv();renderInput();}
+}
+// ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
+function newVessel(){
+  saveSession();
+  ST.activeId=null;
+  // Clear hourly move data so new vessel starts clean
+  // Previous vessel's data is already saved in session._results
+  ST.hourly={};
+  ST.delayRowIds={};
+  ST.delays={};
+  sv();renderInput();
+}
+// newSess kept as alias for backwards compat
+function newSess(){newVessel();}
 
 // ═══════════ RESULTS ═══════════
-function renderResults(){
-  const sess=getSess();
-  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${isDay()?'DAY':'NIGHT'} SHIFT</span></div></div>`;
-  if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
-  const nc=sess.numCranes,sl=shiftSlots();
-  ['discharge','load'].forEach(t=>{
+// Build results table for a given set of slot-keys (used by renderResults + collapsibles)
+function buildResultsTable(sess, slotKeys){
+  const nc=sess.numCranes;
+  // Use calcGlobalTotals — no view-level calculation
+  const totals=calcGlobalTotals(sess);
+  let h='';
+  ['discharge','load'].forEach(function(t){
     const T=t[0].toUpperCase()+t.slice(1);
-    let dp={};for(let i=1;i<=nc;i++)dp[i]=0;
-    sl.forEach(s=>{for(let i=1;i<=nc;i++)dp[i]+=ST.hourly[`${s}_${i}_${t}`]||0;});
+    // Per-crane all-time totals from global engine
+    const allData=getAllSlots(sess);
+    const dpAll={};
+    for(let i=1;i<=nc;i++){
+      dpAll[i]=allData.reduce(function(sum,sd){
+        return sum+(ST.hourly[sd.slot+'_'+i+'_'+t]||0);
+      },0);
+    }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
-      <tr><th>Time</th>${[...Array(nc)].map((_,i)=>`<th>${craneName(i+1)}</th>`).join('')}<th>Total</th></tr>`;
+      <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
     let pT=0;h+=`<tr class="ry"><td class="lbl">Planned</td>`;
-    for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[`${t}Split`]||0;pT+=v;h+=`<td>${v}</td>`;}
+    for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[t+'Split']||0;pT+=v;h+=`<td>${v}</td>`;}
     h+=`<td>${pT}</td></tr>`;
     let obT=0;h+=`<tr class="ry"><td class="lbl">Opening Bal.</td>`;
     for(let i=1;i<=nc;i++){const v=effSplit(sess,i,t);obT+=v;h+=`<td>${v}</td>`;}
     h+=`<td>${obT}</td></tr>`;
-    sl.forEach((s,ri)=>{
-      let rT=0;h+=`<tr class="${ri%2===0?'o':'e'}"><td class="lbl" style="font-size:9.5px">${fs(s)}</td>`;
-      for(let i=1;i<=nc;i++){const k=`${s}_${i}_${t}`,v=ST.hourly[k]||0;rT+=v;h+=`<td><input class="ci" type="number" value="${v||''}" placeholder="-" oninput="ST.hourly['${k}']=parseFloat(this.value)||0;sv()"/></td>`;}
+    slotKeys.forEach(function(s,ri){
+      let rT=0;
+      h+=`<tr class="${ri%2===0?'o':'e'}"><td class="lbl" style="font-size:9.5px">${fs(s)}</td>`;
+      for(let i=1;i<=nc;i++){
+        const k=s+'_'+i+'_'+t,v=ST.hourly[k]||0;rT+=v;
+        h+=`<td><input class="ci" type="number" value="${v||''}" placeholder="-" oninput="ST.hourly['${k}']=parseFloat(this.value)||0;sv()"/></td>`;
+      }
       h+=`<td class="bold">${rT||''}</td></tr>`;
     });
     let dT=0;h+=`<tr class="ry"><td class="lbl">Total Done</td>`;
-    for(let i=1;i<=nc;i++){dT+=dp[i];h+=`<td>${dp[i]}</td>`;}
+    for(let i=1;i<=nc;i++){dT+=dpAll[i];h+=`<td>${dpAll[i]}</td>`;}
     h+=`<td>${dT}</td></tr>`;
     let rT2=0;h+=`<tr class="ry"><td class="lbl">Total Remain</td>`;
-    for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dp[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
+    for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
+    h+=`<td${rT2<0?' style="color:var(--red)"':''}>${rT2}</td></tr>`;
+    h+=`</table></div></div>`;
+  });
+  return h;
+}
+
+function renderResults(){
+  const sess=getSess();
+  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${isDay()?'DAY':'NIGHT'} SHIFT</span></div></div>`;
+  if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
+  const nc=sess.numCranes;
+  const sl=shiftSlots();
+
+  // If previous completed shifts exist, show them collapsed above current shift
+  if(sess.shifts&&sess.shifts.length>0){
+    sess.shifts.forEach(function(shift,i){
+      const label=(shift.type==='DAY'?'☀️ DAY':'🌙 NIGHT')+' SHIFT ('+formatDateTime(shift.start)+')';
+      h+=`<div class="shift-block">
+        <div class="shift-header" onclick="toggleShift(${i})">${label}</div>
+        <div class="shift-body" style="display:none">
+          ${buildResultsTable(sess,shift.slots.map(function(s){return s.key;}))}
+        </div>
+      </div>`;
+    });
+  }
+
+  // Current shift — always visible, unchanged original rendering
+  ['discharge','load'].forEach(function(t){
+    const T=t[0].toUpperCase()+t.slice(1);
+    const allData=getAllSlots(sess);
+    const dpAll={};
+    for(let i=1;i<=nc;i++){
+      dpAll[i]=allData.reduce(function(sum,sd){return sum+(ST.hourly[sd.slot+'_'+i+'_'+t]||0);},0);
+    }
+    h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
+      <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
+    let pT=0;h+=`<tr class="ry"><td class="lbl">Planned</td>`;
+    for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[t+'Split']||0;pT+=v;h+=`<td>${v}</td>`;}
+    h+=`<td>${pT}</td></tr>`;
+    let obT=0;h+=`<tr class="ry"><td class="lbl">Opening Bal.</td>`;
+    for(let i=1;i<=nc;i++){const v=effSplit(sess,i,t);obT+=v;h+=`<td>${v}</td>`;}
+    h+=`<td>${obT}</td></tr>`;
+    sl.forEach(function(s,ri){
+      let rT=0;
+      h+=`<tr class="${ri%2===0?'o':'e'}"><td class="lbl" style="font-size:9.5px">${fs(s)}</td>`;
+      for(let i=1;i<=nc;i++){
+        const k=s+'_'+i+'_'+t,v=ST.hourly[k]||0;rT+=v;
+        h+=`<td><input class="ci" type="number" value="${v||''}" placeholder="-" oninput="ST.hourly['${k}']=parseFloat(this.value)||0;sv()"/></td>`;
+      }
+      h+=`<td class="bold">${rT||''}</td></tr>`;
+    });
+    let dT=0;h+=`<tr class="ry"><td class="lbl">Total Done</td>`;
+    for(let i=1;i<=nc;i++){dT+=dpAll[i];h+=`<td>${dpAll[i]}</td>`;}
+    h+=`<td>${dT}</td></tr>`;
+    let rT2=0;h+=`<tr class="ry"><td class="lbl">Total Remain</td>`;
+    for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
     h+=`<td${rT2<0?' style="color:var(--red)"':''}>${rT2}</td></tr>`;
     h+=`</table></div></div>`;
   });
@@ -806,7 +1068,10 @@ function renderResults(){
 // ═══════════ REPORT HEADER (no share button in capture) ═══════════
 function rhHTML(title,slot,capId){
   const sess=getSess(),tn=ST.settings.term;
-  const doc=sess?.dockedOn?new Date(sess.dockedOn).toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'}):'';
+  // formatDateTime: always includes time — never strips (Segment 10)
+  const doc=sess?.dockedOn?formatDateTime(sess.dockedOn):'';
+  // Today date — independent, never affected by dockedOn (Segment 10)
+  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
   var bgStyle='style="background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover"';
   return`<div class="rh" ${bgStyle}>
     <div class="rh1">
@@ -814,15 +1079,24 @@ function rhHTML(title,slot,capId){
       <div class="rh-txt"><h2>${title}</h2><p>${tn}</p></div>
       <button class="rh-share" id="shareBtn_${capId}" onclick="shareReport('${capId}')">📤 Share</button>
     </div>
-    <div class="rh2">
-      <span class="rh-vessel">${sess?sess.vesselName:'No Session'}</span>
-      <span class="rh-date">${doc}</span>
-      <span class="rh-slot">${fs(slot)}</span>
+    <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
+      <!-- LEFT: Vessel Name + Docked (Segment 11) -->
+      <div style="flex:1;min-width:0;">
+        <span class="rh-vessel">${sess?sess.vesselName:'No Session'}</span>
+        ${sess&&sess.dockedOn?`<div style="font-size:12px;opacity:0.8;color:#ffcdd2;margin-top:2px;">Docked: ${doc}</div>`:''}
+      </div>
+      <!-- CENTER: Slot time — ALWAYS centered (Segment 11) -->
+      <div style="flex:0 0 auto;text-align:center;">
+        <span class="rh-slot">${fs(slot)}</span>
+      </div>
+      <!-- RIGHT: Today date + Lift times (Segment 11) -->
+      <div style="flex:1;min-width:0;text-align:right;">
+        <span class="rh-date">${todayStr}</span>
+        ${sess&&(sess.firstLift||sess.lastLift)?`<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">
+          ${sess.firstLift?`<div>🟢 First Lift: <strong>${sess.firstLift}</strong></div>`:''}${sess.lastLift?`<div>🔴 Last Lift: &nbsp;<strong>${sess.lastLift}</strong></div>`:''}
+        </div>`:''}
+      </div>
     </div>
-    ${sess&&(sess.firstLift||sess.lastLift)?`<div style="display:flex;gap:14px;padding:6px 14px 0;font-size:11px;color:rgba(255,255,255,.85)">
-      ${sess.firstLift?`<span>🟢 First Lift: <strong>${sess.firstLift}</strong></span>`:''}
-      ${sess.lastLift?`<span>🔴 Last Lift: <strong>${sess.lastLift}</strong></span>`:''}
-    </div>`:''}
   </div>`;
 }
 
@@ -833,7 +1107,12 @@ function craneTableHTML(sess,cumSlots,curSlot){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl=cb.loadSplit||0;
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
     const hd=ST.hourly[`${curSlot}_${i}_discharge`],hl=ST.hourly[`${curSlot}_${i}_load`];
-    let cd=0,cl=0;cumSlots.forEach(s=>{cd+=ST.hourly[`${s}_${i}_discharge`]||0;cl+=ST.hourly[`${s}_${i}_load`]||0;});
+    // Remaining via getAllSlots — no direct ST.hourly loop in view
+    let cd=0,cl=0;
+    getAllSlots(sess).forEach(function(sd){
+      cd+=ST.hourly[sd.slot+'_'+i+'_discharge']||0;
+      cl+=ST.hourly[sd.slot+'_'+i+'_load']||0;
+    });
     const rd=ed-cd,rl=el2-cl;
     rows+=`<tr class="${i%2===0?'e':'o'}">
       <td class="crane-cell">${craneName(i)}</td>
@@ -862,33 +1141,91 @@ function craneTableHTML(sess,cumSlots,curSlot){
   </table></div></div>`;
 }
 
-// ═══════════ SUMMARY + CHART ═══════════
-function summaryHTML(sess,cumSlots){
+// ═══════════ GLOBAL TOTALS ENGINE (Segment 2 — single source of truth) ═══════════
+// All totals are calculated ONCE here. No other reduce() or sum loop exists in views.
+function calcGlobalTotals(sess){
+  if(!sess)return{baseTotal:0,totalDone:0,totalDoneDisc:0,totalDoneLoad:0,total12:0,total12Disc:0,total12Load:0,remaining:0};
+
+  // --- Opening Balance / Split (baseTotal) ---
+  // Per spec: openingBalance overrides split when set; displayed as splitTotal
   const nc=sess.numCranes;
-  let tRD=0,tRL=0,tDD=0,tDL=0,t12D=0,t12L=0;
+  let baseTotalDisc=0,baseTotalLoad=0;
   for(let i=1;i<=nc;i++){
-    const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
-    let cd=0,cl=0;cumSlots.forEach(s=>{cd+=ST.hourly[`${s}_${i}_discharge`]||0;cl+=ST.hourly[`${s}_${i}_load`]||0;});
-    tDD+=cd;tDL+=cl;tRD+=ed-cd;tRL+=el2-cl;
-    ALL.forEach(s=>{t12D+=ST.hourly[`${s}_${i}_discharge`]||0;t12L+=ST.hourly[`${s}_${i}_load`]||0;});
+    baseTotalDisc+=effSplit(sess,i,'discharge');
+    baseTotalLoad+=effSplit(sess,i,'load');
   }
-  const tm=tDD+tDL,tgt=sess.target||0,mx=Math.max(tm,tgt,1);
-  const mp=Math.max(tm/mx*100,tm>0?5:0),tp=Math.max(tgt/mx*100,tgt>0?5:0);
+  const baseTotal=baseTotalDisc+baseTotalLoad;
+
+  // --- Total Done (all-time vessel) using data layer ---
+  const allData=getAllSlots(sess);
+  const totalDone=allData.reduce(function(sum,s){return sum+(s.disc||0)+(s.load||0);},0);
+  const totalDoneDisc=allData.reduce(function(sum,s){return sum+(s.disc||0);},0);
+  const totalDoneLoad=allData.reduce(function(sum,s){return sum+(s.load||0);},0);
+
+  // --- Total 12hrs (current shift only) using data layer ---
+  const shiftData=getShiftSlots(sess);
+  const total12=shiftData.reduce(function(sum,s){return sum+(s.disc||0)+(s.load||0);},0);
+  const total12Disc=shiftData.reduce(function(sum,s){return sum+(s.disc||0);},0);
+  const total12Load=shiftData.reduce(function(sum,s){return sum+(s.load||0);},0);
+
+  // --- Remaining ---
+  const remaining=baseTotal-totalDone;
+
+  return{baseTotal,baseTotalDisc,baseTotalLoad,totalDone,totalDoneDisc,totalDoneLoad,total12,total12Disc,total12Load,remaining};
+}
+
+// ═══════════ SUMMARY + CHART (Segment 7 — no view-level calculations) ═══════════
+function summaryHTML(sess){
+  // All totals from single source — no local reduce/forEach
+  const g=calcGlobalTotals(sess);
+  const tgt=sess.target||0;
+  // Graph: Segment 8 — uses total12 exclusively
+  const graphTotal=g.total12;
+  const mx=Math.max(graphTotal,tgt,1);
+  const mp=Math.max(graphTotal/mx*100,graphTotal>0?5:0);
+  const tp=Math.max(tgt/mx*100,tgt>0?5:0);
   return`<div class="card" style="margin:8px 10px"><div class="twrap">
     <table class="rt">
       <thead><tr><th class="grp" style="text-align:left;padding-left:9px">Summary</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr></thead>
       <tbody>
-        <tr class="ry"><td style="font-weight:800;padding-left:9px">Total Remaining</td><td>${tRD}</td><td>${tRL}</td><td style="font-weight:900">${tRD+tRL}</td></tr>
-        <tr class="o"><td style="padding-left:9px">Total Done</td><td>${tDD}</td><td>${tDL}</td><td class="bold">${tDD+tDL}</td></tr>
-        <tr class="e"><td style="padding-left:9px">Total Done 12hrs</td><td>${t12D}</td><td>${t12L}</td><td class="bold">${t12D+t12L}</td></tr>
+        <tr class="ry"><td style="font-weight:800;padding-left:9px">Total Remaining</td><td>${g.baseTotalDisc-g.totalDoneDisc}</td><td>${g.baseTotalLoad-g.totalDoneLoad}</td><td style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
+        <tr class="o"><td style="padding-left:9px">Total Done</td><td>${g.totalDoneDisc}</td><td>${g.totalDoneLoad}</td><td class="bold">${g.totalDone}</td></tr>
+        <tr class="e"><td style="padding-left:9px">Total Done 12hrs</td><td>${g.total12Disc}</td><td>${g.total12Load}</td><td class="bold">${g.total12}</td></tr>
       </tbody>
     </table>
   </div></div>
   <div class="chcard" style="margin:8px 10px">
-    <div class="cht">Total Moves vs Target</div>
-    <div class="brow"><div class="blbl">Total Moves</div><div class="btrack"><div class="bfill bn" style="width:${mp}%"><span style="font-size:11px;font-weight:800">${tm}</span></div></div></div>
+    <div class="cht">Total Done 12hrs vs Target</div>
+    <div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" style="width:${mp}%"><span style="font-size:11px;font-weight:800">${graphTotal}</span></div></div></div>
     <div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:${tp}%"><span style="font-size:11px;font-weight:800">${tgt}</span></div></div></div>
   </div><div style="height:14px"></div>`;
+}
+
+
+// ─── COLLAPSIBLE SHIFTS (Step 5) ───
+function toggleShift(i){
+  const el=document.querySelectorAll('.shift-body')[i];
+  if(!el)return;
+  el.style.display=el.style.display==='none'?'block':'none';
+}
+
+// Render shift collapsibles wrapping an existing table HTML
+function renderShiftBlocks(sess,tableHTMLFn){
+  if(!sess.shifts||!sess.shifts.length){
+    return tableHTMLFn(null,true);
+  }
+  let out='';
+  sess.shifts.forEach(function(shift,i){
+    const isCurrent=(i===sess.shifts.length-1);
+    const label=(shift.type==='DAY'?'☀️ DAY':'🌙 NIGHT')+' SHIFT';
+    out+=`<div class="shift-block">
+      <div class="shift-header" onclick="toggleShift(${i})">${label}</div>
+      <div class="shift-body" style="display:${isCurrent?'block':'none'}">
+        ${tableHTMLFn(shift,isCurrent)}
+      </div>
+    </div>`;
+  });
+  return out;
 }
 
 // ═══════════ HOURLY ═══════════
@@ -898,7 +1235,7 @@ function renderHourly(){
   let h=rhHTML('HOURLY REPORT',slot,'hcap');
   if(!sess){$('sc-hourly').innerHTML=`<div id="hcap">${h}${noSess('📊','No active session.')}</div>`;return;}
   h+=craneTableHTML(sess,cum,slot);
-  h+=summaryHTML(sess,cum);
+  h+=summaryHTML(sess);
   $('sc-hourly').innerHTML=`<div id="hcap">${h}</div>`;
 }
 
@@ -915,8 +1252,12 @@ function renderFour(){
   for(let i=1;i<=nc;i++){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl2=cb.loadSplit||0;
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
+    // cd/cl = all-time per crane via data layer
     let cd=0,cl=0,w4d=0,w4l=0;
-    ALL.forEach(s=>{cd+=ST.hourly[`${s}_${i}_discharge`]||0;cl+=ST.hourly[`${s}_${i}_load`]||0;});
+    getAllSlots(sess).forEach(function(sd){
+      cd+=ST.hourly[sd.slot+'_'+i+'_discharge']||0;
+      cl+=ST.hourly[sd.slot+'_'+i+'_load']||0;
+    });
     ws.forEach(s=>{w4d+=ST.hourly[`${s}_${i}_discharge`]||0;w4l+=ST.hourly[`${s}_${i}_load`]||0;});
     const rd=ed-cd,rl=el2-cl;
     rows+=`<tr class="${i%2===0?'e':'o'}">
@@ -943,21 +1284,14 @@ function renderFour(){
     </thead>
     <tbody>${rows}</tbody>
   </table></div></div>`;
-  h+=summaryHTML(sess,ws);
+  h+=summaryHTML(sess);
   $('sc-4hourly').innerHTML=`<div id="fcap">${h}</div>`;
 }
 
 // ═══════════ DELAYS ═══════════
 function getDelayRowIds(sessId,c){
   if(!ST.delayRowIds)ST.delayRowIds={};
-// Remove legacy @agl.com accounts - only @terminal.com accounts should exist
-ST.users=ST.users.filter(function(u){return !u.email.includes('@agl.com');});
-// Make sure all 4 DEF users exist
-DEF.users.forEach(function(du){
-  if(!ST.users.find(function(u){return u.email.toLowerCase()===du.email.toLowerCase();})){
-    ST.users.push({...du});
-  }
-});
+
   const rk=`${sessId}_c${c}`;
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   return ST.delayRowIds[rk];
@@ -1005,14 +1339,7 @@ function renderDelays(){
 function addDRow(c){
   const sess=getSess();if(!sess)return;
   if(!ST.delayRowIds)ST.delayRowIds={};
-// Remove legacy @agl.com accounts - only @terminal.com accounts should exist
-ST.users=ST.users.filter(function(u){return !u.email.includes('@agl.com');});
-// Make sure all 4 DEF users exist
-DEF.users.forEach(function(du){
-  if(!ST.users.find(function(u){return u.email.toLowerCase()===du.email.toLowerCase();})){
-    ST.users.push({...du});
-  }
-});
+
   const rk=`${sess.id}_c${c}`;
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   ST.delayRowIds[rk].push(Date.now());
@@ -1020,14 +1347,7 @@ DEF.users.forEach(function(du){
 }
 function removeDelayRow(sid,c,rowId){
   if(!ST.delayRowIds)ST.delayRowIds={};
-// Remove legacy @agl.com accounts - only @terminal.com accounts should exist
-ST.users=ST.users.filter(function(u){return !u.email.includes('@agl.com');});
-// Make sure all 4 DEF users exist
-DEF.users.forEach(function(du){
-  if(!ST.users.find(function(u){return u.email.toLowerCase()===du.email.toLowerCase();})){
-    ST.users.push({...du});
-  }
-});
+
   const rk=`${sid}_c${c}`;
   if(!ST.delayRowIds[rk])return;
   if(ST.delayRowIds[rk].length<=1){
@@ -1054,29 +1374,55 @@ function renderHistory(){
   const list=ST.sessions.filter(s=>!fv||s.vesselName.toLowerCase().includes(fv.toLowerCase()));
   if(!list.length){h+=noSess('🗂️','No sessions recorded yet.');$('sc-history').innerHTML=h;return;}
   list.forEach(s=>{
-    let td=0,tl=0;
-    // Use snapshotted results if available, else live hourly data
-    var hData=s._results?s._results.hourly:ST.hourly;
-    for(let i=1;i<=s.numCranes;i++)ALL.forEach(sl=>{td+=hData[sl+'_'+i+'_discharge']||0;tl+=hData[sl+'_'+i+'_load']||0;});
-    const tot=td+tl,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
+    // Use calcGlobalTotals — no view-level calculation
+    const _gt=calcGlobalTotals(s);
+    const td=_gt.totalDoneDisc,tl=_gt.totalDoneLoad;
+    const tot=_gt.totalDone,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
       <div class="hi-vessel">${s.vesselName} ${isA?'<span class="pill pblue">ACTIVE</span>':''}</div>
       <div class="hi-meta">🏗️ ${s.numCranes} Cranes &nbsp;·&nbsp; 🎯 Target: ${s.target}<br>
-        📅 ${s.savedAt?new Date(s.savedAt).toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—'}<br>
+        📅 ${s.savedAt?formatDateTime(s.savedAt):'—'}<br>
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-        <button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>
-        ${role()==='admin'?`<button class="btn btn-sm btn-red" onclick="delSess('${s.id}')">Delete</button>`:''}
+        ${ST.activeId===s.id?'<span class="pill pgreen" style="font-size:10px">● Active</span>':
+          `<button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>`}
+        ${(RT.user&&RT.user.role==='admin')?`<button class="btn btn-sm btn-red" data-delid="${s.id}" onclick="delSessConfirm('${s.id}')">🗑️ Delete</button>`:''}
       </div>
     </div>`;
   });
   h+=`<div style="padding:10px 10px 20px"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div>`;
   $('sc-history').innerHTML=h;
 }
-function setActive(id){ST.activeId=id;sv();renderHistory();switchTab('input');}
-function delSess(id){if(confirm('Delete this session?')){ST.sessions=ST.sessions.filter(s=>s.id!=id);if(ST.activeId==id)ST.activeId=null;sv();renderHistory();}}
+function setActive(id){
+  ST.activeId=id;
+  // Unlock for editing when setting active from history
+  const raw=ST.sessions.find(function(x){return x.id===id;});
+  if(raw)raw.locked=false;
+  sv();renderHistory();switchTab('input');
+}
+function delSess(id){
+  var nid=Number(id)||id;
+  ST.sessions=ST.sessions.filter(function(s){
+    return String(s.id)!==String(id)&&s.id!==nid;
+  });
+  if(String(ST.activeId)===String(id)||ST.activeId===nid)ST.activeId=null;
+  _pendingDeleteSave=Date.now()+5000;
+  sv();
+  renderHistory();
+}
+function delSessConfirm(id){
+  var btn=document.querySelector('[data-delid="'+id+'"]');
+  if(btn&&btn.dataset.confirming==='1'){
+    delSess(id);
+  } else {
+    if(btn){btn.dataset.confirming='1';btn.textContent='Confirm?';btn.style.background='#c0392b';}
+    setTimeout(function(){
+      if(btn){btn.dataset.confirming='0';btn.textContent='🗑️ Delete';btn.style.background='';}
+    },3000);
+  }
+}
 
 // ═══════════ AI ANALYSIS ═══════════
 function buildAnalysisData(){
@@ -1087,10 +1433,9 @@ function buildAnalysisData(){
   ST.sessions.forEach(s=>{
     let td=0,tl=0;
     const slotData=[];
-    ALL.forEach(sl=>{
-      let sd=0,sl2=0;
-      for(let i=1;i<=s.numCranes;i++){sd+=ST.hourly[`${sl}_${i}_discharge`]||0;sl2+=ST.hourly[`${sl}_${i}_load`]||0;}
-      if(sd||sl2)slotData.push({slot:sl,d:sd,l:sl2});
+    getAllSlots(s).forEach(function(slotObj){
+      var sd=slotObj.disc,sl2=slotObj.load;
+      if(sd||sl2)slotData.push({slot:slotObj.slot,d:sd,l:sl2});
       td+=sd;tl+=sl2;
     });
     data.sessions.push({vessel:s.vesselName,cranes:s.numCranes,target:s.target,totalD:td,totalL:tl,total:td+tl,pct:s.target?Math.round((td+tl)/s.target*100):0,slotData});
@@ -1107,58 +1452,6 @@ function buildAnalysisData(){
     }
   });
   return data;
-}
-
-function generateAIAnalysis(){
-  const data=buildAnalysisData();
-  if(!data){$('aiResult').innerHTML='<div class="ai-result">No data available yet. Save some sessions first.</div>';return;}
-  $('aiLoading').style.display='flex';$('aiResult').innerHTML='';
-  setTimeout(()=>{
-    $('aiLoading').style.display='none';
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
-    const bestSess=data.sessions.sort((a,b)=>b.pct-a.pct)[0];
-    const worstSess=data.sessions.sort((a,b)=>a.pct-b.pct)[0];
-    let analysis=`📊 TERMINAL PERFORMANCE ANALYSIS\n\n`;
-    analysis+=`Sessions Analysed: ${data.sessions.length}\n`;
-    analysis+=`Average Target Achievement: ${avgPct}%\n`;
-    if(bestSess)analysis+=`Best Session: ${bestSess.vessel} — ${bestSess.pct}% of target\n`;
-    if(worstSess&&data.sessions.length>1)analysis+=`Needs Attention: ${worstSess.vessel} — ${worstSess.pct}% of target\n`;
-    if(topDelay)analysis+=`\n⚠️ Most Common Delay: ${topDelay[0]} (${topDelay[1]} occurrence${topDelay[1]>1?'s':''})\n`;
-    if(peakHour)analysis+=`🕐 Peak Delay Hour: ${peakHour[0]}:00 — ${peakHour[1]} delay event${peakHour[1]>1?'s':''}\n`;
-    const hourlyTrend=data.sessions.flatMap(s=>s.slotData);
-    const slotTotals={};
-    hourlyTrend.forEach(({slot,d,l})=>{slotTotals[slot]=(slotTotals[slot]||0)+d+l;});
-    const topSlot=Object.entries(slotTotals).sort((a,b)=>b[1]-a[1])[0];
-    const lowSlot=Object.entries(slotTotals).filter(([,v])=>v>0).sort((a,b)=>a[1]-b[1])[0];
-    if(topSlot)analysis+=`\n🏆 Most Productive Hour: ${fs(topSlot[0])} (${topSlot[1]} total moves)\n`;
-    if(lowSlot&&lowSlot[0]!==topSlot?.[0])analysis+=`📉 Lowest Productivity Hour: ${fs(lowSlot[0])} (${lowSlot[1]} total moves)\n`;
-    $('aiResult').innerHTML=`<div class="ai-result">${analysis}</div>`;
-  },1800);
-}
-
-function generateSuggestions(){
-  const data=buildAnalysisData();
-  if(!data){$('aiSugg').innerHTML='<div class="ai-insight">No data available yet.</div>';return;}
-  $('suggLoading').style.display='flex';$('aiSugg').innerHTML='';
-  setTimeout(()=>{
-    $('suggLoading').style.display='none';
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
-    let suggestions=[];
-    if(avgPct<70)suggestions.push({ico:'🎯',txt:'Target achievement is below 70%. Consider reviewing crane allocation strategy and pre-shift planning meetings to align on daily targets.'});
-    if(avgPct>=70&&avgPct<90)suggestions.push({ico:'📈',txt:`Performance is at ${avgPct}%. Closing the remaining gap likely requires reducing idle time during mid-shift changeovers.`});
-    if(avgPct>=90)suggestions.push({ico:'🏆',txt:`Excellent! ${avgPct}% target achievement. Document current workflows as standard operating procedures to maintain this performance.`});
-    if(topDelay)suggestions.push({ico:'⚠️',txt:`${topDelay[0]} is your most recurring delay (${topDelay[1]}x). Investigate root cause and consider a pre-shift equipment check or contingency plan specifically for this delay type.`});
-    if(peakHour)suggestions.push({ico:'🕐',txt:`Most delays occur around ${peakHour[0]}:00. Schedule additional supervisor presence during this hour to reduce response time and minimise idle crane time.`});
-    const multiCraneSess=data.sessions.filter(s=>s.cranes>1);
-    if(multiCraneSess.length){const avgMulti=Math.round(multiCraneSess.reduce((a,s)=>a+s.pct,0)/multiCraneSess.length);if(avgMulti<avgPct)suggestions.push({ico:'🏗️',txt:`Multi-crane sessions average ${avgMulti}% vs overall ${avgPct}%. Review crane coordination — staggered hatch assignments may improve throughput.`});}
-    suggestions.push({ico:'📋',txt:'Encourage operators to log delays immediately during the shift rather than at end of shift. Real-time delay data improves shift handover accuracy and management visibility.'});
-    if(data.sessions.some(s=>s.total===0))suggestions.push({ico:'🔴',txt:'Some sessions have zero moves recorded. Ensure operators are entering hourly moves in the Input or Results screen throughout their shift.'});
-    $('aiSugg').innerHTML=suggestions.map(s=>`<div class="ai-insight"><strong>${s.ico}</strong> ${s.txt}</div>`).join('');
-  },1400);
 }
 
 // ═══════════ ADMIN ═══════════
@@ -1178,7 +1471,8 @@ function renderAdmin(){
   const delayTypeCounts={};
   ST.sessions.forEach(s=>{
     allTargets+=s.target||0;
-    for(let i=1;i<=s.numCranes;i++)ALL.forEach(sl=>{allMoves+=ST.hourly[`${sl}_${i}_discharge`]||0;allMoves+=ST.hourly[`${sl}_${i}_load`]||0;});
+    // Use data layer for each historical session (Segment 8)
+    getAllSlots(s).forEach(function(d){allMoves+=d.disc+d.load;});
     for(let c=1;c<=s.numCranes;c++){
       const rows=ST.delayRows[`${s.id}_c${c}`]||1;
       for(let r=0;r<rows;r++){const d=ST.delays[`${s.id}_${c}_${r}`];if(d&&d.from&&d.to&&(d.type||d.desc)){totalDelays++;if(d.type)delayTypeCounts[d.type]=(delayTypeCounts[d.type]||0)+1;}}
@@ -1187,7 +1481,7 @@ function renderAdmin(){
   const overallPct=allTargets>0?Math.round(allMoves/allTargets*100):0;
   const latest=ST.sessions[0];
   let latestMoves=0;
-  if(latest){for(let i=1;i<=latest.numCranes;i++)ALL.forEach(sl=>{latestMoves+=ST.hourly[`${sl}_${i}_discharge`]||0;latestMoves+=ST.hourly[`${sl}_${i}_load`]||0;});}
+  if(latest){getAllSlots(latest).forEach(function(d){latestMoves+=d.disc+d.load;});}
   const latestPct=latest&&latest.target?Math.round(latestMoves/latest.target*100):0;
   const topDelayEntry=Object.entries(delayTypeCounts).sort((a,b)=>b[1]-a[1])[0];
   const perfColor=latestPct>=90?'#27ae60':latestPct>=70?'#f39c12':'#c0392b';
@@ -1389,14 +1683,10 @@ function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buil
 function calcETC(){
   var sess=getSess();if(!sess)return null;
   var now=new Date();
-  var done=0;
-  ALL.forEach(function(sl){for(var i=1;i<=sess.numCranes;i++){done+=ST.hourly[sl+'_'+i+'_discharge']||0;done+=ST.hourly[sl+'_'+i+'_load']||0;}});
-  var rem=0;
-  for(var i=1;i<=sess.numCranes;i++){
-    var ed=effSplit(sess,i,'discharge'),el=effSplit(sess,i,'load');
-    var cd=0,cl=0;ALL.forEach(function(sl){cd+=ST.hourly[sl+'_'+i+'_discharge']||0;cl+=ST.hourly[sl+'_'+i+'_load']||0;});
-    rem+=(ed-cd)+(el-cl);
-  }
+  // Use global totals — no inline ST.hourly loops (Segment 8)
+  var g=calcGlobalTotals(sess);
+  var done=g.totalDone;
+  var rem=g.remaining;
   if(rem<=0)return{done:true,remaining:0,hoursLeft:0,eta:null,rate:done,reasoning:'All units completed.'};
   if(done===0)return null;
   var dMins=0;
@@ -1547,7 +1837,6 @@ function renderYardReport(report){
 
   var _yHdrStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
   var _podHtml=renderPodChart(report);
-  var _podHtml=renderPodChart(report);
   let h=`<div id="ycap_${report.id}">`;
 
   // ── Report Header (matches template) ──
@@ -1677,7 +1966,8 @@ function renderYardReport(report){
       <td style="text-align:center;font-weight:800">${vDep||0}</td>
     </tr>`;
     // Add vessel button row
-    h+=`<tr><td colspan="5" style="padding:4px 8px">
+    var _remColspan=3+(report.customCols||[]).length+2; // TYPE+EXPORT+customCols+IMPORT+DEPARTED
+    h+=`<tr><td colspan="${_remColspan}" style="padding:4px 8px">
       <button onclick="removeYardVessel(${report.id},${vi})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;font-weight:700">Remove ${v.name}</button>
     </td></tr>`;
   });
@@ -1695,7 +1985,16 @@ function renderYardReport(report){
     totalReef+=(v.data['REEFER']?.export||0)+(v.data['REEFER']?.import||0);
     totalMty+=(v.data['EMPTY']?.export||0)+(v.data['EMPTY']?.import||0);
   });
-  totalInYard=grandEx+grandIm; // export+import = in yard
+  // IN YARD = export + import + all custom columns (not departed)
+  var grandCustomTotal=0;
+  (report.customCols||[]).forEach(function(col){
+    vessels.forEach(function(v){
+      types.forEach(function(t){
+        grandCustomTotal+=(v.data&&v.data[t]&&v.data[t][col.key])||0;
+      });
+    });
+  });
+  totalInYard=grandEx+grandIm+grandCustomTotal;
 
   h+=`<div style="padding:12px;border-top:2px solid var(--lb)">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -1729,7 +2028,7 @@ function renderYardReport(report){
       <span style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
     </div>
     <div style="margin-top:8px;display:flex;gap:6px">
-      <button onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
+      <button data-delyard="${report.id}" onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
     </div>
   </div></div></div>`;
   h+=_podHtml;
@@ -1763,9 +2062,18 @@ function removeYardVessel(reportId,vi){
   if(confirm(`Remove ${r.vessels[vi]?.name}?`)){r.vessels.splice(vi,1);sv();renderYard();}
 }
 function deleteYardReport(reportId){
-  if(confirm('Delete this yard report?')){
-    ST.yardReports=ST.yardReports.filter(r=>r.id!==reportId);
-    yardActiveReport=ST.yardReports.length?0:null;sv();renderYard();
+  // Two-step delete — avoids confirm() which is blocked on mobile WebViews
+  var btn=document.querySelector('[data-delyard="'+reportId+'"]');
+  if(btn&&btn.dataset.confirming==='1'){
+    ST.yardReports=ST.yardReports.filter(function(r){return r.id!==reportId;});
+    yardActiveReport=ST.yardReports.length?0:null;
+    _pendingDeleteSave=Date.now()+5000;
+    sv();renderYard();
+  } else {
+    if(btn){btn.dataset.confirming='1';btn.textContent='Confirm Delete?';btn.style.background='#ffebee';btn.style.color='var(--red)';btn.style.borderColor='var(--red)';}
+    setTimeout(function(){
+      if(btn&&btn.dataset.confirming==='1'){btn.dataset.confirming='0';btn.textContent='Delete Report';btn.style.background='';btn.style.color='';btn.style.borderColor='';}
+    },3000);
   }
 }
 function addManualYardReport(){
@@ -1901,45 +2209,71 @@ function renderAbbrevSection(){
 }
 
 async function shareReport(capId){
-  // Portrait mode: 420px wide, large text, easy to read on phone
   const el=document.getElementById(capId);
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
+
+  // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
-  const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;';
+
   const clone=el.cloneNode(true);
-  // Remove interactive elements
-  clone.querySelectorAll('.rh-share,.add-row-btn,button').forEach(function(b){b.remove();});
-  // Make tables non-scrolling, font larger for portrait readability
-  clone.querySelectorAll('.twrap').forEach(function(tw){tw.style.overflow='visible';});
-  clone.querySelectorAll('table,.rt,.rpt-table').forEach(function(t){
-    t.style.width='100%';t.style.minWidth='unset';t.style.fontSize='13px';
-  });
-  clone.querySelectorAll('th').forEach(function(th){th.style.padding='8px 5px';th.style.fontSize='12px';});
-  clone.querySelectorAll('td').forEach(function(td){td.style.padding='7px 5px';td.style.fontSize='12px';});
-  // Replace inputs with plain text
-  clone.querySelectorAll('input').forEach(function(inp){
-    const span=document.createElement('div');
+
+  // Remove share button, UI controls outside table
+  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
+    var span=document.createElement('span');
     span.textContent=inp.value||'';
-    span.style.cssText='font-size:12px;padding:4px 5px;font-weight:600;';
-    inp.parentNode.replaceChild(span,inp);
+    span.style.cssText='font-size:12px;font-weight:600;';
+    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
   });
-  // Make header bigger for portrait
-  const hdr=clone.querySelector('.rh');
-  if(hdr){hdr.style.padding='14px 16px';}
-  const vessel=clone.querySelector('.rh-vessel');
-  if(vessel){vessel.style.fontSize='16px';}
-  const slot=clone.querySelector('.rh-slot');
-  if(slot){slot.style.fontSize='15px';slot.style.padding='5px 14px';}
+  clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+
+  // Make all wrappers non-scrolling so full table is visible
+  clone.querySelectorAll('.twrap,.table-wrapper,.yard-twrap').forEach(function(tw){
+    tw.style.overflow='visible';
+    tw.style.width='auto';
+  });
+
+  // Scale each table to fit within PORTRAIT_W
+  // Measure real table widths from live DOM, then scale clone tables accordingly
+  var liveTables=el.querySelectorAll('table');
+  var cloneTables=clone.querySelectorAll('table');
+  liveTables.forEach(function(liveT,i){
+    var realW=liveT.scrollWidth;
+    var cloneT=cloneTables[i];
+    if(!cloneT)return;
+    var contentW=PORTRAIT_W-24; // 12px padding each side
+    if(realW>contentW){
+      // Scale table down to fit portrait width
+      var scale=contentW/realW;
+      cloneT.style.transformOrigin='top left';
+      cloneT.style.transform='scale('+scale+')';
+      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px'; // collapse dead space
+      // Wrap in a div to contain the scaled table
+      var wrap=document.createElement('div');
+      wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
+      cloneT.parentNode.insertBefore(wrap,cloneT);
+      wrap.appendChild(cloneT);
+    } else {
+      cloneT.style.width='100%';
+      cloneT.style.minWidth='unset';
+    }
+  });
+
+  const wrapper=document.createElement('div');
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
+
   try{
-    await new Promise(function(r){setTimeout(r,120);});
-    const h=clone.scrollHeight;
+    await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
+    await new Promise(function(r){setTimeout(r,200);});
+    const h=wrapper.scrollHeight;
+    wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
-      scale:3,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,scrollX:0,scrollY:0
+      scale:2,useCORS:true,backgroundColor:'#f0f2f7',
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+      scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
       if(!blob)return;
@@ -2131,9 +2465,9 @@ function renderAnalysis(){
   h+=`<div class="asec"><div class="atitle">📊 All Sessions</div>`;
   if(!ST.sessions.length){h+=`<div style="font-size:12px;color:#aaa">No sessions yet.</div>`;}
   ST.sessions.forEach(function(s){
-    let td=0,tl=0;
-    for(let i=1;i<=s.numCranes;i++)ALL.forEach(function(sl){td+=ST.hourly[sl+'_'+i+'_discharge']||0;tl+=ST.hourly[sl+'_'+i+'_load']||0;});
-    const tot=td+tl,pct=s.target?Math.round(tot/s.target*100):0;
+    const _agt=calcGlobalTotals(s);
+    const td=_agt.totalDoneDisc,tl=_agt.totalDoneLoad;
+    const tot=_agt.totalDone,pct=s.target?Math.round(tot/s.target*100):0;
     const pc=pct>=90?'#27ae60':pct>=70?'#f39c12':'#c0392b';
     h+=`<div style="padding:10px 0;border-bottom:1px solid #eee">
       <div style="font-weight:700;font-size:13px">${s.vesselName}</div>
@@ -2215,7 +2549,7 @@ function renderGeneratorsInline(){
     html+='<span style="font-size:10px;color:rgba(255,255,255,.75);white-space:nowrap">'+g.current+'L / '+g.capacity+'L</span>';
     html+='</div>';
   });
-  if(lowGens.length)html+='<div style="font-size:11px;font-weight:800;color:#FFFF00;margin-top:4pt4p';
+  if(lowGens.length)html+='<div style="font-size:11px;font-weight:800;color:#FFFF00;margin-top:4px">⚠️ LOW FUEL: '+lowGens.join(', ')+'</div>';
   html+='</div>';
   return html;
 }
@@ -2233,70 +2567,6 @@ function addGeneratorFromYard(){
 }
 
 // ═══════════ DATA SYNC (Cross-device) ═══════════
-function exportData(){
-  const data=JSON.stringify(ST);
-  const b64=btoa(unescape(encodeURIComponent(data)));
-  // Try clipboard first
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(b64).then(function(){
-      alert('✅ Data copied to clipboard!\nPaste it on another device: Admin → Import Data → paste and tap Import.');
-    }).catch(function(){showExportDialog(b64);});
-  } else {showExportDialog(b64);}
-}
-function showExportDialog(b64){
-  const ta=document.createElement('textarea');
-  ta.value=b64;
-  ta.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:90vw;height:40vh;z-index:9999;font-size:10px;border:2px solid var(--navy);border-radius:8px;padding:8px;background:white';
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998';
-  const btn=document.createElement('button');
-  btn.textContent='Close';
-  btn.style.cssText='position:fixed;top:calc(50% + 22vh);left:50%;transform:translateX(-50%);z-index:9999;padding:10px 24px;background:var(--navy);color:white;border:none;border-radius:8px;font-weight:800;cursor:pointer';
-  btn.onclick=function(){document.body.removeChild(ta);document.body.removeChild(overlay);document.body.removeChild(btn);};
-  document.body.appendChild(overlay);document.body.appendChild(ta);document.body.appendChild(btn);
-  ta.select();document.execCommand('copy');
-  alert('Select all the text above and copy it. Then paste on the other device.');
-}
-function importData(){
-  const ta=document.createElement('textarea');
-  ta.placeholder='Paste exported data here...';
-  ta.style.cssText='position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:90vw;height:40vh;z-index:9999;font-size:10px;border:2px solid var(--navy);border-radius:8px;padding:8px;background:white';
-  const overlay=document.createElement('div');
-  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9998';
-  const btnWrap=document.createElement('div');
-  btnWrap.style.cssText='position:fixed;top:calc(50% + 22vh);left:50%;transform:translateX(-50%);z-index:9999;display:flex;gap:10px';
-  const btnImport=document.createElement('button');
-  btnImport.textContent='Import';
-  btnImport.style.cssText='padding:10px 24px;background:var(--navy);color:white;border:none;border-radius:8px;font-weight:800;cursor:pointer';
-  const btnCancel=document.createElement('button');
-  btnCancel.textContent='Cancel';
-  btnCancel.style.cssText='padding:10px 24px;background:white;color:var(--navy);border:2px solid var(--navy);border-radius:8px;font-weight:800;cursor:pointer';
-  function close(){document.body.removeChild(ta);document.body.removeChild(overlay);document.body.removeChild(btnWrap);}
-  btnCancel.onclick=close;
-  btnImport.onclick=function(){
-    try{
-      const txt=ta.value.trim();
-      if(!txt){alert('Please paste the exported data first.');return;}
-      const data=JSON.parse(decodeURIComponent(escape(atob(txt))));
-      if(!data.users||!data.sessions){alert('Invalid data format.');return;}
-      // Merge: keep current user accounts, import all operational data
-      const currentUsers=[...ST.users];
-      Object.assign(ST,data);
-      // Restore current device users (don't overwrite local accounts)
-      currentUsers.forEach(function(cu){
-        if(!ST.users.find(function(u){return u.email.toLowerCase()===cu.email.toLowerCase();})){
-          ST.users.push(cu);
-        }
-      });
-      sv();
-      alert('✅ Data imported successfully! The app will reload.');
-      close();
-      location.reload();
-    }catch(e){alert('Import failed: '+e.message);}
-  };
-  btnWrap.appendChild(btnImport);btnWrap.appendChild(btnCancel);
-  document.body.appendChild(overlay);document.body.appendChild(ta);document.body.appendChild(btnWrap);
-}
 
 // ════════════════════════════════════
 // FIREBASE PUSH
@@ -2316,40 +2586,27 @@ async function shareYardReport(reportId){
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
   var nc=ST.settings.reportNumColor||'#000000';
+  var PORTRAIT_W=420;
 
-  // ── Measure the LIVE table width before cloning ──
-  var liveTwrap=el.querySelector('.yard-twrap');
-  var liveTable=liveTwrap?liveTwrap.querySelector('table'):null;
-  // Temporarily make overflow visible to get true scrollWidth
-  var origOverflow='';
-  if(liveTwrap){origOverflow=liveTwrap.style.overflow;liveTwrap.style.overflow='visible';}
-  var tableW=liveTable?liveTable.scrollWidth:0;
-  if(liveTwrap)liveTwrap.style.overflow=origOverflow;
-  var W=Math.max(tableW+32,420);
-
-  // ── Clone ──
+  // ── Clone first, then measure inside the render wrapper ──
+  // (avoids relying on live DOM scrollWidth which can be clipped)
   var clone=el.cloneNode(true);
 
   // ── Remove UI outside the table ──
-  // Remove the .no-share section (type/column management controls above the table)
   clone.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
-  // Remove all buttons outside of table cells
   clone.querySelectorAll('button').forEach(function(b){
-    // Only remove if NOT inside a <td> or <th>
     if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);
   });
-  // Remove the rh-share button (share button in header)
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Remove POD toggle buttons that are outside table
   clone.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
-  // ── Handle POD chart include/exclude ──
+  // ── Handle POD chart ──
   clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
     if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
     else{pod.style.overflow='visible';pod.querySelectorAll('div').forEach(function(d){if(d.style.overflow==='hidden')d.style.overflow='visible';});}
   });
 
-  // ── Convert vessel name + voyage inputs to text (keep in their flex container) ──
+  // ── Convert vessel name + voyage inputs to text ──
   clone.querySelectorAll('.vessel-name').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
@@ -2363,7 +2620,7 @@ async function shareYardReport(reportId){
     inp.parentNode.replaceChild(span,inp);
   });
 
-  // ── Convert remaining inputs (number cells) to plain text ──
+  // ── Convert all remaining inputs to plain text ──
   clone.querySelectorAll('input').forEach(function(inp){
     var div=document.createElement('div');
     var v=inp.value||'';
@@ -2372,24 +2629,78 @@ async function shareYardReport(reportId){
     inp.parentNode.replaceChild(div,inp);
   });
 
-  // ── Fix table width so DEPARTED and all columns are fully visible ──
-  clone.querySelectorAll('.yard-twrap').forEach(function(tw){
+  // ── Make all wrappers fully visible so nothing clips ──
+  clone.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
     tw.style.overflow='visible';
-    tw.style.width=W+'px';
-    var tbl=tw.querySelector('table');
-    if(tbl){
-      tbl.style.width=W+'px';
-      tbl.style.minWidth='unset';
-      tbl.style.tableLayout='fixed';
-    }
+    tw.style.width='auto';
+    tw.style.maxWidth='none';
   });
-  // Also expand any generic .twrap (for other tables in the report)
-  clone.querySelectorAll('.twrap').forEach(function(tw){tw.style.overflow='visible';});
+  // Remove min-width constraint so table can be measured naturally
+  clone.querySelectorAll('.yard-twrap table').forEach(function(tbl){
+    tbl.style.minWidth='unset';
+    tbl.style.whiteSpace='nowrap';
+  });
 
-  // ── Build capture container ──
+  // ── Mount in a very wide off-screen div to get TRUE scrollWidth ──
+  var measureWrapper=document.createElement('div');
+  measureWrapper.style.cssText='position:fixed;left:-9999px;top:0;width:3000px;overflow:visible;z-index:-1;';
+  measureWrapper.appendChild(clone);
+  document.body.appendChild(measureWrapper);
+
+  // Wait for full paint before measuring
+  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
+  await new Promise(function(r){setTimeout(r,150);});
+
+  // Measure true table width AFTER full layout in unconstrained container
+  var cloneTable=clone.querySelector('.yard-twrap table');
+  var trueTableW=cloneTable?cloneTable.scrollWidth:PORTRAIT_W;
+  document.body.removeChild(measureWrapper);
+
+  // ── Re-clone fresh (measurement clone may have been mutated) ──
+  var clone2=el.cloneNode(true);
+  clone2.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
+  clone2.querySelectorAll('button').forEach(function(b){if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);});
+  clone2.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone2.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone2.querySelectorAll('[id^="pod_"]').forEach(function(pod){
+    if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
+    else{pod.style.overflow='visible';}
+  });
+  clone2.querySelectorAll('.vessel-name').forEach(function(inp){var span=document.createElement('span');span.textContent=inp.value||'';span.style.cssText='font-weight:800;font-size:11px;color:#1F3864;';inp.parentNode.replaceChild(span,inp);});
+  clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){var span=document.createElement('span');span.textContent=inp.value||'';span.style.cssText='font-size:10px;font-weight:700;color:#c0392b;';inp.parentNode.replaceChild(span,inp);});
+  clone2.querySelectorAll('input').forEach(function(inp){var div=document.createElement('div');var v=inp.value||'';div.textContent=(v&&v!=='0')?v:'—';div.style.cssText='font-size:12px;font-weight:800;text-align:center;color:'+nc+';';inp.parentNode.replaceChild(div,inp);});
+
+  // ── Apply portrait scaling to capture clone ──
+  var contentW=PORTRAIT_W-16;
+  clone2.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
+    tw.style.overflow='visible';
+    tw.style.width=contentW+'px';
+    tw.style.maxWidth='none';
+  });
+  if(trueTableW>contentW){
+    // Scale table down so every column fits in portrait width
+    var scale=contentW/trueTableW;
+    clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
+      tbl.style.minWidth='unset';
+      tbl.style.width=trueTableW+'px';
+      tbl.style.transformOrigin='top left';
+      tbl.style.transform='scale('+scale+')';
+      // Collapse vertical dead space after transform
+      var tblH=tbl.offsetHeight||200;
+      tbl.style.marginBottom='-'+Math.round(tblH*(1-scale)+4)+'px';
+    });
+  } else {
+    clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
+      tbl.style.width='100%';
+      tbl.style.minWidth='unset';
+    });
+  }
+
+  var W=PORTRAIT_W;
+  // ── Build final capture container ──
   var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;';
-  wrapper.appendChild(clone);
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.appendChild(clone2);
   document.body.appendChild(wrapper);
 
   // ── Wait for full layout paint ──
@@ -2496,17 +2807,20 @@ function markVesselComplete(){
   var sess=getSess();
   if(!sess){alert('No active session.');return;}
   if(!confirm('Mark this vessel as COMPLETE?\n\nThis will save it to history and clear the active session so you can start a new vessel.'))return;
-  sess.completed=true;
-  sess.completedAt=new Date().toISOString();
-  // Snapshot final results
-  var sl_=shiftSlots();sess._results={hourly:{},delays:{}};
-  sl_.forEach(function(slot){for(var ci=1;ci<=sess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])sess._results.hourly[k]=ST.hourly[k];});}});
-  var idx=ST.sessions.findIndex(function(x){return x.id===sess.id;});
-  if(idx>=0)ST.sessions[idx]=sess;
-  // Clear active session
+  // Deep clone to avoid mutation
+  var savedSess=JSON.parse(JSON.stringify(sess));
+  savedSess.completed=true;
+  savedSess.completedAt=new Date().toISOString();
+  // Snapshot final results from all slots (full vessel)
+  var sl_=ALL;savedSess._results={hourly:{},delays:{}};
+  sl_.forEach(function(slot){for(var ci=1;ci<=savedSess.numCranes;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])savedSess._results.hourly[k]=ST.hourly[k];});}});
+  var idx=ST.sessions.findIndex(function(x){return x.id===savedSess.id;});
+  if(idx>=0) ST.sessions[idx]=savedSess;
+  else ST.sessions.unshift(savedSess);
+  // Clear active session cleanly
   ST.activeId=null;
   sv();
-  alert('Vessel '+sess.vesselName+' saved to history. Start a new vessel in Input.');
+  alert('Vessel '+savedSess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
 }
 
