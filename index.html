@@ -384,7 +384,7 @@ function initSync(){
         });
       }
       // Only apply remote data if it came from another device
-      var isOwnSave2=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
+      var isOwnSave2=(remote._ts||0)>=(_myLastSave-3000)&&(remote._ts||0)<=(_myLastSave+3000);
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
@@ -423,7 +423,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
+        var isOwnSave=(remote._ts||0)>=(_myLastSave-3000)&&(remote._ts||0)<=(_myLastSave+3000);
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -2262,28 +2262,26 @@ async function shareReport(capId){
   // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
 
-  // Stamp live .value into the DOM attributes BEFORE cloning
-  // (cloneNode copies attributes but not live .value for time/text inputs)
-  el.querySelectorAll('input,select,textarea').forEach(function(inp){
-    inp.setAttribute('value', inp.value||'');
-    if(inp.tagName==='SELECT'){
-      Array.from(inp.options).forEach(function(opt){
-        opt.selected = (opt.value===inp.value);
-      });
-    }
-  });
+  // Collect live input values BEFORE cloning (cloneNode doesn't copy live .value)
+  var _liveVals=[];
+  el.querySelectorAll('input,select,textarea').forEach(function(inp){_liveVals.push(inp.value||'');});
 
   const clone=el.cloneNode(true);
 
+  // Stamp collected values onto clone inputs by index
+  var _cloneInps=clone.querySelectorAll('input,select,textarea');
+  _cloneInps.forEach(function(inp,i){inp.value=_liveVals[i]||'';});
+
   // Remove share button
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // Replace inputs outside table with plain text spans
   clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
     span.style.cssText='font-size:12px;font-weight:600;';
     if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
   });
-  // Replace inputs inside table cells with plain text
+  // Replace inputs inside table cells with plain text divs
   clone.querySelectorAll('td input, td select, td textarea, th input').forEach(function(inp){
     var div=document.createElement('div');
     div.textContent=inp.value||'';
