@@ -472,7 +472,8 @@ const DEF={
     {abbrev:'gaia',full:'MSC GAIA'},
     {abbrev:'libra',full:'CMA CGM LIBRA'},
     {abbrev:'mscfal',full:'MSC FALCON'},
-    {abbrev:'falcon',full:'MSC FALCON'}
+    {abbrev:'falcon',full:'MSC FALCON'},
+    {abbrev:'fal',full:'MSC FALCON'}
   ],
   yardReports:[],
   activeId:null
@@ -1314,9 +1315,101 @@ function getDelayRowIds(sessId,c){
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   return ST.delayRowIds[rk];
 }
+function shareDelays(){
+  // Build a clean, input-free clone of the delays section directly from ST.delays
+  // This avoids the wide time-inputs that cause the scale bug (blank image on share)
+  const sess=getSess(),slot=currSlot();
+  if(!sess){alert('No active session.');return;}
+  const nc=sess.numCranes;
+  // Build the same header as rhHTML but without a share button
+  const el=document.getElementById('dcap');
+  if(!el){alert('Nothing to capture.');return;}
+  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
+
+  const PORTRAIT_W=420;
+  const clone=el.cloneNode(true);
+
+  // Remove share button and add-row / delete buttons
+  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone.querySelectorAll('.add-row-btn,.del-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+
+  // Replace every input/select with a plain-text div using the LIVE value
+  var liveInputs=el.querySelectorAll('input,select,textarea');
+  var cloneInputs=clone.querySelectorAll('input,select,textarea');
+  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
+  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
+    var div=document.createElement('div');
+    div.textContent=inp.value||'';
+    div.style.cssText='font-size:11px;font-weight:700;text-align:center;white-space:nowrap;';
+    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
+  });
+  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
+
+  // Make table wrappers non-scrolling
+  clone.querySelectorAll('.twrap,.table-wrapper').forEach(function(tw){
+    tw.style.overflow='visible';tw.style.width='auto';
+  });
+
+  // Scale tables to fit portrait width — now inputs are gone so widths are narrow
+  var liveTables=el.querySelectorAll('table');
+  var cloneTables=clone.querySelectorAll('table');
+  liveTables.forEach(function(liveT,i){
+    var cloneT=cloneTables[i];if(!cloneT)return;
+    var contentW=PORTRAIT_W-24;
+    // Measure the clone table after inputs replaced (use natural cell content widths)
+    // Use liveT.scrollWidth as upper bound; after input replacement actual width is less
+    var realW=liveT.scrollWidth;
+    if(realW>contentW){
+      var scale=contentW/realW;
+      cloneT.style.transformOrigin='top left';
+      cloneT.style.transform='scale('+scale+')';
+      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px';
+      var wrap=document.createElement('div');
+      wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
+      cloneT.parentNode.insertBefore(wrap,cloneT);
+      wrap.appendChild(cloneT);
+    }else{
+      cloneT.style.width='100%';cloneT.style.minWidth='unset';
+    }
+  });
+
+  const wrapper=document.createElement('div');
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
+
+  (async function(){
+    try{
+      await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
+      await new Promise(function(r){setTimeout(r,200);});
+      var h=wrapper.scrollHeight;
+      wrapper.style.height=h+'px';
+      var canvas=await html2canvas(wrapper,{
+        scale:2,useCORS:true,backgroundColor:'#f0f2f7',
+        width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+        scrollX:0,scrollY:0,allowTaint:true,logging:false
+      });
+      canvas.toBlob(async function(blob){
+        if(!blob)return;
+        var file=new File([blob],'Delays.png',{type:'image/png'});
+        if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+          await navigator.share({files:[file],title:'Delays Report'});
+        }else{
+          var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+          a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+          setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+        }
+      },'image/png',0.96);
+    }catch(e){alert('Share failed: '+e.message);}
+    finally{document.body.removeChild(wrapper);}
+  })();
+}
+
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
   let h=rhHTML('IDLE / DELAYS',slot,'dcap');
+  // Patch share button: use shareDelays() to avoid blank image from wide time inputs
+  h=h.replace('onclick="shareReport(\'dcap\')"','onclick="shareDelays()"');
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
   for(let c=1;c<=nc;c++){
@@ -1727,14 +1820,25 @@ function resolveVesselAbbrev(raw){
   // Extract abbrev after 4 leading digits: "2610anaetc" -> "ana"
   const match=s.toLowerCase().match(/^\d{4}([a-z]+)/);
   if(!match)return s;
-  const full=match[1]; // e.g. "anaza602a"
-  // Extract voyage: ZA/ZB/ZS + 3 digits + 1 letter = 6 chars
-  const voyMatch=full.toUpperCase().match(/(Z[ABSCD]\d{3}[A-Z])/);
-  const voyage=voyMatch?voyMatch[1]:'';
-  // Vessel abbrev is what's left before the voyage
-  const abbrev=voyMatch?full.substring(0,full.toUpperCase().indexOf(voyMatch[1])).toLowerCase():full;
-  const found=(ST.vesselAbbrevs||[]).find(v=>v.abbrev.toLowerCase()===abbrev.toLowerCase());
-  return {vessel:found?found.full:abbrev.toUpperCase(),voyage};
+  const full=match[1]; // e.g. "anaza613a" or "anacam001"
+  // Try known abbrevs — find longest matching prefix
+  const abbrevs=ST.vesselAbbrevs||[];
+  let foundEntry=null,bestLen=0;
+  abbrevs.forEach(function(v){
+    const a=v.abbrev.toLowerCase();
+    if(full.startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
+  });
+  let vessel,voyage;
+  if(foundEntry){
+    vessel=foundEntry.full;
+    // Everything after the abbrev is the voyage (e.g. "za613a" or "cam001")
+    voyage=full.substring(bestLen).toUpperCase()||'';
+  } else {
+    // No known abbrev - use full string, no voyage
+    vessel=full.toUpperCase();
+    voyage='';
+  }
+  return {vessel,voyage};
 }
 
 // ═══════════ ISO TYPE HELPERS ═══════════
@@ -1832,7 +1936,7 @@ function renderYard(){
     ${ST.yardReports.map(function(r,i){
       return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
         +'<button onclick="yardActiveReport='+i+';renderYard()" style="flex:1;text-align:left;padding:8px 11px;background:'+(i===yardActiveReport?'var(--navy)':'white')+';color:'+(i===yardActiveReport?'white':'var(--navy)')+';border:1.5px solid var(--navy);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+r.name+'</button>'
-        +'<button onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
+        +'<button data-delyard="'+r.id+'" onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
         +'</div>';
     }).join('')}
   </div>`;
@@ -2117,12 +2221,28 @@ function resolveFullVesselName(abbrev){
 
 function parseVesselRef(val){
   const s=String(val||'').trim();
-  const m=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
+  // Accept: 4 digits + vessel abbrev letters + any voyage suffix (ZA613A style OR CAM001 etc)
+  const m=s.match(/^(\d{4})([A-Za-z]+?)([A-Za-z0-9]+)$/i);
   if(!m)return null;
-  const abbrevRaw=m[2].toLowerCase();
-  const voyage=m[3].toUpperCase();
-  const found=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
-  const vessel=found?found.full:abbrevRaw.toUpperCase();
+  const afterDigits=m[2]+m[3]; // full string after 4 digits
+  // Find longest matching known abbrev prefix
+  const abbrevs=ST.vesselAbbrevs||[];
+  let foundEntry=null,bestLen=0;
+  abbrevs.forEach(function(v){
+    const a=v.abbrev.toLowerCase();
+    if(afterDigits.toLowerCase().startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
+  });
+  if(!foundEntry){
+    // Try strict ZA pattern as fallback
+    const m2=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
+    if(!m2)return null;
+    const abbrevRaw=m2[2].toLowerCase();
+    const voyage=m2[3].toUpperCase();
+    const found2=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
+    return{vessel:found2?found2.full:abbrevRaw.toUpperCase(),voyage};
+  }
+  const vessel=foundEntry.full;
+  const voyage=afterDigits.substring(bestLen).toUpperCase()||'';
   return{vessel,voyage};
 }
 function classifyUnit2(iso,frgt,power){
@@ -2236,14 +2356,29 @@ async function shareReport(capId){
 
   const clone=el.cloneNode(true);
 
+  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
+  var liveInputs=el.querySelectorAll('input,select,textarea');
+  var cloneInputs=clone.querySelectorAll('input,select,textarea');
+  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
+
   // Remove share button, UI controls outside table
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
-    var span=document.createElement('span');
-    span.textContent=inp.value||'';
-    span.style.cssText='font-size:12px;font-weight:600;';
-    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
+  // Replace ALL inputs with plain text spans (using stamped values)
+  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
+    if(inp.closest('td')||inp.closest('th')){
+      // Inside table cell — replace with plain text div
+      var div=document.createElement('div');
+      div.textContent=inp.value||'';
+      div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
+      if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
+    } else {
+      var span=document.createElement('span');
+      span.textContent=inp.value||'';
+      span.style.cssText='font-size:12px;font-weight:600;';
+      if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
+    }
   });
+  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // Make all wrappers non-scrolling so full table is visible
@@ -2350,7 +2485,11 @@ function updateGenFuel(id,val,isPercent){
   sv();
 }
 function removeGenerator(id){
-  if(confirm('Remove this generator?')){ST.generators=ST.generators.filter(g=>g.id!==id);sv();renderAdmin();}
+  if(confirm('Remove this generator?')){
+    ST.generators=ST.generators.filter(g=>g.id!==id);
+    _pendingDeleteSave=Date.now()+5000;
+    sv();renderAdmin();
+  }
 }
 function renderGenAdmin(){
   const gens=ST.generators||[];
