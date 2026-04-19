@@ -1316,100 +1316,59 @@ function getDelayRowIds(sessId,c){
   return ST.delayRowIds[rk];
 }
 function shareDelays(){
-  // Build a clean, input-free clone of the delays section directly from ST.delays
-  // This avoids the wide time-inputs that cause the scale bug (blank image on share)
   const sess=getSess(),slot=currSlot();
   if(!sess){alert('No active session.');return;}
-  const nc=sess.numCranes;
-  // Build the same header as rhHTML but without a share button
-  const el=document.getElementById('dcap');
-  if(!el){alert('Nothing to capture.');return;}
-  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-
-  const PORTRAIT_W=420;
-  const clone=el.cloneNode(true);
-
-  // Remove share button and add-row / delete buttons
-  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  clone.querySelectorAll('.add-row-btn,.del-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-
-  // Replace every input/select with a plain-text div using the LIVE value
-  var liveInputs=el.querySelectorAll('input,select,textarea');
-  var cloneInputs=clone.querySelectorAll('input,select,textarea');
-  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
-  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
-    var div=document.createElement('div');
-    div.textContent=inp.value||'';
-    div.style.cssText='font-size:11px;font-weight:700;text-align:center;white-space:nowrap;';
-    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
-  });
-  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
-
-  // Make table wrappers non-scrolling
-  clone.querySelectorAll('.twrap,.table-wrapper').forEach(function(tw){
-    tw.style.overflow='visible';tw.style.width='auto';
-  });
-
-  // Scale tables to fit portrait width — now inputs are gone so widths are narrow
-  var liveTables=el.querySelectorAll('table');
-  var cloneTables=clone.querySelectorAll('table');
-  liveTables.forEach(function(liveT,i){
-    var cloneT=cloneTables[i];if(!cloneT)return;
-    var contentW=PORTRAIT_W-24;
-    // Measure the clone table after inputs replaced (use natural cell content widths)
-    // Use liveT.scrollWidth as upper bound; after input replacement actual width is less
-    var realW=liveT.scrollWidth;
-    if(realW>contentW){
-      var scale=contentW/realW;
-      cloneT.style.transformOrigin='top left';
-      cloneT.style.transform='scale('+scale+')';
-      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px';
-      var wrap=document.createElement('div');
-      wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
-      cloneT.parentNode.insertBefore(wrap,cloneT);
-      wrap.appendChild(cloneT);
-    }else{
-      cloneT.style.width='100%';cloneT.style.minWidth='unset';
-    }
-  });
-
-  const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
-  wrapper.appendChild(clone);
-  document.body.appendChild(wrapper);
-
-  (async function(){
-    try{
-      await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-      await new Promise(function(r){setTimeout(r,200);});
-      var h=wrapper.scrollHeight;
-      wrapper.style.height=h+'px';
-      var canvas=await html2canvas(wrapper,{
-        scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-        width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
-        scrollX:0,scrollY:0,allowTaint:true,logging:false
-      });
-      canvas.toBlob(async function(blob){
-        if(!blob)return;
-        var file=new File([blob],'Delays.png',{type:'image/png'});
-        if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-          await navigator.share({files:[file],title:'Delays Report'});
-        }else{
-          var a=document.createElement('a');a.href=URL.createObjectURL(blob);
-          a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-          setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-        }
-      },'image/png',0.96);
-    }catch(e){alert('Share failed: '+e.message);}
-    finally{document.body.removeChild(wrapper);}
-  })();
+  const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
+  const tn=ST.settings.term||'';
+  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
+  // Build share-ready HTML — plain text only, no inputs, no buttons, no wide controls
+  let h=`<div id="dcap_share">`;
+  h+=`<div class="rh" style="${bgStyle}">
+    <div class="rh1">
+      <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
+      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
+    </div>
+    <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
+      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span></div>
+      <div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">${fs(slot)}</span></div>
+      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span></div>
+    </div>
+  </div>`;
+  for(let c=1;c<=nc;c++){
+    const rowIds=getDelayRowIds(sess.id,c);
+    let tbody='';
+    rowIds.forEach(function(r){
+      const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
+      tbody+=`<tr>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
+        <td class="dur">${dur(d.from,d.to)}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
+      </tr>`;
+    });
+    h+=`<div class="dblk">
+      <div class="dchd">${craneName(c)}</div>
+      <div class="twrap"><table class="dt">
+        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
+        <tbody>${tbody}</tbody>
+      </table></div>
+    </div>`;
+  }
+  h+=`<div style="height:20px"></div></div>`;
+  // Inject into a hidden container, capture with shareReport, then remove
+  var host=document.createElement('div');
+  host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  host.innerHTML=h;
+  document.body.appendChild(host);
+  shareReport('dcap_share').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
 }
-
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
   let h=rhHTML('IDLE / DELAYS',slot,'dcap');
-  // Patch share button: use shareDelays() to avoid blank image from wide time inputs
-  h=h.replace('onclick="shareReport(\'dcap\')"','onclick="shareDelays()"');
+  // Replace the share button action: delays uses shareDelays() not shareReport('dcap')
+  h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
   for(let c=1;c<=nc;c++){
