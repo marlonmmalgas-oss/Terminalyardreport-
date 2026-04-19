@@ -2288,8 +2288,10 @@ async function shareReport(capId){
   });
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Remove delay delete-column cells/headers marked for share exclusion
+  // Remove delay delete-column cells/headers and any other share-excluded elements
   clone.querySelectorAll('[data-share-hide]').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
+  // Remove remaining del-row-btn buttons inside td cells
+  clone.querySelectorAll('td button.del-row-btn,td button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // Make all wrappers non-scrolling so full table is visible
   clone.querySelectorAll('.twrap,.table-wrapper,.yard-twrap').forEach(function(tw){
@@ -2309,14 +2311,15 @@ async function shareReport(capId){
     if(realW>contentW){
       // Scale table down to fit portrait width
       var scale=contentW/realW;
-      cloneT.style.transformOrigin='top left';
-      cloneT.style.transform='scale('+scale+')';
-      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px'; // collapse dead space
-      // Wrap in a div to contain the scaled table
+      var scaledH=cloneT.offsetHeight*scale;
+      // Wrap in a fixed-size div that matches the scaled dimensions exactly
       var wrap=document.createElement('div');
-      wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
+      wrap.style.cssText='width:'+contentW+'px;height:'+scaledH+'px;overflow:hidden;position:relative;flex-shrink:0;';
+      var inner=document.createElement('div');
+      inner.style.cssText='position:absolute;top:0;left:0;transform-origin:top left;transform:scale('+scale+');width:'+realW+'px;';
       cloneT.parentNode.insertBefore(wrap,cloneT);
-      wrap.appendChild(cloneT);
+      inner.appendChild(cloneT);
+      wrap.appendChild(inner);
     } else {
       cloneT.style.width='100%';
       cloneT.style.minWidth='unset';
@@ -2330,8 +2333,8 @@ async function shareReport(capId){
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,200);});
-    const h=wrapper.scrollHeight;
+    await new Promise(function(r){setTimeout(r,350);});
+    const h=Math.max(wrapper.scrollHeight,wrapper.offsetHeight,300);
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
