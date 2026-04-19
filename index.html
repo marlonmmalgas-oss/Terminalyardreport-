@@ -1936,7 +1936,7 @@ function renderYardReport(report){
       <thead>
         <tr>
           <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px;width:38%">VESSELS</th>
-          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:17%">TYPE</th>
+          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:10%">TYPE</th>
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">EXPORT</th>
           ${(report.customCols||[]).map(c=>`<th style="background:var(--navy);color:white;padding:8px 4px;text-align:center">${c.label}</th>`).join('')}
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">IMPORT</th>
@@ -2603,95 +2603,115 @@ async function shareYardReport(reportId){
   var el=document.getElementById('ycap_'+reportId);
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-  var nc=ST.settings.reportNumColor||'#000000';
-  // Render at 800px wide (full readable size), then scale the final canvas
-  // down to a portrait-friendly 500px wide output image.
-  var RENDER_W=800;
-  var PORTRAIT_OUT=500;
+  var numColor=ST.settings.reportNumColor||'#000000';
+  // Portrait render: lay out at 480px wide (phone portrait width).
+  // Table columns are percentage-based so they fill 100% of this width.
+  // Capture at scale:3 for sharp output (~1440px wide retina-ready portrait image).
+  var W=480;
 
   // ── Clone the element ──
-  var clone2=el.cloneNode(true);
+  var clone=el.cloneNode(true);
 
-  // ── Remove UI-only elements ──
-  clone2.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
-  clone2.querySelectorAll('button').forEach(function(b){if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);});
-  clone2.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  clone2.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // ── Remove all UI-only elements ──
+  clone.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
+  clone.querySelectorAll('button').forEach(function(b){if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);});
+  clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone.querySelectorAll('[id^="pod_"] button').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // ── Handle POD charts ──
-  clone2.querySelectorAll('[id^="pod_"]').forEach(function(pod){
+  clone.querySelectorAll('[id^="pod_"]').forEach(function(pod){
     if(pod.getAttribute('data-share')==='0'){pod.parentNode&&pod.parentNode.removeChild(pod);}
     else{pod.style.overflow='visible';}
   });
 
-  // ── Convert vessel name + voyage inputs to plain text ──
-  clone2.querySelectorAll('.vessel-name').forEach(function(inp){
+  // ── Convert vessel name inputs to plain text ──
+  clone.querySelectorAll('.vessel-name').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
-    span.style.cssText='font-weight:800;font-size:14px;color:#1F3864;';
+    span.style.cssText='font-weight:800;font-size:12px;color:#1F3864;';
     inp.parentNode.replaceChild(span,inp);
   });
-  clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){
+  clone.querySelectorAll('.vessel-voyage').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
-    span.style.cssText='font-size:12px;font-weight:700;color:#c0392b;';
+    span.style.cssText='font-size:10px;font-weight:700;color:#c0392b;';
     inp.parentNode.replaceChild(span,inp);
   });
 
-  // ── Convert all remaining inputs to plain text ──
-  clone2.querySelectorAll('input').forEach(function(inp){
+  // ── Convert all number inputs to plain text ──
+  clone.querySelectorAll('input').forEach(function(inp){
     var div=document.createElement('div');
     var v=inp.value||'';
     div.textContent=(v&&v!=='0')?v:'—';
-    div.style.cssText='font-size:15px;font-weight:800;text-align:center;color:'+nc+';';
+    div.style.cssText='font-size:13px;font-weight:800;text-align:center;color:'+numColor+';';
     inp.parentNode.replaceChild(div,inp);
   });
 
-  // ── Make table wrappers fully visible at full render width ──
-  clone2.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
+  // ── Force table to fill 100% of portrait width, no overflow scroll ──
+  clone.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
     tw.style.overflow='visible';
     tw.style.width='100%';
     tw.style.maxWidth='none';
+    tw.style.minWidth='unset';
   });
-  clone2.querySelectorAll('.yard-twrap table').forEach(function(tbl){
+  clone.querySelectorAll('.yard-twrap table, .twrap table').forEach(function(tbl){
     tbl.style.width='100%';
     tbl.style.minWidth='unset';
+    tbl.style.tableLayout='fixed';
+  });
+  // Tighten cell padding for portrait fit
+  clone.querySelectorAll('th,td').forEach(function(cell){
+    cell.style.padding='5px 4px';
+    cell.style.whiteSpace='normal';
+    cell.style.wordBreak='break-word';
+    cell.style.fontSize='11px';
+  });
+  // Summary grid: single column on narrow width
+  clone.querySelectorAll('[style*="grid-template-columns:1fr 1fr"]').forEach(function(grid){
+    grid.style.gridTemplateColumns='1fr';
   });
 
-  // ── Mount off-screen at RENDER_W ──
+  // ── Mount off-screen at portrait width ──
   var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+RENDER_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;padding:8px;';
-  wrapper.appendChild(clone2);
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   // ── Wait for full layout paint ──
   await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-  await new Promise(function(r){setTimeout(r,300);});
+  await new Promise(function(r){setTimeout(r,400);});
 
-  var h=wrapper.scrollHeight;
-  wrapper.style.height=h+'px';
+  var captureH=wrapper.scrollHeight;
+  wrapper.style.height=captureH+'px';
 
   try{
-    // Capture at 2x scale for sharpness
-    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:RENDER_W,height:h,windowWidth:RENDER_W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
-
-    // ── Scale down to portrait output width ──
-    var scaleRatio=PORTRAIT_OUT/canvas.width;
-    var outW=PORTRAIT_OUT;
-    var outH=Math.round(canvas.height*scaleRatio);
-    var portraitCanvas=document.createElement('canvas');
-    portraitCanvas.width=outW;
-    portraitCanvas.height=outH;
-    var ctx=portraitCanvas.getContext('2d');
-    ctx.imageSmoothingEnabled=true;
-    ctx.imageSmoothingQuality='high';
-    ctx.drawImage(canvas,0,0,outW,outH);
-
-    portraitCanvas.toBlob(async function(blob){
+    var canvas=await html2canvas(wrapper,{
+      scale:3,
+      useCORS:true,
+      backgroundColor:'#f0f2f7',
+      width:W,
+      height:captureH,
+      windowWidth:W,
+      windowHeight:captureH,
+      scrollX:0,
+      scrollY:0,
+      allowTaint:true,
+      logging:false
+    });
+    canvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
-      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Yard Status'});}
-      else{var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='Yard-Status.png';document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(a.href);},1000);}
+      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+        await navigator.share({files:[file],title:'Yard Status'});
+      } else {
+        var a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download='Yard-Status.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+      }
     },'image/png',0.96);
   }catch(e){alert('Share failed: '+e.message);}
   finally{document.body.removeChild(wrapper);}
