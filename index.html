@@ -472,8 +472,7 @@ const DEF={
     {abbrev:'gaia',full:'MSC GAIA'},
     {abbrev:'libra',full:'CMA CGM LIBRA'},
     {abbrev:'mscfal',full:'MSC FALCON'},
-    {abbrev:'falcon',full:'MSC FALCON'},
-    {abbrev:'fal',full:'MSC FALCON'}
+    {abbrev:'falcon',full:'MSC FALCON'}
   ],
   yardReports:[],
   activeId:null
@@ -1315,60 +1314,9 @@ function getDelayRowIds(sessId,c){
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   return ST.delayRowIds[rk];
 }
-function shareDelays(){
-  const sess=getSess(),slot=currSlot();
-  if(!sess){alert('No active session.');return;}
-  const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
-  const tn=ST.settings.term||'';
-  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
-  var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
-  // Build share-ready HTML — plain text only, no inputs, no buttons, no wide controls
-  let h=`<div id="dcap_share">`;
-  h+=`<div class="rh" style="${bgStyle}">
-    <div class="rh1">
-      <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
-    </div>
-    <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
-      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span></div>
-      <div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">${fs(slot)}</span></div>
-      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span></div>
-    </div>
-  </div>`;
-  for(let c=1;c<=nc;c++){
-    const rowIds=getDelayRowIds(sess.id,c);
-    let tbody='';
-    rowIds.forEach(function(r){
-      const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
-      tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
-        <td class="dur">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
-      </tr>`;
-    });
-    h+=`<div class="dblk">
-      <div class="dchd">${craneName(c)}</div>
-      <div class="twrap"><table class="dt">
-        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
-        <tbody>${tbody}</tbody>
-      </table></div>
-    </div>`;
-  }
-  h+=`<div style="height:20px"></div></div>`;
-  // Inject into a hidden container, capture with shareReport, then remove
-  var host=document.createElement('div');
-  host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
-  host.innerHTML=h;
-  document.body.appendChild(host);
-  shareReport('dcap_share').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
-}
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
   let h=rhHTML('IDLE / DELAYS',slot,'dcap');
-  // Replace the share button action: delays uses shareDelays() not shareReport('dcap')
-  h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
   for(let c=1;c<=nc;c++){
@@ -1779,25 +1727,14 @@ function resolveVesselAbbrev(raw){
   // Extract abbrev after 4 leading digits: "2610anaetc" -> "ana"
   const match=s.toLowerCase().match(/^\d{4}([a-z]+)/);
   if(!match)return s;
-  const full=match[1]; // e.g. "anaza613a" or "anacam001"
-  // Try known abbrevs — find longest matching prefix
-  const abbrevs=ST.vesselAbbrevs||[];
-  let foundEntry=null,bestLen=0;
-  abbrevs.forEach(function(v){
-    const a=v.abbrev.toLowerCase();
-    if(full.startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
-  });
-  let vessel,voyage;
-  if(foundEntry){
-    vessel=foundEntry.full;
-    // Everything after the abbrev is the voyage (e.g. "za613a" or "cam001")
-    voyage=full.substring(bestLen).toUpperCase()||'';
-  } else {
-    // No known abbrev - use full string, no voyage
-    vessel=full.toUpperCase();
-    voyage='';
-  }
-  return {vessel,voyage};
+  const full=match[1]; // e.g. "anaza602a"
+  // Extract voyage: ZA/ZB/ZS + 3 digits + 1 letter = 6 chars
+  const voyMatch=full.toUpperCase().match(/(Z[ABSCD]\d{3}[A-Z])/);
+  const voyage=voyMatch?voyMatch[1]:'';
+  // Vessel abbrev is what's left before the voyage
+  const abbrev=voyMatch?full.substring(0,full.toUpperCase().indexOf(voyMatch[1])).toLowerCase():full;
+  const found=(ST.vesselAbbrevs||[]).find(v=>v.abbrev.toLowerCase()===abbrev.toLowerCase());
+  return {vessel:found?found.full:abbrev.toUpperCase(),voyage};
 }
 
 // ═══════════ ISO TYPE HELPERS ═══════════
@@ -1895,7 +1832,7 @@ function renderYard(){
     ${ST.yardReports.map(function(r,i){
       return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
         +'<button onclick="yardActiveReport='+i+';renderYard()" style="flex:1;text-align:left;padding:8px 11px;background:'+(i===yardActiveReport?'var(--navy)':'white')+';color:'+(i===yardActiveReport?'white':'var(--navy)')+';border:1.5px solid var(--navy);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+r.name+'</button>'
-        +'<button data-delyard="'+r.id+'" onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
+        +'<button onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
         +'</div>';
     }).join('')}
   </div>`;
@@ -2180,28 +2117,12 @@ function resolveFullVesselName(abbrev){
 
 function parseVesselRef(val){
   const s=String(val||'').trim();
-  // Accept: 4 digits + vessel abbrev letters + any voyage suffix (ZA613A style OR CAM001 etc)
-  const m=s.match(/^(\d{4})([A-Za-z]+?)([A-Za-z0-9]+)$/i);
+  const m=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
   if(!m)return null;
-  const afterDigits=m[2]+m[3]; // full string after 4 digits
-  // Find longest matching known abbrev prefix
-  const abbrevs=ST.vesselAbbrevs||[];
-  let foundEntry=null,bestLen=0;
-  abbrevs.forEach(function(v){
-    const a=v.abbrev.toLowerCase();
-    if(afterDigits.toLowerCase().startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
-  });
-  if(!foundEntry){
-    // Try strict ZA pattern as fallback
-    const m2=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
-    if(!m2)return null;
-    const abbrevRaw=m2[2].toLowerCase();
-    const voyage=m2[3].toUpperCase();
-    const found2=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
-    return{vessel:found2?found2.full:abbrevRaw.toUpperCase(),voyage};
-  }
-  const vessel=foundEntry.full;
-  const voyage=afterDigits.substring(bestLen).toUpperCase()||'';
+  const abbrevRaw=m[2].toLowerCase();
+  const voyage=m[3].toUpperCase();
+  const found=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
+  const vessel=found?found.full:abbrevRaw.toUpperCase();
   return{vessel,voyage};
 }
 function classifyUnit2(iso,frgt,power){
@@ -2315,29 +2236,14 @@ async function shareReport(capId){
 
   const clone=el.cloneNode(true);
 
-  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
-  var liveInputs=el.querySelectorAll('input,select,textarea');
-  var cloneInputs=clone.querySelectorAll('input,select,textarea');
-  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
-
   // Remove share button, UI controls outside table
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Replace ALL inputs with plain text spans (using stamped values)
-  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
-    if(inp.closest('td')||inp.closest('th')){
-      // Inside table cell — replace with plain text div
-      var div=document.createElement('div');
-      div.textContent=inp.value||'';
-      div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
-      if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
-    } else {
-      var span=document.createElement('span');
-      span.textContent=inp.value||'';
-      span.style.cssText='font-size:12px;font-weight:600;';
-      if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
-    }
+  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-size:12px;font-weight:600;';
+    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
   });
-  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // Make all wrappers non-scrolling so full table is visible
@@ -2444,11 +2350,7 @@ function updateGenFuel(id,val,isPercent){
   sv();
 }
 function removeGenerator(id){
-  if(confirm('Remove this generator?')){
-    ST.generators=ST.generators.filter(g=>g.id!==id);
-    _pendingDeleteSave=Date.now()+5000;
-    sv();renderAdmin();
-  }
+  if(confirm('Remove this generator?')){ST.generators=ST.generators.filter(g=>g.id!==id);sv();renderAdmin();}
 }
 function renderGenAdmin(){
   const gens=ST.generators||[];
