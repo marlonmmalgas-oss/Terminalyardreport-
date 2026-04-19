@@ -1337,7 +1337,7 @@ function renderDelays(){
           <input type="text" list="ddl${c}_${r}" value="${(d.desc||'').replace(/"/g,'&quot;')}" placeholder="Enter description..." onchange="updateDelay('${sess.id}',${c},${r},'desc',this.value)"/>
           <datalist id="ddl${c}_${r}">${dd.map(v=>`<option value="${v}"/>`).join('')}</datalist>
         </td>
-        <td style="text-align:center;padding:2px 4px">
+        <td style="text-align:center;padding:2px 4px" data-share-hide="1">
           <button class="del-row-btn" onclick="removeDelayRow('${sess.id}',${c},${r})" title="Delete row" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button>
         </td>
       </tr>`;
@@ -1347,7 +1347,7 @@ function renderDelays(){
         <button class="add-row-btn" id="addBtn_${c}" onclick="addDRow(${c})">+ Add Row</button>
       </div>
       <div class="twrap"><table class="dt">
-        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead>
+        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th data-share-hide="1"></th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
     </div>`;
@@ -2288,6 +2288,8 @@ async function shareReport(capId){
   });
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // Remove delay delete-column cells/headers marked for share exclusion
+  clone.querySelectorAll('[data-share-hide]').forEach(function(el){el.parentNode&&el.parentNode.removeChild(el);});
 
   // Make all wrappers non-scrolling so full table is visible
   clone.querySelectorAll('.twrap,.table-wrapper,.yard-twrap').forEach(function(tw){
