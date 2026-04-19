@@ -1936,7 +1936,7 @@ function renderYardReport(report){
       <thead>
         <tr>
           <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px;width:38%">VESSELS</th>
-          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:10%">TYPE</th>
+          <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:8%">TYPE</th>
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">EXPORT</th>
           ${(report.customCols||[]).map(c=>`<th style="background:var(--navy);color:white;padding:8px 4px;text-align:center">${c.label}</th>`).join('')}
           <th style="background:var(--navy);color:white;padding:8px 4px;text-align:center;width:15%">IMPORT</th>
@@ -1985,7 +1985,7 @@ function renderYardReport(report){
     </tr>`;
     // Add vessel button row
     var _remColspan=3+(report.customCols||[]).length+2; // TYPE+EXPORT+customCols+IMPORT+DEPARTED
-    h+=`<tr><td colspan="${_remColspan}" style="padding:4px 8px">
+    h+=`<tr class="no-share"><td colspan="${_remColspan}" style="padding:4px 8px">
       <button onclick="removeYardVessel(${report.id},${vi})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:3px 10px;font-size:10px;cursor:pointer;font-weight:700">Remove ${v.name}</button>
     </td></tr>`;
   });
@@ -2659,17 +2659,8 @@ async function shareYardReport(reportId){
     tbl.style.minWidth='unset';
     tbl.style.tableLayout='fixed';
   });
-  // Tighten cell padding for portrait fit
-  clone.querySelectorAll('th,td').forEach(function(cell){
-    cell.style.padding='5px 4px';
-    cell.style.whiteSpace='normal';
-    cell.style.wordBreak='break-word';
-    cell.style.fontSize='11px';
-  });
-  // Summary grid: single column on narrow width
-  clone.querySelectorAll('[style*="grid-template-columns:1fr 1fr"]').forEach(function(grid){
-    grid.style.gridTemplateColumns='1fr';
-  });
+  // Keep original cell padding and font sizes - no overrides
+  // Summary grid: keep original 2-column layout (yellow/blue pairs side by side)
 
   // ── Mount off-screen at portrait width ──
   var wrapper=document.createElement('div');
