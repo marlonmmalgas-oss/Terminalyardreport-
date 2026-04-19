@@ -472,7 +472,8 @@ const DEF={
     {abbrev:'gaia',full:'MSC GAIA'},
     {abbrev:'libra',full:'CMA CGM LIBRA'},
     {abbrev:'mscfal',full:'MSC FALCON'},
-    {abbrev:'falcon',full:'MSC FALCON'}
+    {abbrev:'falcon',full:'MSC FALCON'},
+    {abbrev:'fal',full:'MSC FALCON'}
   ],
   yardReports:[],
   activeId:null
@@ -1843,7 +1844,7 @@ function renderYard(){
     ${ST.yardReports.map(function(r,i){
       return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
         +'<button onclick="yardActiveReport='+i+';renderYard()" style="flex:1;text-align:left;padding:8px 11px;background:'+(i===yardActiveReport?'var(--navy)':'white')+';color:'+(i===yardActiveReport?'white':'var(--navy)')+';border:1.5px solid var(--navy);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+r.name+'</button>'
-        +'<button onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
+        +'<button data-delyard="'+r.id+'" onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
         +'</div>';
     }).join('')}
   </div>`;
@@ -2128,12 +2129,28 @@ function resolveFullVesselName(abbrev){
 
 function parseVesselRef(val){
   const s=String(val||'').trim();
-  const m=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
+  // Accept: 4 digits + vessel abbrev letters + any voyage suffix (ZA613A style OR CAM001 etc)
+  const m=s.match(/^(\d{4})([A-Za-z]+?)([A-Za-z0-9]+)$/i);
   if(!m)return null;
-  const abbrevRaw=m[2].toLowerCase();
-  const voyage=m[3].toUpperCase();
-  const found=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
-  const vessel=found?found.full:abbrevRaw.toUpperCase();
+  const afterDigits=m[2]+m[3]; // full string after 4 digits
+  // Find longest matching known abbrev prefix
+  const abbrevs=ST.vesselAbbrevs||[];
+  let foundEntry=null,bestLen=0;
+  abbrevs.forEach(function(v){
+    const a=v.abbrev.toLowerCase();
+    if(afterDigits.toLowerCase().startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
+  });
+  if(!foundEntry){
+    // Try strict ZA pattern as fallback
+    const m2=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
+    if(!m2)return null;
+    const abbrevRaw=m2[2].toLowerCase();
+    const voyage=m2[3].toUpperCase();
+    const found2=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
+    return{vessel:found2?found2.full:abbrevRaw.toUpperCase(),voyage};
+  }
+  const vessel=foundEntry.full;
+  const voyage=afterDigits.substring(bestLen).toUpperCase()||'';
   return{vessel,voyage};
 }
 function classifyUnit2(iso,frgt,power){
@@ -2376,7 +2393,11 @@ function updateGenFuel(id,val,isPercent){
   sv();
 }
 function removeGenerator(id){
-  if(confirm('Remove this generator?')){ST.generators=ST.generators.filter(g=>g.id!==id);sv();renderAdmin();}
+  if(confirm('Remove this generator?')){
+    ST.generators=ST.generators.filter(g=>g.id!==id);
+    _pendingDeleteSave=Date.now()+5000;
+    sv();renderAdmin();
+  }
 }
 function renderGenAdmin(){
   const gens=ST.generators||[];
