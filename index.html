@@ -384,26 +384,12 @@ function initSync(){
         });
       }
       // Only apply remote data if it came from another device
-      var isOwnSave2=(remote._ts||0)>=(_myLastSave-3000)&&(remote._ts||0)<=(_myLastSave+3000);
+      var isOwnSave2=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
-          // Always protect a locally-locked active session from any Firebase echo.
-          // A delayed echo from unlockSess() must NEVER overwrite locked:true set by saveSession().
-          if(ST.activeId){
-            var _lockedSess=ST.sessions.find(function(s){return s.id===ST.activeId;});
-            if(_lockedSess&&_lockedSess.locked){
-              // Block remote from clearing/changing activeId
-              if(k==='activeId'){return;}
-              // Block remote sessions array if it has our session unlocked
-              if(k==='sessions'&&Array.isArray(remote[k])){
-                var _remSess=remote[k].find(function(s){return s.id===ST.activeId;});
-                if(!_remSess||!_remSess.locked){return;}
-              }
-            }
-          }
           // Deep clone to prevent Firebase object mutation bleeding into ST
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
@@ -437,7 +423,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(remote._ts||0)>=(_myLastSave-3000)&&(remote._ts||0)<=(_myLastSave+3000);
+        var isOwnSave=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -486,8 +472,7 @@ const DEF={
     {abbrev:'gaia',full:'MSC GAIA'},
     {abbrev:'libra',full:'CMA CGM LIBRA'},
     {abbrev:'mscfal',full:'MSC FALCON'},
-    {abbrev:'falcon',full:'MSC FALCON'},
-    {abbrev:'fal',full:'MSC FALCON'}
+    {abbrev:'falcon',full:'MSC FALCON'}
   ],
   yardReports:[],
   activeId:null
@@ -1742,25 +1727,14 @@ function resolveVesselAbbrev(raw){
   // Extract abbrev after 4 leading digits: "2610anaetc" -> "ana"
   const match=s.toLowerCase().match(/^\d{4}([a-z]+)/);
   if(!match)return s;
-  const full=match[1]; // e.g. "anaza613a" or "anacam001"
-  // Try known abbrevs — find longest matching prefix
-  const abbrevs=ST.vesselAbbrevs||[];
-  let foundEntry=null,bestLen=0;
-  abbrevs.forEach(function(v){
-    const a=v.abbrev.toLowerCase();
-    if(full.startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
-  });
-  let vessel,voyage;
-  if(foundEntry){
-    vessel=foundEntry.full;
-    // Everything after the abbrev is the voyage (e.g. "za613a" or "cam001")
-    voyage=full.substring(bestLen).toUpperCase()||'';
-  } else {
-    // No known abbrev - use full string, no voyage
-    vessel=full.toUpperCase();
-    voyage='';
-  }
-  return {vessel,voyage};
+  const full=match[1]; // e.g. "anaza602a"
+  // Extract voyage: ZA/ZB/ZS + 3 digits + 1 letter = 6 chars
+  const voyMatch=full.toUpperCase().match(/(Z[ABSCD]\d{3}[A-Z])/);
+  const voyage=voyMatch?voyMatch[1]:'';
+  // Vessel abbrev is what's left before the voyage
+  const abbrev=voyMatch?full.substring(0,full.toUpperCase().indexOf(voyMatch[1])).toLowerCase():full;
+  const found=(ST.vesselAbbrevs||[]).find(v=>v.abbrev.toLowerCase()===abbrev.toLowerCase());
+  return {vessel:found?found.full:abbrev.toUpperCase(),voyage};
 }
 
 // ═══════════ ISO TYPE HELPERS ═══════════
@@ -1858,7 +1832,7 @@ function renderYard(){
     ${ST.yardReports.map(function(r,i){
       return '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
         +'<button onclick="yardActiveReport='+i+';renderYard()" style="flex:1;text-align:left;padding:8px 11px;background:'+(i===yardActiveReport?'var(--navy)':'white')+';color:'+(i===yardActiveReport?'white':'var(--navy)')+';border:1.5px solid var(--navy);border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">'+r.name+'</button>'
-        +'<button data-delyard="'+r.id+'" onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
+        +'<button onclick="deleteYardReport('+r.id+')" style="flex-shrink:0;background:#fff0f0;color:var(--red);border:1.5px solid var(--red);border-radius:8px;padding:7px 10px;font-size:14px;cursor:pointer;font-weight:800" title="Delete report">🗑️</button>'
         +'</div>';
     }).join('')}
   </div>`;
@@ -2143,28 +2117,12 @@ function resolveFullVesselName(abbrev){
 
 function parseVesselRef(val){
   const s=String(val||'').trim();
-  // Accept: 4 digits + vessel abbrev letters + any voyage suffix (ZA613A style OR CAM001 etc)
-  const m=s.match(/^(\d{4})([A-Za-z]+?)([A-Za-z0-9]+)$/i);
+  const m=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
   if(!m)return null;
-  const afterDigits=m[2]+m[3]; // full string after 4 digits
-  // Find longest matching known abbrev prefix
-  const abbrevs=ST.vesselAbbrevs||[];
-  let foundEntry=null,bestLen=0;
-  abbrevs.forEach(function(v){
-    const a=v.abbrev.toLowerCase();
-    if(afterDigits.toLowerCase().startsWith(a)&&a.length>bestLen){foundEntry=v;bestLen=a.length;}
-  });
-  if(!foundEntry){
-    // Try strict ZA pattern as fallback
-    const m2=s.match(/^(\d{4})([A-Za-z]+?)(Z[A-BCDS]\d{3}[A-Z])$/i);
-    if(!m2)return null;
-    const abbrevRaw=m2[2].toLowerCase();
-    const voyage=m2[3].toUpperCase();
-    const found2=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
-    return{vessel:found2?found2.full:abbrevRaw.toUpperCase(),voyage};
-  }
-  const vessel=foundEntry.full;
-  const voyage=afterDigits.substring(bestLen).toUpperCase()||'';
+  const abbrevRaw=m[2].toLowerCase();
+  const voyage=m[3].toUpperCase();
+  const found=(ST.vesselAbbrevs||[]).find(v=>abbrevRaw.toLowerCase().startsWith(v.abbrev.toLowerCase()));
+  const vessel=found?found.full:abbrevRaw.toUpperCase();
   return{vessel,voyage};
 }
 function classifyUnit2(iso,frgt,power){
@@ -2276,37 +2234,16 @@ async function shareReport(capId){
   // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
 
-  // Collect live input values BEFORE cloning (cloneNode doesn't copy live .value)
-  var _liveVals=[];
-  el.querySelectorAll('input,select,textarea').forEach(function(inp){_liveVals.push(inp.value||'');});
-
   const clone=el.cloneNode(true);
 
-  // Stamp collected values onto clone inputs by index
-  var _cloneInps=clone.querySelectorAll('input,select,textarea');
-  _cloneInps.forEach(function(inp,i){inp.value=_liveVals[i]||'';});
-
-  // Remove share button
+  // Remove share button, UI controls outside table
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Remove delete row buttons and add-row buttons inside table cells
-  clone.querySelectorAll('td button, td .del-row-btn, .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Remove the last <th> (delete column header) from delay tables
-  clone.querySelectorAll('.dt thead tr th:last-child').forEach(function(th){th.parentNode&&th.parentNode.removeChild(th);});
-  // FIRST: Replace inputs inside table cells with plain text divs (must run before the outer-input pass)
-  clone.querySelectorAll('td input, td select, td textarea, th input').forEach(function(inp){
-    var div=document.createElement('div');
-    div.textContent=inp.value||'';
-    div.style.cssText='font-size:11px;font-weight:700;text-align:center;word-break:break-word;white-space:normal;';
-    if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
-  });
-  // THEN: Replace any remaining inputs outside table cells with plain text spans
-  clone.querySelectorAll('input, select, textarea').forEach(function(inp){
+  clone.querySelectorAll(':not(table) input, :not(table) select, :not(table) textarea').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
     span.style.cssText='font-size:12px;font-weight:600;';
     if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
   });
-  clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
   clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
   // Make all wrappers non-scrolling so full table is visible
@@ -2342,20 +2279,19 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  // Place on-screen but off to the right and clipped — avoids mobile browser skipping off-screen elements
-  wrapper.style.cssText='position:fixed;left:'+PORTRAIT_W+'px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,500);});
-    const h=Math.max(wrapper.scrollHeight, clone.scrollHeight, 300);
+    await new Promise(function(r){setTimeout(r,200);});
+    const h=wrapper.scrollHeight;
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W*2,windowHeight:h,
-      scrollX:-PORTRAIT_W,scrollY:0,allowTaint:true,logging:false
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+      scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
       if(!blob)return;
@@ -2414,11 +2350,7 @@ function updateGenFuel(id,val,isPercent){
   sv();
 }
 function removeGenerator(id){
-  if(confirm('Remove this generator?')){
-    ST.generators=ST.generators.filter(g=>g.id!==id);
-    _pendingDeleteSave=Date.now()+5000;
-    sv();renderAdmin();
-  }
+  if(confirm('Remove this generator?')){ST.generators=ST.generators.filter(g=>g.id!==id);sv();renderAdmin();}
 }
 function renderGenAdmin(){
   const gens=ST.generators||[];
