@@ -1310,6 +1310,7 @@ function renderFour(){
   const eh=parseInt(s4e.substring(0,2))*60+parseInt(s4e.substring(2,4));
   const ws=ALL.filter(sl=>{const slh=parseInt(sl.substring(0,2))*60+parseInt(sl.substring(2,4));return eh>sh?(slh>=sh&&slh<eh):(slh>=sh||slh<eh);});
   let h=rhHTML('4 HOURLY REPORT',s4,'fcap');
+  h=h.replace("onclick=\"shareReport('fcap')\"","onclick=\"shareFour()\"");
   if(!sess){$('sc-4hourly').innerHTML=`<div id="fcap">${h}${noSess('📈','No active session.')}</div>`;return;}
   const nc=sess.numCranes;let rows='';
   for(let i=1;i<=nc;i++){
@@ -1351,7 +1352,80 @@ function renderFour(){
   $('sc-4hourly').innerHTML=`<div id="fcap">${h}</div>`;
 }
 
-// ═══════════ DELAYS ═══════════
+// ═══════════ SHARE 4-HOURLY (same pattern as shareHourly/shareDelays) ═══════════
+function shareFour(){
+  const sess=getSess(),s4=curr4Slot();
+  if(!sess){alert('No active session.');return;}
+  const[s4s,s4e]=s4.split('-');
+  const sh=parseInt(s4s.substring(0,2))*60+parseInt(s4s.substring(2,4));
+  const eh=parseInt(s4e.substring(0,2))*60+parseInt(s4e.substring(2,4));
+  const ws=ALL.filter(sl=>{const slh=parseInt(sl.substring(0,2))*60+parseInt(sl.substring(2,4));return eh>sh?(slh>=sh&&slh<eh):(slh>=sh||slh<eh);});
+  const tn=ST.settings.term||'';
+  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
+  const doc=sess.dockedOn?formatDateTime(sess.dockedOn):'';
+  const nc=sess.numCranes;let rows='';
+  for(let i=1;i<=nc;i++){
+    const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl2=cb.loadSplit||0;
+    const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
+    let cd=0,cl=0,w4d=0,w4l=0;
+    getAllSlots(sess).forEach(function(sd){
+      cd+=ST.hourly[sd.slot+'_'+i+'_discharge']||0;
+      cl+=ST.hourly[sd.slot+'_'+i+'_load']||0;
+    });
+    ws.forEach(s=>{w4d+=ST.hourly[`${s}_${i}_discharge`]||0;w4l+=ST.hourly[`${s}_${i}_load`]||0;});
+    const rd=ed-cd,rl=el2-cl;
+    rows+=`<tr class="${i%2===0?'e':'o'}">
+      <td class="crane-cell">${craneName(i)}</td>
+      <td>${sd}</td><td>${sl2}</td>
+      <td class="hl">${w4d||'—'}</td><td class="hl">${w4l||'—'}</td>
+      <td${rd<0?' class="neg"':''}>${rd}</td>
+      <td${rl<0?' class="neg"':''}>${rl}</td>
+    </tr>`;
+  }
+  let h='<div id="fcap_share">';
+  h+='<div class="rh" style="'+bgStyle+'">';
+  h+='<div class="rh1">';
+  h+='<div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
+  h+='<div class="rh-txt"><h2>4 HOURLY REPORT</h2><p>'+tn+'</p></div>';
+  h+='</div>';
+  h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
+  h+='<div style="flex:1;min-width:0;"><span class="rh-vessel">'+sess.vesselName+'</span>';
+  if(sess.dockedOn)h+='<div style="font-size:12px;opacity:0.8;color:#ffcdd2;margin-top:2px;">Docked: '+doc+'</div>';
+  h+='</div>';
+  h+='<div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">'+fs(s4)+'</span></div>';
+  h+='<div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">'+todayStr+'</span>';
+  if(sess.firstLift||sess.lastLift){
+    h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
+    if(sess.firstLift)h+='<div>🟢 First Lift: <strong>'+sess.firstLift+'</strong></div>';
+    if(sess.lastLift)h+='<div>🔴 Last Lift: &nbsp;<strong>'+sess.lastLift+'</strong></div>';
+    h+='</div>';
+  }
+  h+='</div></div></div>';
+  h+=`<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt">
+    <thead>
+      <tr>
+        <th class="grp crane-col" rowspan="2">Crane</th>
+        <th class="grp" colspan="2">Splits</th>
+        <th class="grp" colspan="2" style="background:#1a4a7a">4-Hr Moves</th>
+        <th class="grp" colspan="2">Remaining</th>
+      </tr>
+      <tr>
+        <th class="sub">Disch.</th><th class="sub">Load</th>
+        <th class="sub sub-hl">Disch.</th><th class="sub sub-hl">Load</th>
+        <th class="sub">Disch.</th><th class="sub">Load</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table></div></div>`;
+  h+=summaryHTML(sess);
+  h+='<div style="height:20px"></div></div>';
+  var host=document.createElement('div');
+  host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  host.innerHTML=h;
+  document.body.appendChild(host);
+  shareReport('fcap_share').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
+}
 function getDelayRowIds(sessId,c){
   if(!ST.delayRowIds)ST.delayRowIds={};
 
