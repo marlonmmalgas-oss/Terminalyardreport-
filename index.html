@@ -951,14 +951,32 @@ function unlockSess(){
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
 function newVessel(){
-  saveSession();
+  // Snapshot current session into ST.sessions WITHOUT a separate sv() call.
+  // Calling saveSession() here triggers sv() which sets _myLastSave=ts1.
+  // Then we clear ST.hourly and call sv() again with _myLastSave=ts2.
+  // Firebase echoes the FIRST write after ts2 is set, falling outside the
+  // 500ms own-save window — so old hourly data gets restored. Fix: one sv().
+  if(ST.activeId){
+    var _id=ST.activeId;
+    var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
+    if(_existing.id){
+      var _nc=_existing.numCranes||2;
+      if(!_existing._results)_existing._results={hourly:{},delays:{}};
+      var _sl=shiftSlots();
+      _sl.forEach(function(slot){for(var ci=1;ci<=_nc;ci++){["discharge","load"].forEach(function(t){var k=slot+"_"+ci+"_"+t;if(ST.hourly[k])_existing._results.hourly[k]=ST.hourly[k];});}});
+      _existing.locked=true;
+      _existing.savedAt=new Date().toISOString();
+      var _idx=ST.sessions.findIndex(function(x){return x.id===_id;});
+      if(_idx>=0)ST.sessions[_idx]=JSON.parse(JSON.stringify(_existing));
+    }
+  }
+  // Clear everything and do ONE sv() so Firebase only sees one write
   ST.activeId=null;
-  // Clear hourly move data so new vessel starts clean
-  // Previous vessel's data is already saved in session._results
   ST.hourly={};
   ST.delayRowIds={};
   ST.delays={};
-  sv();renderInput();
+  sv();
+  renderInput();
 }
 // newSess kept as alias for backwards compat
 function newSess(){newVessel();}
@@ -2586,12 +2604,15 @@ async function shareYardReport(reportId){
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
   var nc=ST.settings.reportNumColor||'#000000';
-  var W=800;
+  // Render at 800px wide (full readable size), then scale the final canvas
+  // down to a portrait-friendly 500px wide output image.
+  var RENDER_W=800;
+  var PORTRAIT_OUT=500;
 
   // ── Clone the element ──
   var clone2=el.cloneNode(true);
 
-  // ── Remove UI-only elements (buttons, no-share sections) ──
+  // ── Remove UI-only elements ──
   clone2.querySelectorAll('.no-share').forEach(function(ns){ns.parentNode&&ns.parentNode.removeChild(ns);});
   clone2.querySelectorAll('button').forEach(function(b){if(!b.closest('td')&&!b.closest('th'))b.parentNode&&b.parentNode.removeChild(b);});
   clone2.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
@@ -2607,13 +2628,13 @@ async function shareYardReport(reportId){
   clone2.querySelectorAll('.vessel-name').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
-    span.style.cssText='font-weight:800;font-size:13px;color:#1F3864;';
+    span.style.cssText='font-weight:800;font-size:14px;color:#1F3864;';
     inp.parentNode.replaceChild(span,inp);
   });
   clone2.querySelectorAll('.vessel-voyage').forEach(function(inp){
     var span=document.createElement('span');
     span.textContent=inp.value||'';
-    span.style.cssText='font-size:11px;font-weight:700;color:#c0392b;';
+    span.style.cssText='font-size:12px;font-weight:700;color:#c0392b;';
     inp.parentNode.replaceChild(span,inp);
   });
 
@@ -2622,11 +2643,11 @@ async function shareYardReport(reportId){
     var div=document.createElement('div');
     var v=inp.value||'';
     div.textContent=(v&&v!=='0')?v:'—';
-    div.style.cssText='font-size:14px;font-weight:800;text-align:center;color:'+nc+';';
+    div.style.cssText='font-size:15px;font-weight:800;text-align:center;color:'+nc+';';
     inp.parentNode.replaceChild(div,inp);
   });
 
-  // ── Make table wrappers fully visible at full width ──
+  // ── Make table wrappers fully visible at full render width ──
   clone2.querySelectorAll('.yard-twrap,.twrap,.table-wrapper').forEach(function(tw){
     tw.style.overflow='visible';
     tw.style.width='100%';
@@ -2636,9 +2657,10 @@ async function shareYardReport(reportId){
     tbl.style.width='100%';
     tbl.style.minWidth='unset';
   });
-  // ── Build final capture container ──
+
+  // ── Mount off-screen at RENDER_W ──
   var wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;padding:8px;';
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+RENDER_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;padding:8px;';
   wrapper.appendChild(clone2);
   document.body.appendChild(wrapper);
 
@@ -2650,8 +2672,22 @@ async function shareYardReport(reportId){
   wrapper.style.height=h+'px';
 
   try{
-    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:W,height:h,windowWidth:W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
-    canvas.toBlob(async function(blob){
+    // Capture at 2x scale for sharpness
+    var canvas=await html2canvas(wrapper,{scale:2,useCORS:true,backgroundColor:'#f0f2f7',width:RENDER_W,height:h,windowWidth:RENDER_W,windowHeight:h,scrollX:0,scrollY:0,allowTaint:true,logging:false});
+
+    // ── Scale down to portrait output width ──
+    var scaleRatio=PORTRAIT_OUT/canvas.width;
+    var outW=PORTRAIT_OUT;
+    var outH=Math.round(canvas.height*scaleRatio);
+    var portraitCanvas=document.createElement('canvas');
+    portraitCanvas.width=outW;
+    portraitCanvas.height=outH;
+    var ctx=portraitCanvas.getContext('2d');
+    ctx.imageSmoothingEnabled=true;
+    ctx.imageSmoothingQuality='high';
+    ctx.drawImage(canvas,0,0,outW,outH);
+
+    portraitCanvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
       if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:'Yard Status'});}
