@@ -2373,18 +2373,23 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,200);});
-    const h=wrapper.scrollHeight;
+    await new Promise(function(r){setTimeout(r,300);});
+    // Force a second layout pass so Edge measures correctly
+    wrapper.style.display='none';
+    wrapper.style.display='block';
+    await new Promise(function(r){requestAnimationFrame(r);});
+    // Use offsetHeight as fallback — scrollHeight can be wrong in Edge for off-screen abs elements
+    var h=Math.max(wrapper.scrollHeight,wrapper.offsetHeight,clone.scrollHeight,clone.offsetHeight);
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
