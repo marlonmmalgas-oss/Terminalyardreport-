@@ -390,17 +390,17 @@ function initSync(){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
-          // Extra guard: never let a remote echo unlock a session that is currently locked locally.
-          // This prevents a delayed Firebase echo from unlockSess() overwriting the locked:true
-          // state set by a subsequent saveSession() call.
-          if(k==='sessions'&&Array.isArray(remote[k])&&ST.activeId){
-            var remoteArr=remote[k];
-            var localActive=ST.sessions.find(function(s){return s.id===ST.activeId;});
-            if(localActive&&localActive.locked){
-              var remoteActive=remoteArr.find(function(s){return s.id===ST.activeId;});
-              if(remoteActive&&!remoteActive.locked){
-                // Remote has unlocked version but local is locked — keep local, skip overwrite
-                return;
+          // Always protect a locally-locked active session from any Firebase echo.
+          // A delayed echo from unlockSess() must NEVER overwrite locked:true set by saveSession().
+          if(ST.activeId){
+            var _lockedSess=ST.sessions.find(function(s){return s.id===ST.activeId;});
+            if(_lockedSess&&_lockedSess.locked){
+              // Block remote from clearing/changing activeId
+              if(k==='activeId'){return;}
+              // Block remote sessions array if it has our session unlocked
+              if(k==='sessions'&&Array.isArray(remote[k])){
+                var _remSess=remote[k].find(function(s){return s.id===ST.activeId;});
+                if(!_remSess||!_remSess.locked){return;}
               }
             }
           }
@@ -957,10 +957,6 @@ function saveSession(){
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();renderInput();
-  // Re-render after short delays to override any Firebase echo that fires and
-  // incorrectly restores the unlocked (locked:false) state from a prior unlockSess save.
-  setTimeout(function(){if(RT.tab==='input'){renderInput();}},600);
-  setTimeout(function(){if(RT.tab==='input'){renderInput();}},1800);
 }
 function unlockSess(){
   // Must mutate the raw session in ST.sessions — getSess() returns a clone
@@ -2346,19 +2342,20 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:absolute;left:0;top:-99999px;width:'+PORTRAIT_W+'px;background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  // Place on-screen but off to the right and clipped — avoids mobile browser skipping off-screen elements
+  wrapper.style.cssText='position:fixed;left:'+PORTRAIT_W+'px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,400);});
-    const h=Math.max(wrapper.scrollHeight, wrapper.offsetHeight, 200);
+    await new Promise(function(r){setTimeout(r,500);});
+    const h=Math.max(wrapper.scrollHeight, clone.scrollHeight, 300);
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
-      scrollX:0,scrollY:0,allowTaint:true,logging:false
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W*2,windowHeight:h,
+      scrollX:-PORTRAIT_W,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
       if(!blob)return;
