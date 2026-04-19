@@ -1252,10 +1252,54 @@ function renderHourly(){
   const sess=getSess(),slot=currSlot(),sl=shiftSlots(),idx=sl.indexOf(slot);
   const cum=idx>=0?sl.slice(0,idx+1):[slot];
   let h=rhHTML('HOURLY REPORT',slot,'hcap');
+  // Use shareHourly() — builds clean HTML outside scroll container (same as shareDelays)
+  h=h.replace("onclick=\"shareReport('hcap')\"","onclick=\"shareHourly()\"");
   if(!sess){$('sc-hourly').innerHTML=`<div id="hcap">${h}${noSess('📊','No active session.')}</div>`;return;}
   h+=craneTableHTML(sess,cum,slot);
   h+=summaryHTML(sess);
   $('sc-hourly').innerHTML=`<div id="hcap">${h}</div>`;
+}
+
+// ═══════════ SHARE HOURLY (same pattern as shareDelays — fresh host outside scroll container) ═══════════
+function shareHourly(){
+  const sess=getSess(),slot=currSlot(),sl=shiftSlots(),idx=sl.indexOf(slot);
+  if(!sess){alert('No active session.');return;}
+  const cum=idx>=0?sl.slice(0,idx+1):[slot];
+  const tn=ST.settings.term||'';
+  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
+  const doc=sess.dockedOn?formatDateTime(sess.dockedOn):'';
+  // Build clean share HTML — no inputs, no buttons, no scroll containers
+  let h='<div id="hcap_share">';
+  h+='<div class="rh" style="'+bgStyle+'">';
+  h+='<div class="rh1">';
+  h+='<div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
+  h+='<div class="rh-txt"><h2>HOURLY REPORT</h2><p>'+tn+'</p></div>';
+  h+='</div>';
+  h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
+  h+='<div style="flex:1;min-width:0;"><span class="rh-vessel">'+sess.vesselName+'</span>';
+  if(sess.dockedOn)h+='<div style="font-size:12px;opacity:0.8;color:#ffcdd2;margin-top:2px;">Docked: '+doc+'</div>';
+  h+='</div>';
+  h+='<div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">'+fs(slot)+'</span></div>';
+  h+='<div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">'+todayStr+'</span>';
+  if(sess.firstLift||sess.lastLift){
+    h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
+    if(sess.firstLift)h+='<div>🟢 First Lift: <strong>'+sess.firstLift+'</strong></div>';
+    if(sess.lastLift)h+='<div>🔴 Last Lift: &nbsp;<strong>'+sess.lastLift+'</strong></div>';
+    h+='</div>';
+  }
+  h+='</div></div></div>';
+  // Crane table — plain text, no inputs
+  h+=craneTableHTML(sess,cum,slot);
+  // Summary + chart
+  h+=summaryHTML(sess);
+  h+='<div style="height:20px"></div></div>';
+  // Inject into fresh host directly on body — outside scroll container
+  var host=document.createElement('div');
+  host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  host.innerHTML=h;
+  document.body.appendChild(host);
+  shareReport('hcap_share').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
 }
 
 // ═══════════ 4-HOURLY ═══════════
@@ -2313,93 +2357,76 @@ async function shareReport(capId){
   // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
 
-  // ── Step 1: Stamp live input values into the DOM before reading innerHTML ──
-  // This is critical — innerHTML won't include live .value unless we set the attribute
-  el.querySelectorAll('input,select,textarea').forEach(function(inp){
-    if(inp.type==='checkbox'||inp.type==='radio'){
-      if(inp.checked)inp.setAttribute('checked','checked');
-      else inp.removeAttribute('checked');
-    } else {
-      inp.setAttribute('value',inp.value);
-    }
-    if(inp.tagName==='SELECT'){
-      Array.from(inp.options).forEach(function(opt){
-        if(opt.value===inp.value)opt.setAttribute('selected','selected');
-        else opt.removeAttribute('selected');
-      });
-    }
-  });
+  const clone=el.cloneNode(true);
 
-  // ── Step 2: Lift the HTML out of the scroll container into a fresh standalone host ──
-  // This is the same technique shareDelays uses — avoids Edge clipping the scrollable parent
-  var rawHTML=el.outerHTML;
+  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
+  var liveInputs=el.querySelectorAll('input,select,textarea');
+  var cloneInputs=clone.querySelectorAll('input,select,textarea');
+  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
 
-  var host=document.createElement('div');
-  host.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;opacity:0;pointer-events:none;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;background:#f0f2f7;';
-  host.innerHTML=rawHTML;
-  document.body.appendChild(host);
-
-  var clone=host.firstElementChild;
-
-  // ── Step 3: Clean up — remove share buttons, replace inputs with plain text ──
+  // Remove share button, UI controls outside table
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  // Replace ALL inputs with plain text spans (using stamped values)
   clone.querySelectorAll('input,select,textarea').forEach(function(inp){
-    var val=inp.getAttribute('value')||inp.value||'';
-    if(inp.tagName==='SELECT'){
-      var sel=inp.querySelector('[selected]');
-      val=sel?sel.textContent:inp.options[0]?inp.options[0].textContent:'';
-    }
     if(inp.closest('td')||inp.closest('th')){
+      // Inside table cell — replace with plain text div
       var div=document.createElement('div');
-      div.textContent=val;
+      div.textContent=inp.value||'';
       div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
       if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
     } else {
       var span=document.createElement('span');
-      span.textContent=val;
+      span.textContent=inp.value||'';
       span.style.cssText='font-size:12px;font-weight:600;';
       if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
     }
   });
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
-  clone.querySelectorAll(':not(td):not(th) button,:not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
+  clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
-  // ── Step 4: Remove scroll constraints so full content is visible ──
+  // Make all wrappers non-scrolling so full table is visible
   clone.querySelectorAll('.twrap,.table-wrapper,.yard-twrap').forEach(function(tw){
     tw.style.overflow='visible';
     tw.style.width='auto';
   });
-  // Also clear any overflow/height on the clone root itself
-  clone.style.overflow='visible';
-  clone.style.height='auto';
-  clone.style.maxHeight='none';
 
-  // ── Step 5: Scale tables to fit portrait width ──
-  // Measure from the host clone (already in DOM, not inside scroll container)
-  clone.querySelectorAll('table').forEach(function(tbl){
-    var realW=tbl.scrollWidth;
-    var contentW=PORTRAIT_W-24;
+  // Scale each table to fit within PORTRAIT_W
+  // Measure real table widths from live DOM, then scale clone tables accordingly
+  var liveTables=el.querySelectorAll('table');
+  var cloneTables=clone.querySelectorAll('table');
+  liveTables.forEach(function(liveT,i){
+    var realW=liveT.scrollWidth;
+    var cloneT=cloneTables[i];
+    if(!cloneT)return;
+    var contentW=PORTRAIT_W-24; // 12px padding each side
     if(realW>contentW){
+      // Scale table down to fit portrait width
       var scale=contentW/realW;
-      tbl.style.transformOrigin='top left';
-      tbl.style.transform='scale('+scale+')';
-      tbl.style.marginBottom='-'+(realW*(1-scale))+'px';
+      cloneT.style.transformOrigin='top left';
+      cloneT.style.transform='scale('+scale+')';
+      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px'; // collapse dead space
+      // Wrap in a div to contain the scaled table
       var wrap=document.createElement('div');
       wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
-      tbl.parentNode.insertBefore(wrap,tbl);
-      wrap.appendChild(tbl);
+      cloneT.parentNode.insertBefore(wrap,cloneT);
+      wrap.appendChild(cloneT);
     } else {
-      tbl.style.width='100%';
-      tbl.style.minWidth='unset';
+      cloneT.style.width='100%';
+      cloneT.style.minWidth='unset';
     }
   });
+
+  const wrapper=document.createElement('div');
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.appendChild(clone);
+  document.body.appendChild(wrapper);
 
   try{
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
     await new Promise(function(r){setTimeout(r,200);});
-    var h=host.scrollHeight;
-    host.style.height=h+'px';
-    const canvas=await html2canvas(host,{
+    const h=wrapper.scrollHeight;
+    wrapper.style.height=h+'px';
+    const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
       width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
@@ -2416,7 +2443,7 @@ async function shareReport(capId){
       }
     },'image/png',0.96);
   }catch(e){alert('Share failed: '+e.message);}
-  finally{if(host.parentNode)document.body.removeChild(host);}
+  finally{document.body.removeChild(wrapper);}
 }
 
 // ═══════════ GENERATORS ═══════════
