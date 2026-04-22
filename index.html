@@ -962,10 +962,10 @@ function newVessel(){
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
     if(_existing.id){
       var _nc=_existing.numCranes||2;
-      if(!_existing._results)_existing._results={hourly:{},delays:{}};
+      _existing._results=_existing._results||{hourly:{},delays:{}};
       var _sl=shiftSlots();
       _sl.forEach(function(slot){for(var ci=1;ci<=_nc;ci++){["discharge","load"].forEach(function(t){var k=slot+"_"+ci+"_"+t;if(ST.hourly[k])_existing._results.hourly[k]=ST.hourly[k];});}});
-      // Save delays snapshot before clearing
+      // Save delays
       for(var _ci=1;_ci<=_nc;_ci++){var _rk=_id+'_c'+_ci;(ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){var _dk=_id+'_'+_ci+'_'+_r;if(ST.delays[_dk])_existing._results.delays[_dk]=Object.assign({},ST.delays[_dk]);});}
       _existing.locked=true;
       _existing.savedAt=new Date().toISOString();
@@ -1340,21 +1340,16 @@ function shareDelays(){
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
-    let hasRows=false;
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
-      // Skip completely empty rows
-      if(!d.from&&!d.to&&!d.type&&!d.desc)return;
-      hasRows=true;
       tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 8px">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 8px">${d.to||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
         <td class="dur">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.type||'')}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.desc||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
       </tr>`;
     });
-    if(!hasRows)continue;
     h+=`<div class="dblk">
       <div class="dchd">${craneName(c)}</div>
       <div class="twrap"><table class="dt">
@@ -1444,9 +1439,9 @@ function updateDelay(sid,c,r,field,val){
 }
 
 // ═══════════ HISTORY ═══════════
-function histCollapse(id){
-  var el=document.getElementById(id);
-  var arr=document.getElementById(id+'-arr');
+function histCollapse(uid){
+  var el=document.getElementById(uid);
+  var arr=document.getElementById(uid+'-arr');
   if(!el)return;
   var open=el.style.display==='block';
   el.style.display=open?'none':'block';
@@ -1462,127 +1457,85 @@ function renderHistory(){
     const _gt=calcGlobalTotals(s);
     const td=_gt.totalDoneDisc,tl=_gt.totalDoneLoad;
     const tot=_gt.totalDone,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
+    const snc=s.numCranes||2;
 
-    // ── Shift label e.g. "0600 – 1800  23-Apr-26" ──
+    // Shift label e.g. "0600 – 1800  22-Apr-26"
     var shiftLabel='';
     if(s.savedAt||s.id){
       var sd=new Date(s.savedAt||s.id);
-      var sh=sd.getHours();
-      var isDayShift=sh>=6&&sh<18;
-      var shiftStart=isDayShift?'0600':'1800';
-      var shiftEnd=isDayShift?'1800':'0600';
+      var isDayShift=sd.getHours()>=6&&sd.getHours()<18;
       var dateStr=sd.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
-      shiftLabel=shiftStart+' \u2013 '+shiftEnd+'  '+dateStr;
+      shiftLabel=(isDayShift?'0600':'1800')+' \u2013 '+(isDayShift?'1800':'0600')+'  '+dateStr;
     }
 
-    // ── Build Results collapsible ──
-    var resultsHTML='';
-    var hourlyData=s._results&&s._results.hourly?s._results.hourly:{};
-    var nc=s.numCranes||2;
+    // Results table — grouped by crane (CR1: D L | CR2: D L | Total)
+    var hourlyData=(s._results&&s._results.hourly)||{};
     var usedSlots=ALL.filter(function(slot){
-      for(var ci=1;ci<=nc;ci++){
-        if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;
-      }
+      for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}
       return false;
     });
+    var resultsHTML='';
     if(usedSlots.length){
-      // Header: Slot | CR1 | | CR2 | | Total  (grouped by crane with D/L subheaders)
-      var craneHeaderRow='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:left;border-right:1px solid rgba(255,255,255,.2)">Slot</th>';
-      for(var ci=1;ci<=nc;ci++){
-        craneHeaderRow+='<th colspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
-      }
-      craneHeaderRow+='<th rowspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.2)">Total</th></tr>';
-      var subHeaderRow='<tr style="background:#162d52;color:rgba(255,255,255,.85)">';
-      for(var ci=1;ci<=nc;ci++){
-        subHeaderRow+='<th style="padding:4px 6px;font-size:10px;font-weight:700;text-align:center;border-left:1px solid rgba(255,255,255,.2)">D</th>'
-                    +'<th style="padding:4px 6px;font-size:10px;font-weight:700;text-align:center">L</th>';
-      }
-      subHeaderRow+='</tr>';
-
-      var rows='';
-      var grandD=0,grandL=0;
-      var craneTotals={};
-      for(var ci=1;ci<=nc;ci++)craneTotals[ci]={d:0,l:0};
-
+      var thead='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 8px;font-size:11px;text-align:left">Slot</th>';
+      for(var ci=1;ci<=snc;ci++)thead+='<th colspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
+      thead+='<th rowspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">Total</th></tr>';
+      thead+='<tr style="background:#162d52;color:rgba(255,255,255,.8)">';
+      for(var ci=1;ci<=snc;ci++)thead+='<th style="padding:4px 6px;font-size:10px;border-left:2px solid rgba(255,255,255,.2)">D</th><th style="padding:4px 6px;font-size:10px">L</th>';
+      thead+='</tr>';
+      var tbody='';var grandD=0,grandL=0;var ctots={};
+      for(var ci=1;ci<=snc;ci++)ctots[ci]={d:0,l:0};
       usedSlots.forEach(function(slot,idx){
-        var rowTotal=0;
-        var cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap;border-right:1px solid #dde3f0">'+fs(slot)+'</td>';
-        for(var ci=1;ci<=nc;ci++){
-          var d=hourlyData[slot+'_'+ci+'_discharge']||0;
-          var l=hourlyData[slot+'_'+ci+'_load']||0;
-          craneTotals[ci].d+=d;craneTotals[ci].l+=l;
-          rowTotal+=d+l;grandD+=d;grandL+=l;
-          cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:1px solid #dde3f0">'+(d||'—')+'</td>'
-               +'<td style="padding:6px 5px;font-size:11px;text-align:center">'+(l||'—')+'</td>';
+        var rt=0,cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap">'+fs(slot)+'</td>';
+        for(var ci=1;ci<=snc;ci++){
+          var dv=hourlyData[slot+'_'+ci+'_discharge']||0,lv=hourlyData[slot+'_'+ci+'_load']||0;
+          ctots[ci].d+=dv;ctots[ci].l+=lv;rt+=dv+lv;grandD+=dv;grandL+=lv;
+          cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:2px solid #dde3f0">'+(dv||'—')+'</td><td style="padding:6px 5px;font-size:11px;text-align:center">'+(lv||'—')+'</td>';
         }
-        cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:1px solid #dde3f0">'+rowTotal+'</td>';
-        var bg=idx%2===0?'white':'#f5f8fc';
-        rows+='<tr style="background:'+bg+'">'+cells+'</tr>';
+        cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid #dde3f0">'+rt+'</td>';
+        tbody+='<tr style="background:'+(idx%2===0?'white':'#f5f8fc')+'">'+cells+'</tr>';
       });
-
-      // Total row
-      var totalCells='<td style="padding:7px 8px;font-size:11px;font-weight:800;border-right:1px solid rgba(255,255,255,.3)">TOTAL</td>';
-      for(var ci=1;ci<=nc;ci++){
-        totalCells+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.3)">'+craneTotals[ci].d+'</td>'
-                  +'<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+craneTotals[ci].l+'</td>';
-      }
-      totalCells+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:1px solid rgba(255,255,255,.3)">'+(grandD+grandL)+'</td>';
-
-      resultsHTML='<div style="overflow-x:auto;border-radius:8px;overflow:hidden">'
-        +'<table style="width:100%;border-collapse:collapse">'
-        +'<thead>'+craneHeaderRow+subHeaderRow+'</thead>'
-        +'<tbody>'+rows+'</tbody>'
-        +'<tfoot><tr style="background:#1a3a5c;color:white">'+totalCells+'</tr></tfoot>'
-        +'</table></div>';
+      var tfoot='<tr style="background:#1a3a5c;color:white"><td style="padding:7px 8px;font-size:11px;font-weight:800">TOTAL</td>';
+      for(var ci=1;ci<=snc;ci++)tfoot+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+ctots[ci].d+'</td><td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+ctots[ci].l+'</td>';
+      tfoot+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(grandD+grandL)+'</td></tr>';
+      resultsHTML='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+thead+'</thead><tbody>'+tbody+'</tbody><tfoot>'+tfoot+'</tfoot></table></div>';
     } else {
       resultsHTML='<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
     }
 
-    // ── Build Delays collapsible ──
-    var delaysHTML='';
-    var delayData=s._results&&s._results.delays?s._results.delays:{};
+    // Delays — grouped by crane, skip empty rows
+    var delayData=(s._results&&s._results.delays)||{};
     var delayKeys=Object.keys(delayData);
-    var hasDelays=delayKeys.some(function(k){var d=delayData[k];return d&&(d.from||d.to||d.type||d.desc);});
-    if(hasDelays){
-      var dSections='';
-      for(var ci=1;ci<=nc;ci++){
-        var craneRows='';
-        delayKeys.forEach(function(k){
-          var parts=k.split('_');
-          if(parts.length<3)return;
-          var kCrane=parseInt(parts[parts.length-2]);
-          if(kCrane!==ci)return;
-          var d=delayData[k];
-          if(!d||(!(d.from)&&!(d.to)&&!(d.type)&&!(d.desc)))return;
-          craneRows+='<tr>'
-            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">'+( d.from||'—')+'</td>'
-            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">'+(d.to||'—')+'</td>'
-            +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c;padding:6px 8px">'+dur(d.from,d.to)+'</td>'
-            +'<td style="font-size:11px;font-weight:700;padding:6px 8px">'+(d.type||'')+'</td>'
-            +'<td style="font-size:11px;padding:6px 8px;color:#444">'+(d.desc||'')+'</td>'
-            +'</tr>';
-        });
-        if(craneRows){
-          dSections+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
-            +'<div style="overflow-x:auto;margin-bottom:10px;border-radius:8px;overflow:hidden">'
-            +'<table style="width:100%;border-collapse:collapse">'
-            +'<thead><tr style="background:#1f3864;color:white">'
-            +'<th style="padding:7px 10px;font-size:11px;font-weight:800">From</th>'
-            +'<th style="padding:7px 10px;font-size:11px;font-weight:800">To</th>'
-            +'<th style="padding:7px 8px;font-size:11px;font-weight:800">Dur.</th>'
-            +'<th style="padding:7px 8px;font-size:11px;font-weight:800;text-align:left">Delay Type</th>'
-            +'<th style="padding:7px 8px;font-size:11px;font-weight:800;text-align:left">Description</th>'
-            +'</tr></thead>'
-            +'<tbody>'+craneRows+'</tbody>'
-            +'</table></div>';
-        }
+    var delaysHTML='';
+    var dSections='';
+    for(var ci=1;ci<=snc;ci++){
+      var craneRows='';
+      delayKeys.forEach(function(k){
+        var parts=k.split('_');
+        if(parts.length<3)return;
+        if(parseInt(parts[parts.length-2])!==ci)return;
+        var dd=delayData[k];
+        if(!dd||(!dd.from&&!dd.to&&!dd.type&&!dd.desc))return;
+        craneRows+='<tr>'
+          +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.from||'—')+'</td>'
+          +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.to||'—')+'</td>'
+          +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c;padding:6px 8px">'+dur(dd.from,dd.to)+'</td>'
+          +'<td style="font-size:11px;font-weight:700;padding:6px 8px">'+(dd.type||'')+'</td>'
+          +'<td style="font-size:11px;padding:6px 8px;color:#444">'+(dd.desc||'')+'</td>'
+          +'</tr>';
+      });
+      if(craneRows){
+        dSections+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
+          +'<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse">'
+          +'<thead><tr style="background:#1f3864;color:white">'
+          +'<th style="padding:7px 10px;font-size:11px">From</th><th style="padding:7px 10px;font-size:11px">To</th>'
+          +'<th style="padding:7px 8px;font-size:11px">Dur.</th><th style="padding:7px 8px;font-size:11px;text-align:left">Delay Type</th>'
+          +'<th style="padding:7px 8px;font-size:11px;text-align:left">Description</th></tr></thead>'
+          +'<tbody>'+craneRows+'</tbody></table></div>';
       }
-      delaysHTML=dSections||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
-    } else {
-      delaysHTML='<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
     }
+    delaysHTML=dSections||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
 
-    var uid='hi_'+s.id;
+    var uid='h_'+s.id;
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
       <div class="hi-vessel">${s.vesselName} ${isA?'<span class="pill pblue">ACTIVE</span>':''}</div>
       <div class="hi-meta">🏗️ ${s.numCranes} Cranes &nbsp;·&nbsp; 🎯 Target: ${s.target}<br>
@@ -1590,27 +1543,18 @@ function renderHistory(){
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>
-
       <div style="margin-top:10px">
-        <div onclick="histCollapse('${uid}-res')" style="display:flex;align-items:center;justify-content:space-between;background:#1f3864;color:white;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800">
-          <span>📊 Results — ${shiftLabel}</span>
-          <span id="${uid}-res-arr">▶</span>
+        <div onclick="histCollapse('${uid}r')" style="display:flex;align-items:center;justify-content:space-between;background:#1f3864;color:white;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">
+          <span>📊 Results &mdash; ${shiftLabel}</span><span id="${uid}r-arr">▶</span>
         </div>
-        <div id="${uid}-res" style="display:none;background:white;border-radius:0 0 8px 8px;padding:10px;border:1px solid #dde3f0;border-top:none">
-          ${resultsHTML}
-        </div>
+        <div id="${uid}r" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">${resultsHTML}</div>
       </div>
-
       <div style="margin-top:6px">
-        <div onclick="histCollapse('${uid}-del')" style="display:flex;align-items:center;justify-content:space-between;background:#f1c40f;color:#1a3a5c;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800">
-          <span>⏸️ Delays — ${shiftLabel}</span>
-          <span id="${uid}-del-arr">▶</span>
+        <div onclick="histCollapse('${uid}d')" style="display:flex;align-items:center;justify-content:space-between;background:#f1c40f;color:#1a3a5c;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">
+          <span>⏸️ Delays &mdash; ${shiftLabel}</span><span id="${uid}d-arr">▶</span>
         </div>
-        <div id="${uid}-del" style="display:none;background:white;border-radius:0 0 8px 8px;padding:10px;border:1px solid #dde3f0;border-top:none">
-          ${delaysHTML}
-        </div>
+        <div id="${uid}d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">${delaysHTML}</div>
       </div>
-
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
         ${ST.activeId===s.id?'<span class="pill pgreen" style="font-size:10px">● Active</span>':
           `<button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>`}
