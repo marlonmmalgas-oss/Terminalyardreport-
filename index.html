@@ -1340,16 +1340,21 @@ function shareDelays(){
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
+    let hasRows=false;
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
+      // Skip completely empty rows
+      if(!d.from&&!d.to&&!d.type&&!d.desc)return;
+      hasRows=true;
       tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 8px">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 8px">${d.to||''}</td>
         <td class="dur">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.type||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.desc||'')}</td>
       </tr>`;
     });
+    if(!hasRows)continue;
     h+=`<div class="dblk">
       <div class="dchd">${craneName(c)}</div>
       <div class="twrap"><table class="dt">
@@ -1474,7 +1479,6 @@ function renderHistory(){
     var resultsHTML='';
     var hourlyData=s._results&&s._results.hourly?s._results.hourly:{};
     var nc=s.numCranes||2;
-    // Get slots that have any data
     var usedSlots=ALL.filter(function(slot){
       for(var ci=1;ci<=nc;ci++){
         if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;
@@ -1482,35 +1486,56 @@ function renderHistory(){
       return false;
     });
     if(usedSlots.length){
-      var craneHeaders='<th>Slot</th>';
-      for(var ci=1;ci<=nc;ci++)craneHeaders+='<th>'+craneName(ci)+' D</th><th>'+craneName(ci)+' L</th>';
-      craneHeaders+='<th>Total</th>';
+      // Header: Slot | CR1 | | CR2 | | Total  (grouped by crane with D/L subheaders)
+      var craneHeaderRow='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:left;border-right:1px solid rgba(255,255,255,.2)">Slot</th>';
+      for(var ci=1;ci<=nc;ci++){
+        craneHeaderRow+='<th colspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
+      }
+      craneHeaderRow+='<th rowspan="2" style="padding:7px 6px;font-size:11px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.2)">Total</th></tr>';
+      var subHeaderRow='<tr style="background:#162d52;color:rgba(255,255,255,.85)">';
+      for(var ci=1;ci<=nc;ci++){
+        subHeaderRow+='<th style="padding:4px 6px;font-size:10px;font-weight:700;text-align:center;border-left:1px solid rgba(255,255,255,.2)">D</th>'
+                    +'<th style="padding:4px 6px;font-size:10px;font-weight:700;text-align:center">L</th>';
+      }
+      subHeaderRow+='</tr>';
+
       var rows='';
       var grandD=0,grandL=0;
-      usedSlots.forEach(function(slot){
-        var rowD=0,rowL=0,cells='<td style="white-space:nowrap;font-weight:700">'+fs(slot)+'</td>';
+      var craneTotals={};
+      for(var ci=1;ci<=nc;ci++)craneTotals[ci]={d:0,l:0};
+
+      usedSlots.forEach(function(slot,idx){
+        var rowTotal=0;
+        var cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap;border-right:1px solid #dde3f0">'+fs(slot)+'</td>';
         for(var ci=1;ci<=nc;ci++){
           var d=hourlyData[slot+'_'+ci+'_discharge']||0;
           var l=hourlyData[slot+'_'+ci+'_load']||0;
-          rowD+=d;rowL+=l;
-          cells+='<td>'+(d||'-')+'</td><td>'+(l||'-')+'</td>';
+          craneTotals[ci].d+=d;craneTotals[ci].l+=l;
+          rowTotal+=d+l;grandD+=d;grandL+=l;
+          cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:1px solid #dde3f0">'+(d||'—')+'</td>'
+               +'<td style="padding:6px 5px;font-size:11px;text-align:center">'+(l||'—')+'</td>';
         }
-        grandD+=rowD;grandL+=rowL;
-        cells+='<td style="font-weight:800">'+(rowD+rowL)+'</td>';
-        rows+='<tr>'+cells+'</tr>';
+        cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:1px solid #dde3f0">'+rowTotal+'</td>';
+        var bg=idx%2===0?'white':'#f5f8fc';
+        rows+='<tr style="background:'+bg+'">'+cells+'</tr>';
       });
-      rows+='<tr style="background:#1a3a5c;color:white;font-weight:800"><td>TOTAL</td>';
+
+      // Total row
+      var totalCells='<td style="padding:7px 8px;font-size:11px;font-weight:800;border-right:1px solid rgba(255,255,255,.3)">TOTAL</td>';
       for(var ci=1;ci<=nc;ci++){
-        var totD=0,totL=0;
-        usedSlots.forEach(function(slot){totD+=hourlyData[slot+'_'+ci+'_discharge']||0;totL+=hourlyData[slot+'_'+ci+'_load']||0;});
-        rows+='<td>'+totD+'</td><td>'+totL+'</td>';
+        totalCells+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:1px solid rgba(255,255,255,.3)">'+craneTotals[ci].d+'</td>'
+                  +'<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+craneTotals[ci].l+'</td>';
       }
-      rows+='<td>'+(grandD+grandL)+'</td></tr>';
-      resultsHTML='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">'
-        +'<thead><tr style="background:#1f3864;color:white">'+craneHeaders+'</tr></thead>'
-        +'<tbody>'+rows+'</tbody></table></div>';
+      totalCells+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:1px solid rgba(255,255,255,.3)">'+(grandD+grandL)+'</td>';
+
+      resultsHTML='<div style="overflow-x:auto;border-radius:8px;overflow:hidden">'
+        +'<table style="width:100%;border-collapse:collapse">'
+        +'<thead>'+craneHeaderRow+subHeaderRow+'</thead>'
+        +'<tbody>'+rows+'</tbody>'
+        +'<tfoot><tr style="background:#1a3a5c;color:white">'+totalCells+'</tr></tfoot>'
+        +'</table></div>';
     } else {
-      resultsHTML='<div style="font-size:11px;color:#999;padding:6px">No results recorded.</div>';
+      resultsHTML='<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
     }
 
     // ── Build Delays collapsible ──
@@ -1523,32 +1548,38 @@ function renderHistory(){
       for(var ci=1;ci<=nc;ci++){
         var craneRows='';
         delayKeys.forEach(function(k){
-          // Key format: sessId_craneNum_rowId
           var parts=k.split('_');
-          // sessId can be a large number, craneNum is second-to-last, rowId is last
           if(parts.length<3)return;
           var kCrane=parseInt(parts[parts.length-2]);
           if(kCrane!==ci)return;
           var d=delayData[k];
           if(!d||(!(d.from)&&!(d.to)&&!(d.type)&&!(d.desc)))return;
           craneRows+='<tr>'
-            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">'+( d.from||'—')+'</td>'
-            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">'+(d.to||'—')+'</td>'
-            +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c">'+dur(d.from,d.to)+'</td>'
-            +'<td style="font-size:11px;font-weight:700;padding:4px 5px">'+(d.type||'')+'</td>'
-            +'<td style="font-size:11px;padding:4px 5px">'+(d.desc||'')+'</td>'
+            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">'+( d.from||'—')+'</td>'
+            +'<td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">'+(d.to||'—')+'</td>'
+            +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c;padding:6px 8px">'+dur(d.from,d.to)+'</td>'
+            +'<td style="font-size:11px;font-weight:700;padding:6px 8px">'+(d.type||'')+'</td>'
+            +'<td style="font-size:11px;padding:6px 8px;color:#444">'+(d.desc||'')+'</td>'
             +'</tr>';
         });
         if(craneRows){
-          dSections+='<div style="background:#fff176;border-radius:8px;padding:6px 10px;margin-bottom:6px;font-weight:800;font-size:13px">'+craneName(ci)+'</div>'
-            +'<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse;font-size:11px">'
-            +'<thead><tr style="background:#1f3864;color:white"><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>'
-            +'<tbody>'+craneRows+'</tbody></table></div>';
+          dSections+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
+            +'<div style="overflow-x:auto;margin-bottom:10px;border-radius:8px;overflow:hidden">'
+            +'<table style="width:100%;border-collapse:collapse">'
+            +'<thead><tr style="background:#1f3864;color:white">'
+            +'<th style="padding:7px 10px;font-size:11px;font-weight:800">From</th>'
+            +'<th style="padding:7px 10px;font-size:11px;font-weight:800">To</th>'
+            +'<th style="padding:7px 8px;font-size:11px;font-weight:800">Dur.</th>'
+            +'<th style="padding:7px 8px;font-size:11px;font-weight:800;text-align:left">Delay Type</th>'
+            +'<th style="padding:7px 8px;font-size:11px;font-weight:800;text-align:left">Description</th>'
+            +'</tr></thead>'
+            +'<tbody>'+craneRows+'</tbody>'
+            +'</table></div>';
         }
       }
-      delaysHTML=dSections||'<div style="font-size:11px;color:#999;padding:6px">No delays recorded.</div>';
+      delaysHTML=dSections||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
     } else {
-      delaysHTML='<div style="font-size:11px;color:#999;padding:6px">No delays recorded.</div>';
+      delaysHTML='<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
     }
 
     var uid='hi_'+s.id;
