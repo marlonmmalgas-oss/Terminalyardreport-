@@ -1343,16 +1343,16 @@ function shareDelays(){
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
       tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.to||''}</td>
         <td class="dur">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.type||'')}</td>
+        <td style="font-size:11px;padding:6px 8px">${(d.desc||'')}</td>
       </tr>`;
     });
     h+=`<div class="dblk">
       <div class="dchd">${craneName(c)}</div>
-      <div class="twrap"><table class="dt">
+      <div style="overflow:visible"><table class="dt" style="overflow:visible">
         <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
@@ -2473,7 +2473,7 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
@@ -2484,7 +2484,7 @@ async function shareReport(capId){
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
