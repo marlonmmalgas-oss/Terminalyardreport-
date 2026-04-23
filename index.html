@@ -286,6 +286,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-4hourly"></div>
     <div class="sc" id="sc-delays"></div>
     <div class="sc" id="sc-yard"></div>
+    <div class="sc" id="sc-performance"></div>
     <div class="sc" id="sc-history"></div>
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
@@ -818,15 +819,15 @@ function initApp(){
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -998,7 +999,11 @@ function saveSession(){
   const idx=ST.sessions.findIndex(x=>x.id===id);
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
-  sv();renderInput();
+  sv();
+  // Re-render immediately — Firebase echo is suppressed by isOwnSave window
+  renderInput();
+  // Extend own-save window to 2s to prevent Firebase echo causing a second flicker
+  setTimeout(function(){_myLastSave=Date.now();},100);
 }
 function unlockSess(){
   // Must mutate the raw session in ST.sessions — getSess() returns a clone
@@ -1031,6 +1036,7 @@ function newVessel(){
     var _id=ST.activeId;
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
     if(_existing.id){
+      var _nc=_existing.numCranes||2;
       // Snapshot current shift's hourly + delays into s.shifts entry
       if(!_existing.shifts)_existing.shifts=[];
       var _shiftType=isDay()?'DAY':'NIGHT';
@@ -1401,11 +1407,10 @@ function getDelayRowIds(sessId,c){
 function shareDelays(){
   const sess=getSess(),slot=currSlot();
   if(!sess){alert('No active session.');return;}
-  const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
+  const nc=sess.numCranes;
   const tn=ST.settings.term||'';
   const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
   var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
-  // Build share-ready HTML — plain text only, no inputs, no buttons, no wide controls
   let h=`<div id="dcap_share">`;
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
@@ -1413,10 +1418,13 @@ function shareDelays(){
       <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
-      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span></div>
-      <div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">${fs(slot)}</span></div>
-      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span></div>
+      <div style="flex:1;min-width:0;">
+        <span class="rh-vessel">${sess.vesselName}</span>
+        <span style="font-size:11px;color:rgba(255,255,255,.85);margin-left:8px">${todayStr}</span>
+      </div>
+      <div style="flex:0 0 auto;"><span class="rh-slot">${fs(slot)}</span></div>
     </div>
+    ${sess.firstLift?`<div style="font-size:12px;color:rgba(255,255,255,.9);margin-top:6px;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2ecc71"></span> First Lift: <strong>${sess.firstLift}</strong></div>`:''}
   </div>`;
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
@@ -1433,14 +1441,13 @@ function shareDelays(){
     });
     h+=`<div class="dblk">
       <div class="dchd">${craneName(c)}</div>
-      <div style="overflow:visible"><table class="dt" style="overflow:visible">
+      <div style="overflow:visible"><table class="dt" style="overflow:visible;width:100%">
         <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
     </div>`;
   }
   h+=`<div style="height:20px"></div></div>`;
-  // Inject into a hidden container, capture with shareReport, then remove
   var host=document.createElement('div');
   host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
   host.innerHTML=h;
@@ -1520,7 +1527,115 @@ function updateDelay(sid,c,r,field,val){
 }
 
 // ═══════════ HISTORY ═══════════
-function histCollapse(uid){
+// ═══════════ HOURLY PERFORMANCE ═══════════
+function renderPerformance(){
+  const sess=getSess();
+  const sl=shiftSlots();
+  const nc=sess?sess.numCranes:2;
+  const labels=sl.map(function(s){return fs(s);});
+
+  // Read saved targets from ST.perfTargets
+  if(!ST.perfTargets)ST.perfTargets={dlTarget:0,swhTarget:0};
+  var dlTarget=ST.perfTargets.dlTarget||0;
+  var swhTarget=ST.perfTargets.swhTarget||0;
+
+  let h=`<div class="ph"><h2>📈 Hourly Performance</h2><p>Live crane performance vs target</p></div>`;
+
+  // Target inputs
+  h+=`<div class="sec" style="margin:0 10px 12px;padding:14px 16px;border-radius:12px;background:white;box-shadow:0 2px 8px rgba(0,0,0,.07)">
+    <div class="st" style="margin-bottom:10px">Targets</div>
+    <div class="g2">
+      <div class="f"><label>Discharge/Load Target (per hour)</label>
+        <input type="number" id="perfDLTarget" value="${dlTarget}" placeholder="0"
+          oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.dlTarget=parseFloat(this.value)||0;sv();renderPerformance()"/>
+      </div>
+      <div class="f"><label>SWH Target (per hour)</label>
+        <input type="number" id="perfSWHTarget" value="${swhTarget}" placeholder="0"
+          oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.swhTarget=parseFloat(this.value)||0;sv();renderPerformance()"/>
+      </div>
+    </div>
+  </div>`;
+
+  if(!sess){h+=noSess('📈','No active session.');$('sc-performance').innerHTML=h;return;}
+
+  // Build datasets per crane (D+L combined per slot)
+  var craneDatasets=[];
+  var craneColors=['#2980b9','#e67e22','#27ae60','#8e44ad'];
+  for(var ci=1;ci<=nc;ci++){
+    var craneData=sl.map(function(slot){
+      var d=ST.hourly[slot+'_'+ci+'_discharge']||0;
+      var l=ST.hourly[slot+'_'+ci+'_load']||0;
+      return d+l;
+    });
+    craneDatasets.push({label:craneName(ci),data:JSON.stringify(craneData),color:craneColors[(ci-1)%craneColors.length]});
+  }
+
+  // SWH = sum of all cranes per slot
+  var swhData=sl.map(function(slot){
+    var total=0;
+    for(var ci=1;ci<=nc;ci++){
+      total+=(ST.hourly[slot+'_'+ci+'_discharge']||0)+(ST.hourly[slot+'_'+ci+'_load']||0);
+    }
+    return total;
+  });
+
+  var labelsJSON=JSON.stringify(labels);
+  var swhJSON=JSON.stringify(swhData);
+  var dlTargetLine=JSON.stringify(sl.map(function(){return dlTarget;}));
+  var swhTargetLine=JSON.stringify(sl.map(function(){return swhTarget;}));
+
+  // Build crane dataset JS string for Chart.js
+  var craneDatasetsJS=craneDatasets.map(function(cd){
+    return `{label:'${cd.label}',data:${cd.data},borderColor:'${cd.color}',backgroundColor:'${cd.color}22',pointBackgroundColor:'${cd.color}',pointRadius:5,pointHoverRadius:7,borderWidth:2.5,tension:.3,fill:false}`;
+  }).join(',');
+
+  h+=`<div style="margin:0 10px 16px;padding:16px;border-radius:14px;background:white;box-shadow:0 2px 12px rgba(0,0,0,.08)">
+    <div style="font-size:14px;font-weight:800;color:#1f3864;margin-bottom:14px;letter-spacing:.3px">Discharge / Load</div>
+    <div style="position:relative;height:260px"><canvas id="chartDL"></canvas></div>
+  </div>
+  <div style="margin:0 10px 24px;padding:16px;border-radius:14px;background:white;box-shadow:0 2px 12px rgba(0,0,0,.08)">
+    <div style="font-size:14px;font-weight:800;color:#1f3864;margin-bottom:14px;letter-spacing:.3px">SWH (Ship Working Hours)</div>
+    <div style="position:relative;height:260px"><canvas id="chartSWH"></canvas></div>
+  </div>`;
+
+  $('sc-performance').innerHTML=h;
+
+  // Load Chart.js if needed, then draw
+  function drawCharts(){
+    var Chart=window.Chart;
+    var commonOptions={
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{font:{size:11},usePointStyle:true,padding:12}},
+        tooltip:{callbacks:{label:function(ctx){return ctx.dataset.label+': '+ctx.parsed.y;}}}},
+      scales:{
+        x:{grid:{color:'rgba(0,0,0,.05)'},ticks:{font:{size:9},maxRotation:45,minRotation:30}},
+        y:{grid:{color:'rgba(0,0,0,.07)'},ticks:{font:{size:10}},beginAtZero:true}
+      }
+    };
+
+    // D/L chart
+    var dlDatasets=eval('['+craneDatasetsJS+']');
+    dlDatasets.push({label:'Target',data:${dlTargetLine},borderColor:'#000',borderDash:[6,3],borderWidth:2,pointRadius:3,pointStyle:'rectRot',fill:false,tension:0});
+    new Chart(document.getElementById('chartDL'),{type:'line',data:{labels:${labelsJSON},datasets:dlDatasets},options:JSON.parse(JSON.stringify(commonOptions))});
+
+    // SWH chart
+    new Chart(document.getElementById('chartSWH'),{type:'line',data:{labels:${labelsJSON},datasets:[
+      {label:'SWH',data:${swhJSON},borderColor:'#2c3e8c',backgroundColor:'#2c3e8c11',pointBackgroundColor:'#2c3e8c',pointRadius:5,pointHoverRadius:7,borderWidth:2.5,tension:.3,fill:true},
+      {label:'Target',data:${swhTargetLine},borderColor:'#555',borderDash:[6,3],borderWidth:2,pointRadius:3,pointStyle:'rectRot',fill:false,tension:0}
+    ]},options:JSON.parse(JSON.stringify(commonOptions))});
+  }
+
+  if(window.Chart){
+    drawCharts();
+  } else {
+    var sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+    sc.onload=drawCharts;
+    document.head.appendChild(sc);
+  }
+}
+
+
   var el=document.getElementById(uid);
   var arr=document.getElementById(uid+'-arr');
   if(!el)return;
