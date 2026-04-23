@@ -286,6 +286,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-4hourly"></div>
     <div class="sc" id="sc-delays"></div>
     <div class="sc" id="sc-yard"></div>
+    <div class="sc" id="sc-performance"></div>
     <div class="sc" id="sc-history"></div>
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
@@ -757,76 +758,50 @@ function initApp(){
   const startTab=r==='admin'?'admin':r==='supervisor'?'analysis':'input';
   switchTab(startTab);
   RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();if(RT.tab==='4hourly')renderFour();},300000);
-
-  // ── Shift rollover check — runs every minute ──
+  // Shift rollover — runs every minute, saves results+delays at 06:00/18:00
   RT.lastShiftType=isDay()?'DAY':'NIGHT';
-  RT.lastShiftDate=new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+  RT.lastShiftDate=new Date().toLocaleDateString('en-CA');
   RT.shiftRollTimer=setInterval(function(){
-    var currentShift=isDay()?'DAY':'NIGHT';
-    var currentDate=new Date().toLocaleDateString('en-CA');
-    if(currentShift===RT.lastShiftType&&currentDate===RT.lastShiftDate)return;
-    // Shift just rolled over — snapshot outgoing shift
-    var outgoingShift=RT.lastShiftType;
-    var outgoingDate=RT.lastShiftDate;
-    RT.lastShiftType=currentShift;
-    RT.lastShiftDate=currentDate;
+    var cShift=isDay()?'DAY':'NIGHT';
+    var cDate=new Date().toLocaleDateString('en-CA');
+    if(cShift===RT.lastShiftType&&cDate===RT.lastShiftDate)return;
+    var outType=RT.lastShiftType,outDate=RT.lastShiftDate;
+    RT.lastShiftType=cShift;RT.lastShiftDate=cDate;
     if(!ST.activeId)return;
     var raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
     if(!raw)return;
     if(!raw.shifts)raw.shifts=[];
-    // Find or create entry by BOTH type AND date — so each 12hr window is unique
-    var shiftKey=outgoingShift+'_'+outgoingDate;
-    var shiftEntry=raw.shifts.find(function(sh){return sh.key===shiftKey;});
-    if(!shiftEntry){
-      shiftEntry={key:shiftKey,type:outgoingShift,date:outgoingDate,start:new Date().toISOString(),end:new Date().toISOString(),slots:[],hourly:{},delays:{}};
-      raw.shifts.push(shiftEntry);
-    }
-    // Snapshot hourly results for this shift's slots
-    var isDayShift=outgoingShift==='DAY';
-    var shiftSlotKeys=isDayShift?ALL.slice(0,12):ALL.slice(12);
+    var sKey=outType+'_'+outDate;
+    var se=raw.shifts.find(function(sh){return sh.key===sKey;});
+    if(!se){se={key:sKey,type:outType,date:outDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};raw.shifts.push(se);}
     var nc=raw.numCranes||2;
-    if(!shiftEntry.hourly)shiftEntry.hourly={};
-    shiftSlotKeys.forEach(function(slot){
-      for(var ci=1;ci<=nc;ci++){
-        ['discharge','load'].forEach(function(t){
-          var k=slot+'_'+ci+'_'+t;
-          if(ST.hourly[k])shiftEntry.hourly[k]=ST.hourly[k];
-        });
-      }
-    });
-    // Snapshot delays
-    if(!shiftEntry.delays)shiftEntry.delays={};
-    for(var ci=1;ci<=nc;ci++){
-      var rk=ST.activeId+'_c'+ci;
-      (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
-        var dk=ST.activeId+'_'+ci+'_'+r;
-        if(ST.delays[dk])shiftEntry.delays[dk]=Object.assign({},ST.delays[dk]);
-      });
-    }
-    shiftEntry.end=new Date().toISOString();
-    var idx=ST.sessions.findIndex(function(x){return x.id===ST.activeId;});
-    if(idx>=0)ST.sessions[idx]=JSON.parse(JSON.stringify(raw));
-    // Reset delays for new shift
-    ST.delays={};
-    ST.delayRowIds={};
+    var isDaySlots=outType==='DAY';
+    var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
+    slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[k]=ST.hourly[k];});}});
+    for(var ci=1;ci<=nc;ci++){var rk=ST.activeId+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=ST.activeId+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
+    se.end=new Date().toISOString();
+    var sidx=ST.sessions.findIndex(function(x){return x.id===ST.activeId;});
+    if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
+    ST.delays={};ST.delayRowIds={};
     sv();
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='history')renderHistory();
+    if(RT.tab==='performance')renderPerformance();
   },60000);
 }
 
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -998,63 +973,60 @@ function saveSession(){
   const idx=ST.sessions.findIndex(x=>x.id===id);
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
-  sv();renderInput();
+  sv();
+  renderInput();
+  // Push _myLastSave forward so Firebase echo stays inside own-save window
+  setTimeout(function(){_myLastSave=Date.now();},50);
 }
 function unlockSess(){
   // Must mutate the raw session in ST.sessions — getSess() returns a clone
   if(!ST.activeId)return;
   const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
-  if(raw){
-    raw.locked=false;
-    // Save and immediately re-lock the _myLastSave window for 3s
-    // so Firebase echo of any prior locked=true write can't revert the unlock
-    sv();
-    var protectUntil=Date.now()+3000;
-    var _origLast=_myLastSave;
-    var _guard=setInterval(function(){
-      if(Date.now()>protectUntil){clearInterval(_guard);return;}
-      // If Firebase restored locked=true, flip it back
-      var r=ST.sessions.find(function(x){return x.id===ST.activeId;});
-      if(r&&r.locked){r.locked=false;renderInput();}
-    },200);
-    renderInput();
-  }
+  if(raw){raw.locked=false;sv();renderInput();}
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
 function newVessel(){
-  // Snapshot current session into ST.sessions WITHOUT a separate sv() call.
-  // Calling saveSession() here triggers sv() which sets _myLastSave=ts1.
-  // Then we clear ST.hourly and call sv() again with _myLastSave=ts2.
-  // Firebase echoes the FIRST write after ts2 is set, falling outside the
-  // 500ms own-save window — so old hourly data gets restored. Fix: one sv().
   if(ST.activeId){
     var _id=ST.activeId;
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
     if(_existing.id){
-      // Snapshot current shift's hourly + delays into s.shifts entry
+      var _nc=_existing.numCranes||2;
+      // Save current shift into s.shifts with unique key per type+date
       if(!_existing.shifts)_existing.shifts=[];
       var _shiftType=isDay()?'DAY':'NIGHT';
       var _shiftDate=new Date().toLocaleDateString('en-CA');
       var _shiftKey=_shiftType+'_'+_shiftDate;
       var _shiftEntry=_existing.shifts.find(function(sh){return sh.key===_shiftKey;});
-      if(!_shiftEntry){_shiftEntry={key:_shiftKey,type:_shiftType,date:_shiftDate,start:new Date().toISOString(),end:new Date().toISOString(),slots:[],hourly:{},delays:{}};_existing.shifts.push(_shiftEntry);}
-      if(!_shiftEntry.hourly)_shiftEntry.hourly={};
-      if(!_shiftEntry.delays)_shiftEntry.delays={};
+      if(!_shiftEntry){
+        _shiftEntry={key:_shiftKey,type:_shiftType,date:_shiftDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+        _existing.shifts.push(_shiftEntry);
+      }
+      // Snapshot hourly results for this shift
       var _sl=shiftSlots();
-      _sl.forEach(function(slot){for(var ci=1;ci<=_nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])_shiftEntry.hourly[k]=ST.hourly[k];});}});
-      for(var _ci=1;_ci<=_nc;_ci++){var _rk=_id+'_c'+_ci;(ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){var _dk=_id+'_'+_ci+'_'+_r;if(ST.delays[_dk])_shiftEntry.delays[_dk]=Object.assign({},ST.delays[_dk]);});}
+      _sl.forEach(function(slot){
+        for(var ci=1;ci<=_nc;ci++){
+          ['discharge','load'].forEach(function(t){
+            var k=slot+'_'+ci+'_'+t;
+            if(ST.hourly[k])_shiftEntry.hourly[k]=ST.hourly[k];
+          });
+        }
+      });
+      // Snapshot delays for this shift
+      for(var _ci=1;_ci<=_nc;_ci++){
+        var _rk=_id+'_c'+_ci;
+        (ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){
+          var _dk=_id+'_'+_ci+'_'+_r;
+          if(ST.delays[_dk])_shiftEntry.delays[_dk]=Object.assign({},ST.delays[_dk]);
+        });
+      }
       _shiftEntry.end=new Date().toISOString();
-      // Also keep flat _results for backwards compat
-      _existing._results=_existing._results||{hourly:{},delays:{}};
-      _sl.forEach(function(slot){for(var ci=1;ci<=_nc;ci++){["discharge","load"].forEach(function(t){var k=slot+"_"+ci+"_"+t;if(ST.hourly[k])_existing._results.hourly[k]=ST.hourly[k];});}});
-      for(var _ci2=1;_ci2<=_nc;_ci2++){var _rk2=_id+'_c'+_ci2;(ST.delayRowIds&&ST.delayRowIds[_rk2]||[0]).forEach(function(_r2){var _dk2=_id+'_'+_ci2+'_'+_r2;if(ST.delays[_dk2])_existing._results.delays[_dk2]=Object.assign({},ST.delays[_dk2]);});}
       _existing.locked=true;
       _existing.savedAt=new Date().toISOString();
       var _idx=ST.sessions.findIndex(function(x){return x.id===_id;});
       if(_idx>=0)ST.sessions[_idx]=JSON.parse(JSON.stringify(_existing));
     }
   }
-  // Clear everything and do ONE sv() so Firebase only sees one write
+  // Clear everything — ONE sv() so Firebase only sees one write
   ST.activeId=null;
   ST.hourly={};
   ST.delayRowIds={};
@@ -1424,16 +1396,16 @@ function shareDelays(){
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
       tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.to||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap">${d.to||''}</td>
         <td class="dur">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.type||'')}</td>
-        <td style="font-size:11px;padding:6px 8px">${(d.desc||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.type||'')}</td>
+        <td style="font-size:11px;font-weight:700;padding:6px 5px">${(d.desc||'')}</td>
       </tr>`;
     });
     h+=`<div class="dblk">
       <div class="dchd">${craneName(c)}</div>
-      <div style="overflow:visible"><table class="dt" style="overflow:visible">
+      <div class="twrap"><table class="dt">
         <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
@@ -1520,6 +1492,130 @@ function updateDelay(sid,c,r,field,val){
 }
 
 // ═══════════ HISTORY ═══════════
+// ═══════════ HOURLY PERFORMANCE ═══════════
+function renderPerformance(){
+  const sess=getSess();
+  const sl=shiftSlots();
+  const nc=sess?sess.numCranes:2;
+  if(!ST.perfTargets)ST.perfTargets={dlTarget:0,swhTarget:0};
+  var dlTarget=ST.perfTargets.dlTarget||0;
+  var swhTarget=ST.perfTargets.swhTarget||0;
+  var bgStyle='background:linear-gradient(rgba(31,56,100,.92),rgba(31,56,100,.92)),url('+(HARDCODED_BG||'')+') center/cover';
+  var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  var slot=currSlot();
+
+  var h='<div id="perfCap">';
+  // Header
+  h+='<div class="rh" style="'+bgStyle+'">';
+  h+='<div class="rh1"><div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
+  h+='<div class="rh-txt"><h2>HOURLY PERFORMANCE</h2><p>'+(ST.settings&&ST.settings.term||'')+'</p></div></div>';
+  if(sess){
+    h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
+    h+='<div style="flex:1;min-width:0;"><span class="rh-vessel">'+sess.vesselName+'</span>';
+    if(sess.dockedOn)h+='<div style="font-size:11px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: '+formatDateTime(sess.dockedOn)+'</div>';
+    h+='</div>';
+    h+='<div style="flex:0 0 auto;"><span class="rh-slot">'+fs(slot)+'</span></div>';
+    h+='<div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">'+todayStr+'</span>';
+    if(sess.firstLift||sess.lastLift){
+      h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
+      if(sess.firstLift)h+='<div>🟢 First Lift: <strong>'+sess.firstLift+'</strong></div>';
+      if(sess.lastLift)h+='<div>🔴 Last Lift: &nbsp;<strong>'+sess.lastLift+'</strong></div>';
+      h+='</div>';
+    }
+    h+='</div></div>';
+  }
+  h+='</div>';
+
+  // Target inputs
+  h+='<div style="margin:10px;padding:12px 14px;border-radius:10px;background:#1e2a3a;display:flex;gap:10px;flex-wrap:wrap">';
+  h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">D/L TARGET / HR</label>';
+  h+='<input type="number" value="'+dlTarget+'" style="width:100%;background:#0d1521;color:white;border:1px solid #2c4a6e;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:700" oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.dlTarget=parseFloat(this.value)||0;sv();renderPerformance()"/></div>';
+  h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">SWH TARGET / HR</label>';
+  h+='<input type="number" value="'+swhTarget+'" style="width:100%;background:#0d1521;color:white;border:1px solid #2c4a6e;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:700" oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.swhTarget=parseFloat(this.value)||0;sv();renderPerformance()"/></div>';
+  h+='</div>';
+
+  if(!sess){h+=noSess('📈','No active session.');h+='</div>';$('sc-performance').innerHTML=h;return;}
+
+  // Chart canvases
+  h+='<div style="margin:0 10px 8px;text-align:right"><button class="rh-share" onclick="sharePerformance()">📤 Share</button></div>';
+  h+='<div style="margin:0 10px 12px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
+  h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">Discharge / Load per Crane</div>';
+  h+='<div style="position:relative;height:220px"><canvas id="chartDL"></canvas></div></div>';
+  h+='<div style="margin:0 10px 20px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
+  h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">SWH (All Cranes Combined)</div>';
+  h+='<div style="position:relative;height:220px"><canvas id="chartSWH"></canvas></div></div>';
+  h+='<div style="height:10px"></div></div>';
+
+  $('sc-performance').innerHTML=h;
+
+  // Build data
+  var labels=sl.map(function(s){return fs(s);});
+  var craneColors=['#4fc3f7','#ffb74d','#81c784','#ce93d8','#f48fb1'];
+  var craneSets=[];
+  for(var ci=1;ci<=nc;ci++){
+    var craneData=sl.map(function(s2){return (ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);});
+    craneSets.push({label:craneName(ci),data:craneData,color:craneColors[(ci-1)%craneColors.length]});
+  }
+  var swhData=sl.map(function(s2){var t=0;for(var ci=1;ci<=nc;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);return t;});
+  var targetDLArr=sl.map(function(){return dlTarget;});
+  var targetSWHArr=sl.map(function(){return swhTarget;});
+
+  var darkGrid='rgba(255,255,255,.06)';
+  var darkTick={color:'rgba(255,255,255,.5)',font:{size:9}};
+  var commonOpts={
+    responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{position:'top',labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:10}},
+      tooltip:{backgroundColor:'#1e2a3a',titleColor:'#fff',bodyColor:'rgba(255,255,255,.8)',borderColor:'rgba(255,255,255,.1)',borderWidth:1}},
+    scales:{
+      x:{grid:{color:darkGrid},ticks:Object.assign({maxRotation:45,minRotation:30},darkTick)},
+      y:{grid:{color:darkGrid},ticks:darkTick,beginAtZero:true}
+    }
+  };
+
+  function drawCharts(){
+    // Destroy any existing charts on these canvases
+    var existDL=Chart.getChart('chartDL');if(existDL)existDL.destroy();
+    var existSWH=Chart.getChart('chartSWH');if(existSWH)existSWH.destroy();
+
+    var dlDatasets=craneSets.map(function(cs){
+      return{label:cs.label,data:cs.data,borderColor:cs.color,backgroundColor:cs.color+'33',pointBackgroundColor:cs.color,pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:false};
+    });
+    dlDatasets.push({label:'Target',data:targetDLArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0});
+    new Chart(document.getElementById('chartDL'),{type:'line',data:{labels:labels,datasets:dlDatasets},options:JSON.parse(JSON.stringify(commonOpts))});
+
+    new Chart(document.getElementById('chartSWH'),{type:'line',data:{labels:labels,datasets:[
+      {label:'SWH',data:swhData,borderColor:'#4fc3f7',backgroundColor:'#4fc3f722',pointBackgroundColor:'#4fc3f7',pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:true},
+      {label:'Target',data:targetSWHArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0}
+    ]},options:JSON.parse(JSON.stringify(commonOpts))});
+  }
+
+  if(window.Chart&&window.Chart.getChart){
+    drawCharts();
+  } else {
+    var sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+    sc.onload=function(){setTimeout(drawCharts,50);};
+    document.head.appendChild(sc);
+  }
+}
+
+function sharePerformance(){
+  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
+  var el=document.getElementById('perfCap');
+  if(!el){alert('Nothing to capture.');return;}
+  // Clone outside scroll container
+  var host=document.createElement('div');
+  host.style.cssText='position:absolute;left:-9999px;top:0;width:420px;opacity:0;pointer-events:none;background:#0d1521;';
+  host.innerHTML=el.outerHTML;
+  // Remove inputs from clone
+  host.querySelectorAll('input').forEach(function(inp){
+    var span=document.createElement('span');span.textContent=inp.value;span.style.cssText='color:white;font-weight:700;font-size:13px;';inp.parentNode.replaceChild(span,inp);
+  });
+  document.body.appendChild(host);
+  shareReport('perfCap').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
+}
+
+// ═══════════ HISTORY ═══════════
 function histCollapse(uid){
   var el=document.getElementById(uid);
   var arr=document.getElementById(uid+'-arr');
@@ -1531,68 +1627,67 @@ function histCollapse(uid){
 function buildShiftLabel(type,dateRef){
   var d;
   if(typeof dateRef==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(dateRef)){
-    // Plain date string e.g. "2026-04-23" — parse without timezone shift
     var parts=dateRef.split('-');
     d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));
   } else {
     d=new Date(typeof dateRef==='number'?dateRef:(dateRef||Date.now()));
   }
-  var dateStr=d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
-  if(type==='DAY')return'0600 \u2013 1800  '+dateStr;
-  if(type==='NIGHT')return'1800 \u2013 0600  '+dateStr;
-  var isDayShift=d.getHours()>=6&&d.getHours()<18;
-  return(isDayShift?'0600 \u2013 1800':'1800 \u2013 0600')+'  '+dateStr;
+  var ds=d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
+  if(type==='DAY')return'0600 \u2013 1800  '+ds;
+  if(type==='NIGHT')return'1800 \u2013 0600  '+ds;
+  return(d.getHours()>=6&&d.getHours()<18?'0600 \u2013 1800':'1800 \u2013 0600')+'  '+ds;
 }
 function buildHistoryResultsHTML(hourlyData,snc){
-  var usedSlots=ALL.filter(function(slot){for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}return false;});
-  if(!usedSlots.length)return'<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
-  var thead='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 8px;font-size:11px;text-align:left">Slot</th>';
-  for(var ci=1;ci<=snc;ci++)thead+='<th colspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
-  thead+='<th rowspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">Total</th></tr><tr style="background:#162d52;color:rgba(255,255,255,.8)">';
-  for(var ci=1;ci<=snc;ci++)thead+='<th style="padding:4px 6px;font-size:10px;border-left:2px solid rgba(255,255,255,.2)">D</th><th style="padding:4px 6px;font-size:10px">L</th>';
-  thead+='</tr>';
-  var tbody='';var grandD=0,grandL=0;var ctots={};
-  for(var ci=1;ci<=snc;ci++)ctots[ci]={d:0,l:0};
-  usedSlots.forEach(function(slot,idx){
+  var used=ALL.filter(function(slot){for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}return false;});
+  if(!used.length)return'<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
+  var th='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 8px;font-size:11px;text-align:left">Slot</th>';
+  for(var ci=1;ci<=snc;ci++)th+='<th colspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
+  th+='<th rowspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">Total</th></tr>';
+  th+='<tr style="background:#162d52;color:rgba(255,255,255,.8)">';
+  for(var ci=1;ci<=snc;ci++)th+='<th style="padding:4px 6px;font-size:10px;border-left:2px solid rgba(255,255,255,.2)">D</th><th style="padding:4px 6px;font-size:10px">L</th>';
+  th+='</tr>';
+  var tb='';var gD=0,gL=0;var ct={};
+  for(var ci=1;ci<=snc;ci++)ct[ci]={d:0,l:0};
+  used.forEach(function(slot,idx){
     var rt=0,cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap">'+fs(slot)+'</td>';
     for(var ci=1;ci<=snc;ci++){
       var dv=hourlyData[slot+'_'+ci+'_discharge']||0,lv=hourlyData[slot+'_'+ci+'_load']||0;
-      ctots[ci].d+=dv;ctots[ci].l+=lv;rt+=dv+lv;grandD+=dv;grandL+=lv;
+      ct[ci].d+=dv;ct[ci].l+=lv;rt+=dv+lv;gD+=dv;gL+=lv;
       cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:2px solid #dde3f0">'+(dv||'—')+'</td><td style="padding:6px 5px;font-size:11px;text-align:center">'+(lv||'—')+'</td>';
     }
     cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid #dde3f0">'+rt+'</td>';
-    tbody+='<tr style="background:'+(idx%2===0?'white':'#f5f8fc')+'">'+cells+'</tr>';
+    tb+='<tr style="background:'+(idx%2===0?'white':'#f5f8fc')+'">'+cells+'</tr>';
   });
-  var tfoot='<tr style="background:#1a3a5c;color:white"><td style="padding:7px 8px;font-size:11px;font-weight:800">TOTAL</td>';
-  for(var ci=1;ci<=snc;ci++)tfoot+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+ctots[ci].d+'</td><td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+ctots[ci].l+'</td>';
-  tfoot+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(grandD+grandL)+'</td></tr>';
-  return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+thead+'</thead><tbody>'+tbody+'</tbody><tfoot>'+tfoot+'</tfoot></table></div>';
+  var tf='<tr style="background:#1a3a5c;color:white"><td style="padding:7px 8px;font-size:11px;font-weight:800">TOTAL</td>';
+  for(var ci=1;ci<=snc;ci++)tf+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+ct[ci].d+'</td><td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+ct[ci].l+'</td>';
+  tf+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(gD+gL)+'</td></tr>';
+  return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+th+'</thead><tbody>'+tb+'</tbody><tfoot>'+tf+'</tfoot></table></div>';
 }
 function buildHistoryDelaysHTML(delayData,snc){
-  var dSections='';
+  var out='';
   for(var ci=1;ci<=snc;ci++){
-    var craneRows='';
+    var rows='';
     Object.keys(delayData).forEach(function(k){
-      var parts=k.split('_');if(parts.length<3)return;
-      if(parseInt(parts[parts.length-2])!==ci)return;
+      var p=k.split('_');if(p.length<3)return;
+      if(parseInt(p[p.length-2])!==ci)return;
       var dd=delayData[k];if(!dd||(!dd.from&&!dd.to&&!dd.type&&!dd.desc))return;
-      craneRows+='<tr>'
+      rows+='<tr>'
         +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.from||'—')+'</td>'
         +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.to||'—')+'</td>'
         +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c;padding:6px 8px">'+dur(dd.from,dd.to)+'</td>'
         +'<td style="font-size:11px;font-weight:700;padding:6px 8px">'+(dd.type||'')+'</td>'
         +'<td style="font-size:11px;padding:6px 8px;color:#444">'+(dd.desc||'')+'</td></tr>';
     });
-    if(craneRows){
-      dSections+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
+    if(rows){
+      out+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
         +'<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse">'
         +'<thead><tr style="background:#1f3864;color:white"><th style="padding:7px 10px;font-size:11px">From</th><th style="padding:7px 10px;font-size:11px">To</th>'
         +'<th style="padding:7px 8px;font-size:11px">Dur.</th><th style="padding:7px 8px;font-size:11px;text-align:left">Delay Type</th>'
         +'<th style="padding:7px 8px;font-size:11px;text-align:left">Description</th></tr></thead>'
-        +'<tbody>'+craneRows+'</tbody></table></div>';
+        +'<tbody>'+rows+'</tbody></table></div>';
     }
   }
-  return dSections||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
+  return out||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
 }
 function renderHistory(){
   const fv=$('histF')?$('histF').value:'';
@@ -1606,32 +1701,28 @@ function renderHistory(){
     const tot=_gt.totalDone,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
     const snc=s.numCranes||2;
     var uid='h_'+s.id;
-
-    // Build one collapsible pair per shift — from s.shifts if available, else fall back to _results
-    var shiftBlocks=[];
+    // Build shift blocks — one collapsible pair per shift
+    var blocks=[];
     if(s.shifts&&s.shifts.length){
       s.shifts.forEach(function(sh){
         if((sh.hourly&&Object.keys(sh.hourly).length)||(sh.delays&&Object.keys(sh.delays).length)){
-          shiftBlocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||sh.end||s.savedAt||s.id),hourly:sh.hourly||{},delays:sh.delays||{}});
+          blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:sh.hourly||{},delays:sh.delays||{}});
         }
       });
     }
-    // Fallback for older sessions with flat _results
-    if(!shiftBlocks.length&&s._results){
+    // Fallback for old sessions with flat _results
+    if(!blocks.length&&s._results){
       var hr=s._results.hourly||{},dl=s._results.delays||{};
-      if(Object.keys(hr).length||Object.keys(dl).length){
-        shiftBlocks.push({label:buildShiftLabel(null,s.savedAt||s.id),hourly:hr,delays:dl});
-      }
+      if(Object.keys(hr).length||Object.keys(dl).length)
+        blocks.push({label:buildShiftLabel(null,s.savedAt||s.id),hourly:hr,delays:dl});
     }
-
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
       <div class="hi-vessel">${s.vesselName} ${isA?'<span class="pill pblue">ACTIVE</span>':''}</div>
       <div class="hi-meta">🏗️ ${s.numCranes} Cranes &nbsp;·&nbsp; 🎯 Target: ${s.target}<br>
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>`;
-
-    shiftBlocks.forEach(function(block,bi){
+    blocks.forEach(function(block,bi){
       var buid=uid+'_'+bi;
       h+='<div style="margin-top:8px">'
         +'<div onclick="histCollapse(\''+buid+'r\')" style="display:flex;align-items:center;justify-content:space-between;background:#1f3864;color:white;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">'
@@ -1642,7 +1733,6 @@ function renderHistory(){
         +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc)+'</div></div>'
         +'</div>';
     });
-
     h+=`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
       ${ST.activeId===s.id?'<span class="pill pgreen" style="font-size:10px">● Active</span>':
         `<button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>`}
@@ -2560,7 +2650,7 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
@@ -2571,7 +2661,7 @@ async function shareReport(capId){
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
