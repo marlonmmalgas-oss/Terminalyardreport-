@@ -1363,54 +1363,99 @@ function getDelayRowIds(sessId,c){
 function shareDelays(){
   const sess=getSess(),slot=currSlot();
   if(!sess){alert('No active session.');return;}
-  const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
+  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
+  const nc=sess.numCranes;
   const tn=ST.settings.term||'';
   const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
   var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
-  // Build share-ready HTML — plain text only, no inputs, no buttons, no wide controls
-  let h=`<div id="dcap_share">`;
+
+  // Build full HTML — all rows, no skipping
+  let h=`<div id="dcap_share" style="background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif">`;
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
       <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
       <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
-      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span></div>
-      <div style="flex:0 0 auto;text-align:center;"><span class="rh-slot">${fs(slot)}</span></div>
-      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span></div>
+      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
+        ${sess.dockedOn?`<div style="font-size:11px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: ${formatDateTime(sess.dockedOn)}</div>`:''}
+      </div>
+      <div style="flex:0 0 auto;"><span class="rh-slot">${fs(slot)}</span></div>
+      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span>
+        ${sess.firstLift||sess.lastLift?`<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7">
+          ${sess.firstLift?`<div>🟢 First Lift: <strong>${sess.firstLift}</strong></div>`:''}
+          ${sess.lastLift?`<div>🔴 Last Lift: &nbsp;<strong>${sess.lastLift}</strong></div>`:''}
+        </div>`:''}
+      </div>
     </div>
   </div>`;
+
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
-    let hasData=false;
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
-      if(!d.from&&!d.to&&!d.type&&!d.desc)return;
-      hasData=true;
-      tbody+=`<tr>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:6px 10px">${d.to||''}</td>
-        <td class="dur" style="padding:6px 8px">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:6px 8px">${(d.type||'')}</td>
-        <td style="font-size:11px;padding:6px 8px">${(d.desc||'')}</td>
+      tbody+=`<tr style="background:${rowIds.indexOf(r)%2===0?'white':'#f5f8fc'}">
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.from||''}</td>
+        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
+        <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
+        <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
+        <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
     });
-    h+=`<div class="dblk">
-      <div class="dchd">${craneName(c)}</div>
-      <div style="overflow:visible;width:100%"><table class="dt" style="width:100%;overflow:visible">
-        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th></tr></thead>
-        <tbody>${hasData?tbody:'<tr><td colspan="5" style="text-align:center;padding:8px;color:#999;font-size:11px">No delays</td></tr>'}</tbody>
-      </table></div>
+    h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
+      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
+        </tr></thead>
+        <tbody>${tbody}</tbody>
+      </table>
     </div>`;
   }
   h+=`<div style="height:20px"></div></div>`;
-  // Inject into a hidden container, capture with shareReport, then remove
+
+  // Inject at full screen width, visible so layout is correct
+  const W=Math.min(window.innerWidth,480);
   var host=document.createElement('div');
-  host.style.cssText='position:absolute;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  host.style.cssText=`position:absolute;left:-${W+50}px;top:0;width:${W}px;background:#f0f2f7;`;
   host.innerHTML=h;
   document.body.appendChild(host);
-  shareReport('dcap_share').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
+
+  // Wait for layout then capture
+  requestAnimationFrame(function(){
+    requestAnimationFrame(function(){
+      setTimeout(function(){
+        const el=host.firstElementChild;
+        const fullH=host.scrollHeight;
+        html2canvas(host,{
+          scale:2,useCORS:true,backgroundColor:'#f0f2f7',
+          width:W,height:fullH,windowWidth:W,
+          scrollX:0,scrollY:0,allowTaint:true,logging:false
+        }).then(function(canvas){
+          document.body.removeChild(host);
+          canvas.toBlob(function(blob){
+            if(!blob)return;
+            const file=new File([blob],'Delays.png',{type:'image/png'});
+            if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+              navigator.share({files:[file],title:'Idle / Delays'});
+            } else {
+              const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+              a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+              setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+            }
+          },'image/png',0.96);
+        }).catch(function(e){
+          if(host.parentNode)document.body.removeChild(host);
+          alert('Share failed: '+e.message);
+        });
+      },300);
+    });
+  });
 }
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
