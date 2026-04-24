@@ -1088,21 +1088,6 @@ function renderResults(){
   if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
   const nc=sess.numCranes;
   const sl=shiftSlots();
-
-  // If previous completed shifts exist, show them collapsed above current shift
-  if(sess.shifts&&sess.shifts.length>0){
-    sess.shifts.forEach(function(shift,i){
-      const label=(shift.type==='DAY'?'☀️ DAY':'🌙 NIGHT')+' SHIFT ('+formatDateTime(shift.start)+')';
-      h+=`<div class="shift-block">
-        <div class="shift-header" onclick="toggleShift(${i})">${label}</div>
-        <div class="shift-body" style="display:none">
-          ${buildResultsTable(sess,shift.slots.map(function(s){return s.key;}))}
-        </div>
-      </div>`;
-    });
-  }
-
-  // Current shift — always visible, unchanged original rendering
   ['discharge','load'].forEach(function(t){
     const T=t[0].toUpperCase()+t.slice(1);
     const allData=getAllSlots(sess);
@@ -1504,7 +1489,7 @@ function renderPerformance(){
   var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
   var slot=currSlot();
 
-  var h='<div id="perfCap">';
+  var h='<div id="perfCap" style="background:#111827">';
   // Header
   h+='<div class="rh" style="'+bgStyle+'">';
   h+='<div class="rh1"><div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
@@ -1536,11 +1521,13 @@ function renderPerformance(){
 
   if(!sess){h+=noSess('📈','No active session.');h+='</div>';$('sc-performance').innerHTML=h;return;}
 
-  // Chart canvases
+  // Share button
   h+='<div style="margin:0 10px 8px;text-align:right"><button class="rh-share" onclick="sharePerformance()">📤 Share</button></div>';
+
+  // Chart canvases
   h+='<div style="margin:0 10px 12px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
   h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">Discharge / Load per Crane</div>';
-  h+='<div style="position:relative;height:220px"><canvas id="chartDL"></canvas></div></div>';
+  h+='<div style="position:relative;height:240px"><canvas id="chartDL"></canvas></div></div>';
   h+='<div style="margin:0 10px 20px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
   h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">SWH (All Cranes Combined)</div>';
   h+='<div style="position:relative;height:220px"><canvas id="chartSWH"></canvas></div></div>';
@@ -1553,19 +1540,69 @@ function renderPerformance(){
   var craneColors=['#4fc3f7','#ffb74d','#81c784','#ce93d8','#f48fb1'];
   var craneSets=[];
   for(var ci=1;ci<=nc;ci++){
-    var craneData=sl.map(function(s2){return (ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);});
+    var craneData=sl.map(function(s2){
+      return(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
+    });
     craneSets.push({label:craneName(ci),data:craneData,color:craneColors[(ci-1)%craneColors.length]});
   }
-  var swhData=sl.map(function(s2){var t=0;for(var ci=1;ci<=nc;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);return t;});
+  var swhData=sl.map(function(s2){
+    var t=0;for(var ci=1;ci<=nc;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);return t;
+  });
   var targetDLArr=sl.map(function(){return dlTarget;});
   var targetSWHArr=sl.map(function(){return swhTarget;});
 
   var darkGrid='rgba(255,255,255,.06)';
   var darkTick={color:'rgba(255,255,255,.5)',font:{size:9}};
+
+  // Data labels plugin — offset per crane so they don't overlap, colored
+  var dlabelsPlugin={
+    id:'dlabels',
+    afterDatasetsDraw:function(chart){
+      var ctx=chart.ctx;
+      chart.data.datasets.forEach(function(ds,di){
+        if(ds.label==='Target'||ds.label==='SWH')return;
+        var meta=chart.getDatasetMeta(di);
+        // Vertical offset per crane index so labels don't overlap
+        var yOffset=-12-(di*14);
+        meta.data.forEach(function(pt,idx){
+          var val=ds.data[idx];
+          if(!val&&val!==0)return;
+          ctx.save();
+          ctx.font='bold 9px sans-serif';
+          ctx.fillStyle=ds.borderColor;
+          ctx.textAlign='center';
+          ctx.fillText(val,pt.x,pt.y+yOffset);
+          ctx.restore();
+        });
+      });
+    }
+  };
+
+  // SWH label plugin
+  var swhLabelsPlugin={
+    id:'swhlabels',
+    afterDatasetsDraw:function(chart){
+      var ctx=chart.ctx;
+      var meta=chart.getDatasetMeta(0);
+      meta.data.forEach(function(pt,idx){
+        var val=chart.data.datasets[0].data[idx];
+        if(!val&&val!==0)return;
+        ctx.save();
+        ctx.font='bold 10px sans-serif';
+        ctx.fillStyle='#4fc3f7';
+        ctx.textAlign='center';
+        ctx.fillText(val,pt.x,pt.y-10);
+        ctx.restore();
+      });
+    }
+  };
+
   var commonOpts={
     responsive:true,maintainAspectRatio:false,
-    plugins:{legend:{position:'top',labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:10}},
-      tooltip:{backgroundColor:'#1e2a3a',titleColor:'#fff',bodyColor:'rgba(255,255,255,.8)',borderColor:'rgba(255,255,255,.1)',borderWidth:1}},
+    plugins:{
+      legend:{position:'top',labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:10}},
+      tooltip:{backgroundColor:'#1e2a3a',titleColor:'#fff',bodyColor:'rgba(255,255,255,.8)',borderColor:'rgba(255,255,255,.1)',borderWidth:1}
+    },
     scales:{
       x:{grid:{color:darkGrid},ticks:Object.assign({maxRotation:45,minRotation:30},darkTick)},
       y:{grid:{color:darkGrid},ticks:darkTick,beginAtZero:true}
@@ -1573,20 +1610,32 @@ function renderPerformance(){
   };
 
   function drawCharts(){
-    // Destroy any existing charts on these canvases
     var existDL=Chart.getChart('chartDL');if(existDL)existDL.destroy();
     var existSWH=Chart.getChart('chartSWH');if(existSWH)existSWH.destroy();
 
-    var dlDatasets=craneSets.map(function(cs){
-      return{label:cs.label,data:cs.data,borderColor:cs.color,backgroundColor:cs.color+'33',pointBackgroundColor:cs.color,pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:false};
+    var dlDatasets=craneSets.map(function(cs,di){
+      return{label:cs.label,data:cs.data,borderColor:cs.color,backgroundColor:cs.color+'33',
+        pointBackgroundColor:cs.color,pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:false};
     });
     dlDatasets.push({label:'Target',data:targetDLArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0});
-    new Chart(document.getElementById('chartDL'),{type:'line',data:{labels:labels,datasets:dlDatasets},options:JSON.parse(JSON.stringify(commonOpts))});
 
-    new Chart(document.getElementById('chartSWH'),{type:'line',data:{labels:labels,datasets:[
-      {label:'SWH',data:swhData,borderColor:'#4fc3f7',backgroundColor:'#4fc3f722',pointBackgroundColor:'#4fc3f7',pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:true},
-      {label:'Target',data:targetSWHArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0}
-    ]},options:JSON.parse(JSON.stringify(commonOpts))});
+    new Chart(document.getElementById('chartDL'),{
+      type:'line',
+      data:{labels:labels,datasets:dlDatasets},
+      options:JSON.parse(JSON.stringify(commonOpts)),
+      plugins:[dlabelsPlugin]
+    });
+
+    new Chart(document.getElementById('chartSWH'),{
+      type:'line',
+      data:{labels:labels,datasets:[
+        {label:'SWH',data:swhData,borderColor:'#4fc3f7',backgroundColor:'#4fc3f722',
+          pointBackgroundColor:'#4fc3f7',pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:true},
+        {label:'Target',data:targetSWHArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0}
+      ]},
+      options:JSON.parse(JSON.stringify(commonOpts)),
+      plugins:[swhLabelsPlugin]
+    });
   }
 
   if(window.Chart&&window.Chart.getChart){
@@ -1601,18 +1650,36 @@ function renderPerformance(){
 
 function sharePerformance(){
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
+  // Capture the live perfCap element directly — canvas pixels only exist in the live DOM
   var el=document.getElementById('perfCap');
-  if(!el){alert('Nothing to capture.');return;}
-  // Clone outside scroll container
-  var host=document.createElement('div');
-  host.style.cssText='position:absolute;left:-9999px;top:0;width:420px;opacity:0;pointer-events:none;background:#0d1521;';
-  host.innerHTML=el.outerHTML;
-  // Remove inputs from clone
-  host.querySelectorAll('input').forEach(function(inp){
-    var span=document.createElement('span');span.textContent=inp.value;span.style.cssText='color:white;font-weight:700;font-size:13px;';inp.parentNode.replaceChild(span,inp);
+  if(!el){alert('Please open the Performance tab first.');return;}
+  // Temporarily make the element visible and full-width for capture
+  var wrapper=document.createElement('div');
+  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:420px;background:#111827;';
+  document.body.appendChild(wrapper);
+  // Use html2canvas directly on the live element (not a clone — canvas can't be cloned)
+  html2canvas(el,{
+    scale:2,useCORS:true,backgroundColor:'#111827',
+    width:el.offsetWidth,height:el.scrollHeight,
+    windowWidth:el.offsetWidth,
+    scrollX:0,scrollY:0,allowTaint:true,logging:false
+  }).then(function(canvas){
+    canvas.toBlob(function(blob){
+      if(!blob)return;
+      document.body.removeChild(wrapper);
+      var file=new File([blob],'Performance.png',{type:'image/png'});
+      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+        navigator.share({files:[file],title:'Hourly Performance'});
+      } else {
+        var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+        a.download='Performance.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+      }
+    },'image/png',0.96);
+  }).catch(function(e){
+    if(wrapper.parentNode)document.body.removeChild(wrapper);
+    alert('Share failed: '+e.message);
   });
-  document.body.appendChild(host);
-  shareReport('perfCap').finally(function(){if(host.parentNode)host.parentNode.removeChild(host);});
 }
 
 // ═══════════ HISTORY ═══════════
