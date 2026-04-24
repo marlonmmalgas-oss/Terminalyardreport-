@@ -971,11 +971,12 @@ function saveSession(){
 
   // Update in-place — never duplicate
   const idx=ST.sessions.findIndex(x=>x.id===id);
+  const wasLocked=idx>=0?ST.sessions[idx].locked:false;
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();
-  renderInput();
-  // Push _myLastSave forward so Firebase echo stays inside own-save window
+  // Only re-render input if locked state changed (avoids flicker on repeated saves)
+  if(!wasLocked)renderInput();
   setTimeout(function(){_myLastSave=Date.now();},50);
 }
 function unlockSess(){
@@ -1518,7 +1519,7 @@ function renderPerformance(){
   h+='</div>';
 
   // Target inputs
-  h+='<div style="margin:10px;padding:12px 14px;border-radius:10px;background:#1e2a3a;display:flex;gap:10px;flex-wrap:wrap">';
+  h+='<div class="perf-targets" style="margin:10px;padding:12px 14px;border-radius:10px;background:#1e2a3a;display:flex;gap:10px;flex-wrap:wrap">';
   h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">D/L TARGET / HR</label>';
   h+='<input type="number" value="'+dlTarget+'" style="width:100%;background:#0d1521;color:white;border:1px solid #2c4a6e;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:700" oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.dlTarget=parseFloat(this.value)||0;sv();renderPerformance()"/></div>';
   h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">SWH TARGET / HR</label>';
@@ -1560,36 +1561,47 @@ function renderPerformance(){
   var darkGrid='rgba(255,255,255,.06)';
   var darkTick={color:'rgba(255,255,255,.5)',font:{size:9}};
 
-  // Data labels plugin — spread per crane, colored, skip zeros
+  // Data labels plugin — smart vertical positioning to avoid clashes, skip zeros
   var dlabelsPlugin={
     id:'dlabels',
     afterDatasetsDraw:function(chart){
       var ctx=chart.ctx;
-      var activeSets=chart.data.datasets.filter(function(ds){return ds.label!=='Target';});
-      var n=activeSets.length;
-      chart.data.datasets.forEach(function(ds,di){
-        if(ds.label==='Target')return;
-        var meta=chart.getDatasetMeta(di);
-        // Spread labels: first crane goes up, second goes further up, etc.
-        // Each crane gets a fixed 16px vertical separation
-        var yOffset=-14-(di*16);
+      var datasets=chart.data.datasets.filter(function(ds){return ds.label!=='Target';});
+      // For each x position, collect all (y_pixel, value, color) then spread them
+      var byX={};
+      datasets.forEach(function(ds,di){
+        var meta=chart.getDatasetMeta(chart.data.datasets.indexOf(ds));
         meta.data.forEach(function(pt,idx){
           var val=ds.data[idx];
-          if(!val)return; // skip zeros
+          if(!val)return;
+          if(!byX[idx])byX[idx]=[];
+          byX[idx].push({y:pt.y,xPx:pt.x,val:val,color:ds.borderColor});
+        });
+      });
+      // Sort by y descending (highest on chart = smallest y pixel) and spread
+      Object.keys(byX).forEach(function(xi){
+        var items=byX[xi];
+        var xPos=items[0].xPx;
+        // Sort by y pixel ascending (top of chart first)
+        items.sort(function(a,b){return a.y-b.y;});
+        // Stack labels above topmost point with 16px gap each
+        var startY=items[0].y-14;
+        items.forEach(function(item,i){
+          var labelY=startY-(items.length-1-i)*16;
           ctx.save();
           ctx.font='bold 10px sans-serif';
-          ctx.fillStyle=ds.borderColor;
+          ctx.fillStyle=item.color;
           ctx.textAlign='center';
-          ctx.shadowColor='rgba(0,0,0,.6)';
-          ctx.shadowBlur=3;
-          ctx.fillText(val,pt.x,pt.y+yOffset);
+          ctx.shadowColor='rgba(0,0,0,.8)';
+          ctx.shadowBlur=4;
+          ctx.fillText(item.val,xPos,labelY);
           ctx.restore();
         });
       });
     }
   };
 
-  // SWH label plugin
+  // SWH label plugin — above each point, skip zeros
   var swhLabelsPlugin={
     id:'swhlabels',
     afterDatasetsDraw:function(chart){
@@ -1597,12 +1609,14 @@ function renderPerformance(){
       var meta=chart.getDatasetMeta(0);
       meta.data.forEach(function(pt,idx){
         var val=chart.data.datasets[0].data[idx];
-        if(!val&&val!==0)return;
+        if(!val)return;
         ctx.save();
         ctx.font='bold 10px sans-serif';
         ctx.fillStyle='#4fc3f7';
         ctx.textAlign='center';
-        ctx.fillText(val,pt.x,pt.y-10);
+        ctx.shadowColor='rgba(0,0,0,.8)';
+        ctx.shadowBlur=4;
+        ctx.fillText(val,pt.x,pt.y-14);
         ctx.restore();
       });
     }
@@ -1610,8 +1624,12 @@ function renderPerformance(){
 
   var commonOpts={
     responsive:true,maintainAspectRatio:false,
+    layout:{padding:{top:30,left:8,right:8,bottom:8}},
     plugins:{
-      legend:{position:'top',labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:10}},
+      legend:{
+        position:'bottom',
+        labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:14}
+      },
       tooltip:{backgroundColor:'#1e2a3a',titleColor:'#fff',bodyColor:'rgba(255,255,255,.8)',borderColor:'rgba(255,255,255,.1)',borderWidth:1}
     },
     scales:{
@@ -1663,24 +1681,21 @@ function sharePerformance(){
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
   var el=document.getElementById('perfCap');
   if(!el){alert('Please open the Performance tab first.');return;}
-  // Hide inputs and share button before capture
-  var toHide=el.querySelectorAll('input,button,.rh-share');
+  // Hide inputs, share button, and targets container before capture
   var hidden=[];
-  toHide.forEach(function(el2){hidden.push({el:el2,disp:el2.style.display});el2.style.display='none';});
-  // Also hide the targets div (inputs container)
-  var targetsDiv=el.querySelector('[style*="1e2a3a"]');
-  var targetsDisp='';
-  if(targetsDiv){targetsDisp=targetsDiv.style.display;targetsDiv.style.display='none';}
-  // Capture the live element — canvas pixels only exist in live DOM
+  el.querySelectorAll('input,button').forEach(function(e2){
+    hidden.push({e:e2,d:e2.style.display});e2.style.display='none';
+  });
+  // Hide the targets input section (contains D/L and SWH inputs)
+  var targDiv=el.querySelector('.perf-targets');
+  if(targDiv){hidden.push({e:targDiv,d:targDiv.style.display});targDiv.style.display='none';}
   html2canvas(el,{
     scale:2,useCORS:true,backgroundColor:'#111827',
     width:el.offsetWidth,height:el.scrollHeight,
     windowWidth:el.offsetWidth,
     scrollX:0,scrollY:0,allowTaint:true,logging:false
   }).then(function(canvas){
-    // Restore hidden elements
-    hidden.forEach(function(h2){h2.el.style.display=h2.disp;});
-    if(targetsDiv)targetsDiv.style.display=targetsDisp;
+    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
     canvas.toBlob(function(blob){
       if(!blob)return;
       var file=new File([blob],'Performance.png',{type:'image/png'});
@@ -1693,8 +1708,7 @@ function sharePerformance(){
       }
     },'image/png',0.96);
   }).catch(function(e){
-    hidden.forEach(function(h2){h2.el.style.display=h2.disp;});
-    if(targetsDiv)targetsDiv.style.display=targetsDisp;
+    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
     alert('Share failed: '+e.message);
   });
 }
@@ -2734,7 +2748,7 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
+  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
@@ -2745,7 +2759,7 @@ async function shareReport(capId){
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
