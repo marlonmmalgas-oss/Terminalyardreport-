@@ -975,13 +975,27 @@ function saveSession(){
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   sv();
   renderInput();
-  setTimeout(function(){_myLastSave=Date.now();},50);
+  // Extend own-save protection for 3s so Firebase echoes can't revert locked state
+  _myLastSave=Date.now();
+  setTimeout(function(){_myLastSave=Date.now();},500);
+  setTimeout(function(){_myLastSave=Date.now();},1000);
+  setTimeout(function(){_myLastSave=Date.now();},2000);
+  setTimeout(function(){_myLastSave=Date.now();},3000);
 }
 function unlockSess(){
-  // Must mutate the raw session in ST.sessions — getSess() returns a clone
   if(!ST.activeId)return;
   const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
-  if(raw){raw.locked=false;sv();renderInput();}
+  if(!raw)return;
+  raw.locked=false;
+  sv();
+  renderInput();
+  // Block remote overwrites for 3s — prevents another device's locked:true echo restoring the lock
+  var t=Date.now();
+  _myLastSave=t;
+  setTimeout(function(){_myLastSave=Date.now();},500);
+  setTimeout(function(){_myLastSave=Date.now();},1000);
+  setTimeout(function(){_myLastSave=Date.now();},2000);
+  setTimeout(function(){_myLastSave=Date.now();},3000);
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
 function newVessel(){
@@ -2700,11 +2714,13 @@ function uploadYardExcelMulti(input){
           else if(isTrans){var p3=parseVesselRef(ob),p4=parseVesselRef(ib);if(p3){vRef=ob;fE=true;}else if(p4){vRef=ib;fI=true;}else return;}
           else if(isThru){if(tst==='YARD'){vRef=ob||ib;fE=true;}else return;}
           else return;
-          var parsed=parseVesselRef(vRef);if(!parsed)return;
-          var vessel=resolveFullVesselName(parsed.vessel);
+          var parsed=parseVesselRef(vRef);
+          // Non-standard format — include row anyway with raw ref so user can edit
+          var vessel=parsed?resolveFullVesselName(parsed.vessel):'';
+          var voyage=parsed?parsed.voyage:vRef;
           var typeKey=classifyUnit2(iso,frgt,pwr);
           var dir=tst==='DEPARTED'?'departed':(fI||isImp?'import':'export');
-          rows.push({uNbr:uNbr,typeKey:typeKey,dir:dir,vessel:vessel,voyage:parsed.voyage,pod:pod});
+          rows.push({uNbr:uNbr,typeKey:typeKey,dir:dir,vessel:vessel,voyage:voyage,pod:pod});
         });
         cb(rows);
       }catch(ex){console.log('parse err:',ex.message);cb([]);}
