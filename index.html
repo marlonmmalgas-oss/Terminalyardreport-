@@ -1045,12 +1045,13 @@ function newVessel(){
   ST.delayRowIds={};
   ST.delays={};
   sv();
-  // Immediately persist to localStorage and extend own-save window
-  // so Firebase echo can't overwrite the sessions with the updated shifts
+  // Extend own-save window for 3s so Firebase echo can't revert activeId or sessions
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   _myLastSave=Date.now();
+  setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
+  setTimeout(function(){_myLastSave=Date.now();},3000);
   renderInput();
 }
 // newSess kept as alias for backwards compat
@@ -1813,10 +1814,34 @@ function buildShiftLabel(type,dateRef){
   } else {
     d=new Date(typeof dateRef==='number'?dateRef:(dateRef||Date.now()));
   }
-  var ds=d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
-  if(type==='DAY')return'0600 \u2013 1800  '+ds;
-  if(type==='NIGHT')return'1800 \u2013 0600  '+ds;
-  return(d.getHours()>=6&&d.getHours()<18?'0600 \u2013 1800':'1800 \u2013 0600')+'  '+ds;
+  // Format: DD-Mon-YY
+  function fmtDate(dt){
+    return dt.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
+  }
+  if(type==='DAY'){
+    // 0600 - 1800  25-Apr-26
+    return '0600 \u2013 1800  '+fmtDate(d);
+  }
+  if(type==='NIGHT'){
+    // 1800 - 0600  25/26-Apr-26  (night crosses midnight, show both days)
+    var d2=new Date(d.getTime());d2.setDate(d2.getDate()+1);
+    var mon=d.toLocaleDateString('en-ZA',{month:'short'});
+    var yr=d.toLocaleDateString('en-ZA',{year:'2-digit'});
+    var day1=String(d.getDate()).padStart(2,'0');
+    var day2=String(d2.getDate()).padStart(2,'0');
+    return '1800 \u2013 0600  '+day1+'/'+day2+'-'+mon+'-'+yr;
+  }
+  // Fallback — detect from hour
+  var isNight=d.getHours()<6||d.getHours()>=18;
+  if(isNight){
+    var d2b=new Date(d.getTime());d2b.setDate(d2b.getDate()+1);
+    var mon2=d.toLocaleDateString('en-ZA',{month:'short'});
+    var yr2=d.toLocaleDateString('en-ZA',{year:'2-digit'});
+    var day1b=String(d.getDate()).padStart(2,'0');
+    var day2b=String(d2b.getDate()).padStart(2,'0');
+    return '1800 \u2013 0600  '+day1b+'/'+day2b+'-'+mon2+'-'+yr2;
+  }
+  return '0600 \u2013 1800  '+fmtDate(d);
 }
 function buildHistoryResultsHTML(hourlyData,snc){
   var used=ALL.filter(function(slot){for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}return false;});
@@ -1928,7 +1953,14 @@ function setActive(id){
   // Unlock for editing when setting active from history
   const raw=ST.sessions.find(function(x){return x.id===id;});
   if(raw)raw.locked=false;
-  sv();renderHistory();switchTab('input');
+  sv();
+  // Extend protection so Firebase echo can't revert activeId or locked state
+  _myLastSave=Date.now();
+  setTimeout(function(){_myLastSave=Date.now();},500);
+  setTimeout(function(){_myLastSave=Date.now();},1000);
+  setTimeout(function(){_myLastSave=Date.now();},2000);
+  setTimeout(function(){_myLastSave=Date.now();},3000);
+  renderHistory();switchTab('input');
 }
 function delSess(id){
   var nid=Number(id)||id;
