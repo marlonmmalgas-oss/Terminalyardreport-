@@ -319,6 +319,8 @@ var dbRef = null;
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
 var _pendingDeleteSave=0; // set to future timestamp during delSess
+var _saveGen=0;           // monotonic counter — written into payload as _gen
+var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
@@ -330,6 +332,10 @@ function sv(){
     _pendingDeleteSave=0;
     payload._ts=ts;
     _myLastSave=ts;
+    // Embed generation counter — lets listener detect own echo without timestamp ambiguity
+    _saveGen=(_saveGen+1)%999999;
+    _lastSaveGen=_saveGen;
+    payload._gen=_saveGen;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
       ['logo','bg','bgHourly','bgFour','bgDelay','bgYard'].forEach(function(k){
@@ -385,9 +391,10 @@ function initSync(){
         });
       }
       // Only apply remote data if it came from another device
-      var isOwnSave2=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
+      // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
+      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
       Object.keys(remote).forEach(function(k){
-        if(k!=='_ts'&&k!=='users'){
+        if(k!=='_ts'&&k!=='_gen'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
@@ -424,7 +431,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
+        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -847,7 +854,7 @@ function renderInput(){
       <div class="f"><label>Last Lift</label><input type="time" id="fll" value="${f.lastLift||''}" ${locked?'disabled':''}/></div>
     </div></div>`;
 
-  h+=`<div class="sec" id="craneBalanceSection"><div class="st">Splits &amp; Opening Balance</div>
+  h+=`<div class="sec" id="craneBalanceSection"><div class="st" style="font-size:14px;color:#0891b2;border-bottom-color:#0891b2;letter-spacing:.3px">📋 Splits &amp; Opening Balance</div>
     <p style="font-size:11px;color:#888;margin-bottom:12px">Enter the planned split per crane. Opening Balance overrides the split in totals — leave blank to use split only.</p>`;
   for(let i=1;i<=nc;i++){
     const cb=(sess?.craneBalances||{})[i]||{};
@@ -865,7 +872,7 @@ function renderInput(){
   }
   h+=`</div>`;
 
-  h+=`<div class="sec"><div class="st">Hourly Moves — ${fs(slot)}</div>
+  h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Hourly Moves — ${fs(slot)}</div>
     <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
   for(let i=1;i<=nc;i++){
     h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
@@ -1909,12 +1916,26 @@ function renderHistory(){
     var uid='h_'+s.id;
     // Build shift blocks — one collapsible pair per shift
     var blocks=[];
+    var isActiveSession=s.id===ST.activeId;
+    var curShiftType=isDay()?'DAY':'NIGHT';
+    var curShiftDate=new Date().toLocaleDateString('en-CA');
+    var curShiftKey=curShiftType+'_'+curShiftDate;
     if(s.shifts&&s.shifts.length){
       s.shifts.forEach(function(sh){
-        if((sh.hourly&&Object.keys(sh.hourly).length)||(sh.delays&&Object.keys(sh.delays).length)){
-          blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:sh.hourly||{},delays:sh.delays||{}});
+        var isCurrentShift=isActiveSession&&sh.key===curShiftKey;
+        // For the active session's current shift, always use live ST.hourly/ST.delays
+        var hourlyData=isCurrentShift?ST.hourly:(sh.hourly||{});
+        var delayData=isCurrentShift?ST.delays:(sh.delays||{});
+        if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
+          blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
         }
       });
+    }
+    // If active session has no shift entry yet, show live data as current shift
+    if(isActiveSession&&!blocks.find(function(b){return b.isCurrent;})){
+      if(Object.keys(ST.hourly).length||Object.keys(ST.delays).length){
+        blocks.push({label:buildShiftLabel(curShiftType,curShiftDate),hourly:ST.hourly,delays:ST.delays,isCurrent:true});
+      }
     }
     // Fallback for old sessions with flat _results
     if(!blocks.length&&s._results){
@@ -2243,23 +2264,44 @@ function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buil
 function calcETC(){
   var sess=getSess();if(!sess)return null;
   var now=new Date();
-  // Use global totals — no inline ST.hourly loops (Segment 8)
   var g=calcGlobalTotals(sess);
   var done=g.totalDone;
   var rem=g.remaining;
   if(rem<=0)return{done:true,remaining:0,hoursLeft:0,eta:null,rate:done,reasoning:'All units completed.'};
   if(done===0)return null;
+
+  // Calculate total delay minutes
   var dMins=0;
   if(ST.delayRowIds){for(var c=1;c<=sess.numCranes;c++){var rk=sess.id+'_c'+c;(ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[sess.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var fh=parseInt(d.from)||0,fm=parseInt((d.from.split(':')[1])||0),th=parseInt(d.to)||0,tm=parseInt((d.to.split(':')[1])||0);var diff=(th*60+tm)-(fh*60+fm);if(diff<0)diff+=1440;dMins+=diff;}});}}
+
+  // Active hours since first lift
   var aHrs=0.5;
   if(sess.firstLift){var fl=sess.firstLift.split(':'),sm=parseInt(fl[0])*60+(parseInt(fl[1])||0),nm=now.getHours()*60+now.getMinutes(),el2=nm-sm;if(el2<0)el2+=1440;aHrs=Math.max((el2-dMins)/60,0.25);}
-  var rate=done/aHrs;if(rate<=0)return null;
+  var overallRate=done/aHrs;
+
+  // Recent rate: last 2 completed slots (weighted 60%) + overall (40%)
+  var sl=shiftSlots();
+  var recentMoves=0,recentSlots=0;
+  var nowSlot=currSlot();
+  var nowIdx=sl.indexOf(nowSlot);
+  if(nowIdx>1){
+    for(var ri=Math.max(0,nowIdx-2);ri<nowIdx;ri++){
+      var s2=sl[ri];var slotTotal=0;
+      for(var ci=1;ci<=sess.numCranes;ci++)slotTotal+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
+      if(slotTotal>0){recentMoves+=slotTotal;recentSlots++;}
+    }
+  }
+  var rate=overallRate;
+  if(recentSlots>0){var recentRate=recentMoves/recentSlots;rate=recentRate*0.6+overallRate*0.4;}
+  if(rate<=0)return null;
+
   var hrs=rem/rate;
   var etaD=new Date(now.getTime()+hrs*3600000);
   var etaStr=etaD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false});
   var etaDate=etaD.toLocaleDateString('en-ZA',{day:'2-digit',month:'short'});
-  var note=dMins>0?' (excl.'+Math.round(dMins/60*10)/10+'hr delays)':'';
-  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+note+'. Done: '+done+' in '+aHrs.toFixed(1)+'hr active. Remain: '+Math.max(0,Math.round(rem))+'.'};
+  var note=dMins>0?' (excl. '+Math.round(dMins/60*10)/10+'hr delays)':'';
+  var rateNote=recentSlots>0?' [weighted recent]':'';
+  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+rateNote+note+'. Done: '+done+' in '+aHrs.toFixed(1)+'hr active. Remain: '+Math.max(0,Math.round(rem))+'.'};
 }
 
 // ═══════════ VESSEL ABBREV RESOLVER ═══════════
@@ -3094,47 +3136,155 @@ function renderAnalysis(){
 function generateAIAnalysis(resultId,loadingId){
   resultId=resultId||'aiResult';loadingId=loadingId||'aiLoading';
   const data=buildAnalysisData();
+  const sess=getSess();
   if(!data){$(resultId)&&($(resultId).innerHTML='<div class="ai-result">No data available yet.</div>');return;}
   $(loadingId)&&($(loadingId).style.display='flex');$(resultId)&&($(resultId).innerHTML='');
-  setTimeout(()=>{
+  setTimeout(function(){
     $(loadingId)&&($(loadingId).style.display='none');
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
-    const sorted=[...data.sessions].sort((a,b)=>b.pct-a.pct);
+    const avgPct=data.sessions.length?Math.round(data.sessions.reduce(function(a,s){return a+s.pct;},0)/data.sessions.length):0;
+    const topDelay=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];})[0];
+    const peakHour=Object.entries(data.hourlyPerformance).sort(function(a,b){return b[1]-a[1];})[0];
+    const sorted=[...data.sessions].sort(function(a,b){return b.pct-a.pct;});
     const best=sorted[0],worst=sorted[sorted.length-1];
-    let analysis=`📊 TERMINAL PERFORMANCE ANALYSIS\n\nSessions Analysed: ${data.sessions.length}\nAverage Target Achievement: ${avgPct}%\n`;
-    if(best)analysis+=`Best Session: ${best.vessel} — ${best.pct}% of target\n`;
-    if(worst&&data.sessions.length>1)analysis+=`Needs Attention: ${worst.vessel} — ${worst.pct}% of target\n`;
-    if(topDelay)analysis+=`\n⚠️ Most Common Delay: ${topDelay[0]} (${topDelay[1]}x)\n`;
-    if(peakHour)analysis+=`🕐 Peak Delay Hour: ${peakHour[0]}:00 — ${peakHour[1]} event${peakHour[1]>1?'s':''}\n`;
-    const slotTotals={};
-    data.sessions.flatMap(s=>s.slotData).forEach(({slot,d,l})=>{slotTotals[slot]=(slotTotals[slot]||0)+d+l;});
-    const topSlot=Object.entries(slotTotals).sort((a,b)=>b[1]-a[1])[0];
-    const lowSlot=Object.entries(slotTotals).filter(([,v])=>v>0).sort((a,b)=>a[1]-b[1])[0];
-    if(topSlot)analysis+=`\n🏆 Most Productive: ${fs(topSlot[0])} (${topSlot[1]} moves)\n`;
-    if(lowSlot&&lowSlot[0]!==topSlot?.[0])analysis+=`📉 Lowest: ${fs(lowSlot[0])} (${lowSlot[1]} moves)\n`;
-    $(resultId)&&($(resultId).innerHTML=`<div class="ai-result">${analysis}</div>`);
+
+    // Crane productivity per session
+    const craneStats=data.sessions.map(function(s){return{vessel:s.vessel,movesPerCrane:s.cranes>0?Math.round(s.total/s.cranes):0,cranes:s.cranes,total:s.total,pct:s.pct};});
+    const avgMPC=craneStats.length?Math.round(craneStats.reduce(function(a,s){return a+s.movesPerCrane;},0)/craneStats.length):0;
+
+    // Delay time analysis
+    var totalDelayMins=0,delayCount=0;
+    ST.sessions.forEach(function(s){for(var c=1;c<=s.numCranes;c++){var rk=s.id+'_c'+c;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[s.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var f=d.from.split(':'),t=d.to.split(':');var diff=(parseInt(t[0])*60+parseInt(t[1]||0))-(parseInt(f[0])*60+parseInt(f[1]||0));if(diff<0)diff+=1440;totalDelayMins+=diff;delayCount++;}});}});
+    var avgDelayMins=delayCount>0?Math.round(totalDelayMins/delayCount):0;
+
+    // ETC accuracy
+    const etc=calcETC();
+
+    // Hourly rate breakdown for active session
+    var hourlyBreakdown='';
+    if(sess){
+      var slotRates=shiftSlots().map(function(s2){
+        var t=0;for(var ci=1;ci<=sess.numCranes;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
+        return{slot:fs(s2),total:t};
+      }).filter(function(x){return x.total>0;});
+      if(slotRates.length){
+        var maxSlot=slotRates.reduce(function(a,b){return b.total>a.total?b:a;});
+        var minSlot=slotRates.reduce(function(a,b){return b.total<a.total?b:a;});
+        var avgRate=Math.round(slotRates.reduce(function(a,b){return a+b.total;},0)/slotRates.length);
+        hourlyBreakdown='\n📈 ACTIVE SESSION HOURLY BREAKDOWN\nAvg moves/hr: '+avgRate+'\nPeak hour: '+maxSlot.slot+' ('+maxSlot.total+' moves)\nLowest hour: '+minSlot.slot+' ('+minSlot.total+' moves)\n';
+        if(maxSlot.total>avgRate*1.5)hourlyBreakdown+='⚡ Strong peak — ensure crane operators are rotating to sustain this rate.\n';
+        if(minSlot.total<avgRate*0.5)hourlyBreakdown+='⚠️ Low hour detected — check for unreported delays during '+minSlot.slot+'.\n';
+      }
+    }
+
+    var analysis='📊 TERMINAL PERFORMANCE ANALYSIS\n';
+    analysis+='─────────────────────────────────\n';
+    analysis+='Sessions Analysed: '+data.sessions.length+'\n';
+    analysis+='Overall Target Achievement: '+avgPct+'%  '+(avgPct>=90?'🟢 Excellent':avgPct>=70?'🟡 On Track':'🔴 Needs Attention')+'\n';
+    analysis+='Avg Moves per Crane: '+avgMPC+'\n';
+    if(best)analysis+='🏆 Best Session: '+best.vessel+' — '+best.pct+'% ('+best.total+' moves, '+best.cranes+' cranes)\n';
+    if(worst&&data.sessions.length>1)analysis+='📉 Lowest: '+worst.vessel+' — '+worst.pct+'% ('+worst.total+' moves)\n';
+
+    analysis+='\n⏱️ DELAY INTELLIGENCE\n';
+    analysis+='─────────────────────────────────\n';
+    analysis+='Total Delay Events: '+delayCount+'\n';
+    if(avgDelayMins>0)analysis+='Avg Delay Duration: '+avgDelayMins+' min\n';
+    if(topDelay)analysis+='Most Common: '+topDelay[0]+' ('+topDelay[1]+'x)\n';
+    if(peakHour)analysis+='Peak Delay Hour: '+peakHour[0]+':00 ('+peakHour[1]+' events)\n';
+
+    var delayEntries=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];});
+    if(delayEntries.length>1){
+      analysis+='\nDelay Breakdown:\n';
+      delayEntries.slice(0,5).forEach(function(e){analysis+='  • '+e[0]+': '+e[1]+'x\n';});
+    }
+
+    if(etc&&!etc.done&&etc.eta){
+      analysis+='\n⏳ ETC (CURRENT SESSION)\n';
+      analysis+='─────────────────────────────────\n';
+      analysis+='ETA: '+etc.eta+(etc.hoursLeft>12?' ('+etc.etaDate+')':'')+'\n';
+      analysis+='Remaining: '+etc.remaining+' units\n';
+      analysis+='Current Rate: '+etc.rate+' moves/hr\n';
+      if(parseFloat(etc.rate)<avgMPC*0.8)analysis+='⚠️ Rate is below terminal average — investigate unreported delays.\n';
+      if(parseFloat(etc.rate)>avgMPC*1.2)analysis+='✅ Above average rate — maintain current pace.\n';
+    }
+
+    if(hourlyBreakdown)analysis+=hourlyBreakdown;
+
+    analysis+='\n💡 KEY OBSERVATIONS\n';
+    analysis+='─────────────────────────────────\n';
+    if(avgPct<70)analysis+='• Target achievement critically low. Review crane allocation strategy and pre-shift planning protocols.\n';
+    else if(avgPct<85)analysis+='• Performance within acceptable range. Focus on reducing '+( topDelay?topDelay[0]:'operational')+' delays.\n';
+    else analysis+='• Strong overall performance. Document current procedures as standard SOPs for all shifts.\n';
+    if(delayCount>data.sessions.length*3)analysis+='• High delay frequency ('+(Math.round(delayCount/data.sessions.length*10)/10)+' avg/session). Pre-shift equipment checks recommended.\n';
+    if(data.sessions.length>=3){var variance=Math.max(...sorted.map(function(s){return s.pct;}))-Math.min(...sorted.map(function(s){return s.pct;}));if(variance>30)analysis+='• High performance variance ('+variance+'%) between sessions — consistency improvement needed.\n';}
+
+    $(resultId)&&($(resultId).innerHTML='<div class="ai-result" style="white-space:pre-wrap;font-family:monospace;font-size:11px;line-height:1.7">'+analysis+'</div>');
   },1800);
 }
+
 function generateSuggestions(resultId,loadingId){
   resultId=resultId||'aiSugg';loadingId=loadingId||'suggLoading';
   const data=buildAnalysisData();
+  const sess=getSess();
   if(!data){$(resultId)&&($(resultId).innerHTML='<div class="ai-insight">No data yet.</div>');return;}
   $(loadingId)&&($(loadingId).style.display='flex');$(resultId)&&($(resultId).innerHTML='');
-  setTimeout(()=>{
+  setTimeout(function(){
     $(loadingId)&&($(loadingId).style.display='none');
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
-    let s=[];
-    if(avgPct<70)s.push({ico:'🎯',txt:`Target achievement at ${avgPct}%. Review crane allocation and pre-shift planning.`});
-    else if(avgPct<90)s.push({ico:'📈',txt:`Performance at ${avgPct}%. Closing the gap requires reducing idle time during changeovers.`});
-    else s.push({ico:'🏆',txt:`Excellent! ${avgPct}% target achievement. Document current workflows as SOPs.`});
-    if(topDelay)s.push({ico:'⚠️',txt:`${topDelay[0]} is most recurring (${topDelay[1]}x). Add a pre-shift equipment check to address this.`});
-    if(peakHour)s.push({ico:'🕐',txt:`Most delays at ${peakHour[0]}:00. Add supervisor presence during this hour.`});
-    s.push({ico:'📋',txt:'Log delays in real-time, not end of shift. Accuracy improves handover and management visibility.'});
-    $(resultId)&&($(resultId).innerHTML=s.map(x=>`<div class="ai-insight"><strong>${x.ico}</strong> ${x.txt}</div>`).join(''));
+    const avgPct=data.sessions.length?Math.round(data.sessions.reduce(function(a,s){return a+s.pct;},0)/data.sessions.length):0;
+    const topDelay=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];})[0];
+    const peakHour=Object.entries(data.hourlyPerformance).sort(function(a,b){return b[1]-a[1];})[0];
+    const etc=calcETC();
+    var suggestions=[];
+
+    // Target performance
+    if(avgPct<70)suggestions.push({ico:'🚨',txt:'Critical: '+avgPct+'% average achievement. Immediate review of crane allocation and shift planning required. Consider splitting load more evenly across cranes.'});
+    else if(avgPct<85)suggestions.push({ico:'📈',txt:'Performance at '+avgPct+'%. Closing the gap: focus on reducing idle time between gang changes and during meal breaks.'});
+    else if(avgPct<95)suggestions.push({ico:'✅',txt:'Good performance at '+avgPct+'%. Fine-tune by pre-positioning equipment before each slot starts to reduce ramp-up time.'});
+    else suggestions.push({ico:'🏆',txt:'Excellent '+avgPct+'% achievement. Capture current workflows as SOPs and use as benchmark for all shifts.'});
+
+    // Delay-specific recommendations
+    if(topDelay){
+      var delayRec={
+        'Weather Delay':'Weather delays cannot be avoided but minimize impact by having contingency tasks ready (restow, paperwork, equipment checks).',
+        'Equipment Delay':'Implement a mandatory pre-shift equipment inspection checklist. Log all defects before shift starts.',
+        'Operational Delay':'Review gang communication protocols. Most operational delays are preventable with better pre-planning.',
+        'FPT Delay':'Coordinate with FPT supervisor at shift start. Ensure forklift positions are pre-assigned before first lift.',
+        'Non productive':'Structured break schedule with staggered timing prevents all cranes stopping simultaneously.'
+      };
+      var rec=delayRec[topDelay[0]]||('Address '+topDelay[0]+' — occurring '+topDelay[1]+'x across sessions.');
+      suggestions.push({ico:'⚠️',txt:'Top delay: '+topDelay[0]+' ('+topDelay[1]+'x). '+rec});
+    }
+
+    // Peak delay hour
+    if(peakHour){
+      var h=parseInt(peakHour[0]);
+      var shiftContext=h>=6&&h<9?'start-of-shift ramp-up':h>=10&&h<12?'mid-morning — possible break overlap':h>=12&&h<14?'lunch period':h>=14&&h<16?'afternoon fatigue window':'end-of-shift pressure period';
+      suggestions.push({ico:'🕐',txt:'Most delays cluster at '+peakHour[0]+':00 ('+shiftContext+'). Add supervisor presence during this window. '+peakHour[1]+' events recorded.'});
+    }
+
+    // ETC-specific suggestion
+    if(etc&&!etc.done&&etc.eta){
+      var rate=parseFloat(etc.rate);
+      var avgRate=data.sessions.length?data.sessions.reduce(function(a,s){return a+(s.total/(s.cranes||2));},0)/data.sessions.length:0;
+      if(rate<avgRate*0.8)suggestions.push({ico:'⏳',txt:'Current rate ('+etc.rate+' moves/hr) is below terminal average. ETA: '+etc.eta+'. Investigate unreported delays — check if all cranes are active.'});
+      else suggestions.push({ico:'⏱️',txt:'On track for '+etc.eta+' completion at '+etc.rate+' moves/hr. Maintain current pace — '+etc.remaining+' units remaining.'});
+    }
+
+    // Multi-crane balance
+    if(sess&&sess.numCranes>1){
+      var craneLoads=[];
+      for(var ci=1;ci<=sess.numCranes;ci++){
+        var cTotal=shiftSlots().reduce(function(a,s2){return a+(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);},0);
+        craneLoads.push({crane:craneName(ci),total:cTotal});
+      }
+      var maxLoad=Math.max.apply(null,craneLoads.map(function(x){return x.total;}));
+      var minLoad=Math.min.apply(null,craneLoads.map(function(x){return x.total;}));
+      if(maxLoad>0&&minLoad<maxLoad*0.6)suggestions.push({ico:'⚖️',txt:'Crane imbalance detected. '+craneLoads.reduce(function(a,x){return a+(x.total===maxLoad?x.crane:'');},'')+ ' has significantly more moves. Rebalance splits at next shift change.'});
+    }
+
+    suggestions.push({ico:'📋',txt:'Log delays in real-time, not end-of-shift. Real-time logging improves ETC accuracy by up to 40% and gives management live visibility.'});
+    suggestions.push({ico:'🔄',txt:'Use History collapsibles to compare shift performance. Identify which shift type (Day/Night) consistently underperforms and investigate root cause.'});
+
+    $(resultId)&&($(resultId).innerHTML=suggestions.map(function(x){return'<div class="ai-insight"><strong>'+x.ico+'</strong> '+x.txt+'</div>';}).join(''));
   },1400);
 }
 
