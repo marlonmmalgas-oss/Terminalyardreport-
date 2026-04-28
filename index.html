@@ -713,10 +713,12 @@ function formatDate(dt){
   if(isNaN(d.getTime()))return dt;
   return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
 }
+function getActiveId(){return(ST.vesselSlot===2&&ST.activeId2)?ST.activeId2:ST.activeId;}
 function getSess(){
   // Returns a deep clone so callers never mutate ST directly (Segment 4)
-  if(!ST.activeId)return null;
-  const raw=ST.sessions.find(function(s){return s.id===ST.activeId;})||null;
+  var aid=getActiveId();
+  if(!aid)return null;
+  const raw=ST.sessions.find(function(s){return s.id===aid;})||null;
   if(!raw)return null;
   try{return JSON.parse(JSON.stringify(raw));}catch(e){return raw;}
 }
@@ -774,21 +776,27 @@ function initApp(){
     if(cShift===RT.lastShiftType&&cDate===RT.lastShiftDate)return;
     var outType=RT.lastShiftType,outDate=RT.lastShiftDate;
     RT.lastShiftType=cShift;RT.lastShiftDate=cDate;
-    if(!ST.activeId)return;
-    var raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
-    if(!raw)return;
-    if(!raw.shifts)raw.shifts=[];
-    var sKey=outType+'_'+outDate;
-    var se=raw.shifts.find(function(sh){return sh.key===sKey;});
-    if(!se){se={key:sKey,type:outType,date:outDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};raw.shifts.push(se);}
-    var nc=raw.numCranes||2;
-    var isDaySlots=outType==='DAY';
-    var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
-    slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[k]=ST.hourly[k];});}});
-    for(var ci=1;ci<=nc;ci++){var rk=ST.activeId+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=ST.activeId+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
-    se.end=new Date().toISOString();
-    var sidx=ST.sessions.findIndex(function(x){return x.id===ST.activeId;});
-    if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
+    // Snapshot both active vessels
+    var activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
+    activeIds.forEach(function(aid){
+      var raw=ST.sessions.find(function(x){return x.id===aid;});
+      if(!raw)return;
+      if(!raw.shifts)raw.shifts=[];
+      var sKey=outType+'_'+outDate;
+      var se=raw.shifts.find(function(sh){return sh.key===sKey;});
+      if(!se){
+        se={key:sKey,type:outType,date:outDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+        raw.shifts.push(se);
+        var nc=raw.numCranes||2;
+        var isDaySlots=outType==='DAY';
+        var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
+        slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[k]=ST.hourly[k];});}});
+        for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
+        se.end=new Date().toISOString();
+        var sidx=ST.sessions.findIndex(function(x){return x.id===aid;});
+        if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
+      }
+    });
     ST.delays={};ST.delayRowIds={};
     sv();
     if(RT.tab==='delays')renderDelays();
@@ -885,9 +893,17 @@ function renderInput(){
 
   h+=`<div style="padding:0 10px 28px">`;
   if(!locked){h+=`<button class="btn" onclick="saveSession()" style="margin-bottom:10px">💾 Save Session</button>`;}
-  else{h+=`<div class="suc">✅ Session saved</div>
+  else{
+    var slot2Active=ST.vesselSlot===2&&ST.activeId2;
+    var otherSessName='';
+    if(ST.activeId2&&ST.vesselSlot!==2){var s2o=ST.sessions.find(function(x){return x.id===ST.activeId2;});if(s2o)otherSessName=s2o.vesselName;}
+    if(ST.activeId2&&ST.vesselSlot===2){var s2o=ST.sessions.find(function(x){return x.id===ST.activeId;});if(s2o)otherSessName=s2o.vesselName;}
+    h+=`<div class="suc">✅ Session saved${ST.activeId2?(' — Vessel '+(ST.vesselSlot===2?'2':'1')+' active'):''}${ST.activeId2?('<span style="font-size:10px;display:block;color:#475569">Other: '+otherSessName+'</span>'):''}
+    </div>
     <button class="btn btn-out" onclick="unlockSess()" style="margin-bottom:10px">✏️ Edit Session</button>
-    <button class="btn" onclick="newVessel()" style="background:#475569;margin-bottom:10px">🚢 New Vessel</button>`;}
+    <button class="btn" onclick="newVessel()" style="background:#475569;margin-bottom:10px">🚢 New Vessel</button>
+    <button class="btn" onclick="switchVessel()" style="background:#0891b2;margin-bottom:10px">🔄 Switch Vessel</button>`;
+  }
   h+=`</div>`;
   $('sc-input').innerHTML=h;
 }
@@ -948,8 +964,10 @@ function saveSession(){
     };
   }
   // 🔴 CRITICAL: Generate ID only once — NEVER recreate existing session
-  if(!ST.activeId) ST.activeId=Date.now();
-  const id=ST.activeId;
+  var targetSlot=ST.vesselSlot||1;
+  if(targetSlot===2){if(!ST.activeId2)ST.activeId2=Date.now();}
+  else{if(!ST.activeId)ST.activeId=Date.now();}
+  const id=targetSlot===2?ST.activeId2:ST.activeId;
 
   // Find existing session in ST.sessions to preserve shifts + results
   const existing=ST.sessions.find(x=>x.id===id)||{};
@@ -990,13 +1008,13 @@ function saveSession(){
   setTimeout(function(){_myLastSave=Date.now();},3000);
 }
 function unlockSess(){
-  if(!ST.activeId)return;
-  const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
+  var aid=getActiveId();
+  if(!aid)return;
+  const raw=ST.sessions.find(function(x){return x.id===aid;});
   if(!raw)return;
   raw.locked=false;
   sv();
   renderInput();
-  // Block remote overwrites for 3s — prevents another device's locked:true echo restoring the lock
   var t=Date.now();
   _myLastSave=t;
   setTimeout(function(){_myLastSave=Date.now();},500);
@@ -1006,53 +1024,55 @@ function unlockSess(){
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
 function newVessel(){
-  if(ST.activeId){
-    var _id=ST.activeId;
+  var targetSlot=ST.vesselSlot||1;
+  var currentId=targetSlot===2?(ST.activeId2||null):ST.activeId;
+  if(currentId){
+    var _id=currentId;
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
     if(_existing.id){
       var _nc=_existing.numCranes||2;
-      // Save current shift into s.shifts with unique key per type+date
       if(!_existing.shifts)_existing.shifts=[];
       var _shiftType=isDay()?'DAY':'NIGHT';
       var _shiftDate=new Date().toLocaleDateString('en-CA');
       var _shiftKey=_shiftType+'_'+_shiftDate;
       var _shiftEntry=_existing.shifts.find(function(sh){return sh.key===_shiftKey;});
+      var _isNew=!_shiftEntry;
       if(!_shiftEntry){
         _shiftEntry={key:_shiftKey,type:_shiftType,date:_shiftDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
         _existing.shifts.push(_shiftEntry);
       }
-      // Snapshot hourly results for this shift
-      var _sl=shiftSlots();
-      _sl.forEach(function(slot){
-        for(var ci=1;ci<=_nc;ci++){
-          ['discharge','load'].forEach(function(t){
-            var k=slot+'_'+ci+'_'+t;
-            if(ST.hourly[k])_shiftEntry.hourly[k]=ST.hourly[k];
+      if(_isNew){
+        var _sl=shiftSlots();
+        _sl.forEach(function(slot){
+          for(var ci=1;ci<=_nc;ci++){
+            ['discharge','load'].forEach(function(t){
+              var k=slot+'_'+ci+'_'+t;
+              if(ST.hourly[k])_shiftEntry.hourly[k]=ST.hourly[k];
+            });
+          }
+        });
+        for(var _ci=1;_ci<=_nc;_ci++){
+          var _rk=_id+'_c'+_ci;
+          (ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){
+            var _dk=_id+'_'+_ci+'_'+_r;
+            if(ST.delays[_dk])_shiftEntry.delays[_dk]=Object.assign({},ST.delays[_dk]);
           });
         }
-      });
-      // Snapshot delays for this shift
-      for(var _ci=1;_ci<=_nc;_ci++){
-        var _rk=_id+'_c'+_ci;
-        (ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){
-          var _dk=_id+'_'+_ci+'_'+_r;
-          if(ST.delays[_dk])_shiftEntry.delays[_dk]=Object.assign({},ST.delays[_dk]);
-        });
+        _shiftEntry.end=new Date().toISOString();
       }
-      _shiftEntry.end=new Date().toISOString();
       _existing.locked=true;
       _existing.savedAt=new Date().toISOString();
       var _idx=ST.sessions.findIndex(function(x){return x.id===_id;});
       if(_idx>=0)ST.sessions[_idx]=JSON.parse(JSON.stringify(_existing));
     }
   }
-  // Clear everything — ONE sv() so Firebase only sees one write
-  ST.activeId=null;
+  // Clear active slot — ONE sv() so Firebase only sees one write
+  if(targetSlot===2){ST.activeId2=null;}
+  else{ST.activeId=null;}
   ST.hourly={};
   ST.delayRowIds={};
   ST.delays={};
   sv();
-  // Extend own-save window for 3s so Firebase echo can't revert activeId or sessions
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
@@ -1063,6 +1083,24 @@ function newVessel(){
 }
 // newSess kept as alias for backwards compat
 function newSess(){newVessel();}
+
+// Switch between vessel 1 and vessel 2
+function switchVessel(){
+  if(!ST.activeId2){
+    // No second vessel yet — newVessel will create one in slot 2
+    ST.vesselSlot=2;
+    // Save current slot-1 vessel state first (it stays in ST.activeId)
+    renderInput();
+    return;
+  }
+  // Toggle between slot 1 and slot 2
+  ST.vesselSlot=(ST.vesselSlot===2)?1:2;
+  sv();
+  _myLastSave=Date.now();
+  setTimeout(function(){_myLastSave=Date.now();},500);
+  setTimeout(function(){_myLastSave=Date.now();},1000);
+  switchTab('input');
+}
 
 // ═══════════ RESULTS ═══════════
 // Build results table for a given set of slot-keys (used by renderResults + collapsibles)
@@ -2269,25 +2307,27 @@ function calcETC(){
   var rem=g.remaining;
   if(rem<=0)return{done:true,remaining:0,hoursLeft:0,eta:null,rate:done,reasoning:'All units completed.'};
   if(done===0)return null;
+  var nc=sess.numCranes||1;
 
-  // Calculate total delay minutes
-  var dMins=0;
-  if(ST.delayRowIds){for(var c=1;c<=sess.numCranes;c++){var rk=sess.id+'_c'+c;(ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[sess.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var fh=parseInt(d.from)||0,fm=parseInt((d.from.split(':')[1])||0),th=parseInt(d.to)||0,tm=parseInt((d.to.split(':')[1])||0);var diff=(th*60+tm)-(fh*60+fm);if(diff<0)diff+=1440;dMins+=diff;}});}}
+  // Delay minutes: use MAX per-crane delay (they run in parallel, not sequential)
+  var maxCraneDelay=0;
+  if(ST.delayRowIds){for(var c=1;c<=nc;c++){var rk=sess.id+'_c'+c;var craneDMin=0;(ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[sess.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var fh=parseInt(d.from)||0,fm=parseInt((d.from.split(':')[1])||0),th=parseInt(d.to)||0,tm=parseInt((d.to.split(':')[1])||0);var diff=(th*60+tm)-(fh*60+fm);if(diff<0)diff+=1440;craneDMin+=diff;}});if(craneDMin>maxCraneDelay)maxCraneDelay=craneDMin;}}
+  var dMins=maxCraneDelay;
 
-  // Active hours since first lift
+  // Active hours since first lift (wall-clock, minus parallel delay time)
   var aHrs=0.5;
   if(sess.firstLift){var fl=sess.firstLift.split(':'),sm=parseInt(fl[0])*60+(parseInt(fl[1])||0),nm=now.getHours()*60+now.getMinutes(),el2=nm-sm;if(el2<0)el2+=1440;aHrs=Math.max((el2-dMins)/60,0.25);}
   var overallRate=done/aHrs;
 
-  // Recent rate: last 2 completed slots (weighted 60%) + overall (40%)
+  // Recent rate: moves per completed slot (last 2 slots, weighted 60%) + overall (40%)
   var sl=shiftSlots();
   var recentMoves=0,recentSlots=0;
   var nowSlot=currSlot();
   var nowIdx=sl.indexOf(nowSlot);
-  if(nowIdx>1){
+  if(nowIdx>0){
     for(var ri=Math.max(0,nowIdx-2);ri<nowIdx;ri++){
       var s2=sl[ri];var slotTotal=0;
-      for(var ci=1;ci<=sess.numCranes;ci++)slotTotal+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
+      for(var ci=1;ci<=nc;ci++)slotTotal+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
       if(slotTotal>0){recentMoves+=slotTotal;recentSlots++;}
     }
   }
