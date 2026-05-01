@@ -441,17 +441,7 @@ function initSync(){
     if(window._yardRef){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
-        // Firebase converts arrays to objects with numeric keys — convert back
-        if(remoteYard&&!Array.isArray(remoteYard)&&typeof remoteYard==='object'){
-          var keys=Object.keys(remoteYard);
-          if(keys.every(function(k){return /^\d+$/.test(k);})){
-            remoteYard=keys.map(function(k){return remoteYard[k];}).filter(Boolean);
-          }
-        }
-        if(Array.isArray(remoteYard)&&remoteYard.length){
-          // Skip own-echo — same 500ms window used by main listener
-          var isOwnYardSave=(Date.now()-_myLastSave)<1500;
-          if(isOwnYardSave)return;
+        if(Array.isArray(remoteYard)){
           ST.yardReports=remoteYard;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
@@ -807,12 +797,9 @@ function initApp(){
         if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
       }
     });
-    ST.hourly={};ST.delays={};ST.delayRowIds={};
+    ST.delays={};ST.delayRowIds={};
     sv();
     if(RT.tab==='delays')renderDelays();
-    if(RT.tab==='results')renderResults();
-    if(RT.tab==='hourly')renderHourly();
-    if(RT.tab==='4hourly')renderFour();
     if(RT.tab==='history')renderHistory();
     if(RT.tab==='performance')renderPerformance();
   },60000);
@@ -1927,14 +1914,12 @@ function buildHistoryResultsHTML(hourlyData,snc){
   tf+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(gD+gL)+'</td></tr>';
   return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+th+'</thead><tbody>'+tb+'</tbody><tfoot>'+tf+'</tfoot></table></div>';
 }
-function buildHistoryDelaysHTML(delayData,snc,sessId){
+function buildHistoryDelaysHTML(delayData,snc){
   var out='';
   for(var ci=1;ci<=snc;ci++){
     var rows='';
     Object.keys(delayData).forEach(function(k){
       var p=k.split('_');if(p.length<3)return;
-      // Filter by session ID when provided (prevents cross-vessel delay mixing)
-      if(sessId&&!k.startsWith(String(sessId)+'_'))return;
       if(parseInt(p[p.length-2])!==ci)return;
       var dd=delayData[k];if(!dd||(!dd.from&&!dd.to&&!dd.type&&!dd.desc))return;
       rows+='<tr>'
@@ -2010,7 +1995,7 @@ function renderHistory(){
         +'<div id="'+buid+'r" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryResultsHTML(block.hourly,snc)+'</div>'
         +'<div style="margin-top:4px"><div onclick="histCollapse(\''+buid+'d\')" style="display:flex;align-items:center;justify-content:space-between;background:#f1c40f;color:#1a3a5c;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">'
         +'<span>⏸️ Delays &mdash; '+block.label+'</span><span id="'+buid+'d-arr">▶</span></div>'
-        +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc,s.id)+'</div></div>'
+        +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc)+'</div></div>'
         +'</div>';
     });
     h+=`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
@@ -2041,14 +2026,7 @@ function delSess(id){
   ST.sessions=ST.sessions.filter(function(s){
     return String(s.id)!==String(id)&&s.id!==nid;
   });
-  if(String(ST.activeId)===String(id)||ST.activeId===nid){
-    ST.activeId=null;
-    ST.hourly={};ST.delays={};ST.delayRowIds={};
-  }
-  if(String(ST.activeId2)===String(id)||ST.activeId2===nid){
-    ST.activeId2=null;
-    ST.hourly={};ST.delays={};ST.delayRowIds={};
-  }
+  if(String(ST.activeId)===String(id)||ST.activeId===nid)ST.activeId=null;
   _pendingDeleteSave=Date.now()+5000;
   sv();
   renderHistory();
@@ -3607,7 +3585,6 @@ function markVesselComplete(){
   else ST.sessions.unshift(savedSess);
   // Clear active session cleanly
   ST.activeId=null;
-  ST.hourly={};ST.delays={};ST.delayRowIds={};
   sv();
   alert('Vessel '+savedSess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
