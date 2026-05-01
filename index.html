@@ -797,9 +797,12 @@ function initApp(){
         if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
       }
     });
-    ST.delays={};ST.delayRowIds={};
+    ST.hourly={};ST.delays={};ST.delayRowIds={};
     sv();
     if(RT.tab==='delays')renderDelays();
+    if(RT.tab==='results')renderResults();
+    if(RT.tab==='hourly')renderHourly();
+    if(RT.tab==='4hourly')renderFour();
     if(RT.tab==='history')renderHistory();
     if(RT.tab==='performance')renderPerformance();
   },60000);
