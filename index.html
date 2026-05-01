@@ -399,20 +399,7 @@ function initSync(){
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
           // Deep clone to prevent Firebase object mutation bleeding into ST
-          try{
-            var val=JSON.parse(JSON.stringify(remote[k]));
-            // Firebase returns arrays as objects with numeric string keys — restore them
-            if(val&&typeof val==='object'&&!Array.isArray(val)){
-              var keys=Object.keys(val);
-              var allNumeric=keys.length>0&&keys.every(function(x){return/^\d+$/.test(x);});
-              if(allNumeric){
-                var arr=[];
-                keys.sort(function(a,b){return Number(a)-Number(b);}).forEach(function(i){arr.push(val[i]);});
-                val=arr;
-              }
-            }
-            ST[k]=val;
-          }catch(e){ST[k]=remote[k];}
+          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
       });
       // Restore local images after remote data applied
@@ -454,19 +441,20 @@ function initSync(){
     if(window._yardRef){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
-        // Firebase returns objects with numeric keys, not true arrays — normalise either way
-        var yardArr=null;
-        if(Array.isArray(remoteYard)){
-          yardArr=remoteYard;
-        } else if(remoteYard&&typeof remoteYard==='object'){
-          yardArr=Object.keys(remoteYard).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){return remoteYard[k];});
+        // Firebase converts arrays to objects with numeric keys — convert back
+        if(remoteYard&&!Array.isArray(remoteYard)&&typeof remoteYard==='object'){
+          var keys=Object.keys(remoteYard);
+          if(keys.every(function(k){return /^\d+$/.test(k);})){
+            remoteYard=keys.map(function(k){return remoteYard[k];}).filter(Boolean);
+          }
         }
-        if(yardArr&&yardArr.length){
-          ST.yardReports=yardArr;
+        if(Array.isArray(remoteYard)&&remoteYard.length){
+          // Skip own-echo — same 500ms window used by main listener
+          var isOwnYardSave=(Date.now()-_myLastSave)<1500;
+          if(isOwnYardSave)return;
+          ST.yardReports=remoteYard;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-          // RT.user guard removed — store data regardless of login state
-          // so it is ready when the user opens the yard tab
-          if(RT.tab==='yard'){try{renderYard();}catch(e){}}
+          if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
       });
     }
@@ -1939,12 +1927,14 @@ function buildHistoryResultsHTML(hourlyData,snc){
   tf+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(gD+gL)+'</td></tr>';
   return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+th+'</thead><tbody>'+tb+'</tbody><tfoot>'+tf+'</tfoot></table></div>';
 }
-function buildHistoryDelaysHTML(delayData,snc){
+function buildHistoryDelaysHTML(delayData,snc,sessId){
   var out='';
   for(var ci=1;ci<=snc;ci++){
     var rows='';
     Object.keys(delayData).forEach(function(k){
       var p=k.split('_');if(p.length<3)return;
+      // Filter by session ID when provided (prevents cross-vessel delay mixing)
+      if(sessId&&!k.startsWith(String(sessId)+'_'))return;
       if(parseInt(p[p.length-2])!==ci)return;
       var dd=delayData[k];if(!dd||(!dd.from&&!dd.to&&!dd.type&&!dd.desc))return;
       rows+='<tr>'
@@ -2020,7 +2010,7 @@ function renderHistory(){
         +'<div id="'+buid+'r" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryResultsHTML(block.hourly,snc)+'</div>'
         +'<div style="margin-top:4px"><div onclick="histCollapse(\''+buid+'d\')" style="display:flex;align-items:center;justify-content:space-between;background:#f1c40f;color:#1a3a5c;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">'
         +'<span>⏸️ Delays &mdash; '+block.label+'</span><span id="'+buid+'d-arr">▶</span></div>'
-        +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc)+'</div></div>'
+        +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc,s.id)+'</div></div>'
         +'</div>';
     });
     h+=`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
@@ -2444,30 +2434,6 @@ function classifyUnit(row){
 let yardActiveReport=null,yardSearch='';
 
 function renderYard(){
-  // Always fetch latest yard data from Firebase when the tab is opened.
-  // This ensures other devices see reports even if the realtime listener
-  // fired before the upload was complete, or missed the push entirely.
-  // Only do the one-time fetch when local data is empty — the realtime
-  // listener handles keeping it fresh once it has been populated
-  if(window._yardRef&&!window._yardFetchPending&&!ST.yardReports.length){
-    window._yardFetchPending=true;
-    window._yardRef.once('value',function(snap){
-      window._yardFetchPending=false;
-      var fresh=snap.val();
-      // Firebase may return an object with numeric keys rather than a true array
-      var freshArr=null;
-      if(Array.isArray(fresh)){
-        freshArr=fresh;
-      } else if(fresh&&typeof fresh==='object'){
-        freshArr=Object.keys(fresh).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){return fresh[k];});
-      }
-      if(freshArr&&freshArr.length){
-        ST.yardReports=freshArr;
-        try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-        if(RT.tab==='yard'){try{renderYard();}catch(e){}}
-      }
-    },function(){window._yardFetchPending=false;});
-  }
   let h=`<div class="ph"><div class="ph-row"><h2>🏗️ Yard Status</h2><span class="pill pblue">${ST.yardReports.length} Report${ST.yardReports.length!==1?'s':''}</span></div></div>`;
   // Upload + manual entry options
   h+=`<div style="padding:8px 10px 6px">
