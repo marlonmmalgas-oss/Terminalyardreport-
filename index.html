@@ -441,8 +441,15 @@ function initSync(){
     if(window._yardRef){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
+        // Firebase returns objects with numeric keys, not true arrays — normalise either way
+        var yardArr=null;
         if(Array.isArray(remoteYard)){
-          ST.yardReports=remoteYard;
+          yardArr=remoteYard;
+        } else if(remoteYard&&typeof remoteYard==='object'){
+          yardArr=Object.keys(remoteYard).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){return remoteYard[k];});
+        }
+        if(yardArr&&yardArr.length){
+          ST.yardReports=yardArr;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
@@ -2430,8 +2437,15 @@ function renderYard(){
     window._yardRef.once('value',function(snap){
       window._yardFetchPending=false;
       var fresh=snap.val();
-      if(Array.isArray(fresh)&&fresh.length){
-        ST.yardReports=fresh;
+      // Firebase may return an object with numeric keys rather than a true array
+      var freshArr=null;
+      if(Array.isArray(fresh)){
+        freshArr=fresh;
+      } else if(fresh&&typeof fresh==='object'){
+        freshArr=Object.keys(fresh).sort(function(a,b){return Number(a)-Number(b);}).map(function(k){return fresh[k];});
+      }
+      if(freshArr&&freshArr.length){
+        ST.yardReports=freshArr;
         try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
         if(RT.tab==='yard'){try{renderYard();}catch(e){}}
       }
