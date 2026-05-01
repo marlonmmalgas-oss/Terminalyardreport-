@@ -399,7 +399,20 @@ function initSync(){
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
           // Deep clone to prevent Firebase object mutation bleeding into ST
-          try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
+          try{
+            var val=JSON.parse(JSON.stringify(remote[k]));
+            // Firebase returns arrays as objects with numeric string keys — restore them
+            if(val&&typeof val==='object'&&!Array.isArray(val)){
+              var keys=Object.keys(val);
+              var allNumeric=keys.length>0&&keys.every(function(x){return/^\d+$/.test(x);});
+              if(allNumeric){
+                var arr=[];
+                keys.sort(function(a,b){return Number(a)-Number(b);}).forEach(function(i){arr.push(val[i]);});
+                val=arr;
+              }
+            }
+            ST[k]=val;
+          }catch(e){ST[k]=remote[k];}
         }
       });
       // Restore local images after remote data applied
@@ -451,7 +464,9 @@ function initSync(){
         if(yardArr&&yardArr.length){
           ST.yardReports=yardArr;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-          if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
+          // RT.user guard removed — store data regardless of login state
+          // so it is ready when the user opens the yard tab
+          if(RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
       });
     }
@@ -2432,7 +2447,9 @@ function renderYard(){
   // Always fetch latest yard data from Firebase when the tab is opened.
   // This ensures other devices see reports even if the realtime listener
   // fired before the upload was complete, or missed the push entirely.
-  if(window._yardRef&&!window._yardFetchPending){
+  // Only do the one-time fetch when local data is empty — the realtime
+  // listener handles keeping it fresh once it has been populated
+  if(window._yardRef&&!window._yardFetchPending&&!ST.yardReports.length){
     window._yardFetchPending=true;
     window._yardRef.once('value',function(snap){
       window._yardFetchPending=false;
