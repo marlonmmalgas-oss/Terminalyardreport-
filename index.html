@@ -2422,6 +2422,21 @@ function classifyUnit(row){
 let yardActiveReport=null,yardSearch='';
 
 function renderYard(){
+  // Always fetch latest yard data from Firebase when the tab is opened.
+  // This ensures other devices see reports even if the realtime listener
+  // fired before the upload was complete, or missed the push entirely.
+  if(window._yardRef&&!window._yardFetchPending){
+    window._yardFetchPending=true;
+    window._yardRef.once('value',function(snap){
+      window._yardFetchPending=false;
+      var fresh=snap.val();
+      if(Array.isArray(fresh)&&fresh.length){
+        ST.yardReports=fresh;
+        try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+        if(RT.tab==='yard'){try{renderYard();}catch(e){}}
+      }
+    },function(){window._yardFetchPending=false;});
+  }
   let h=`<div class="ph"><div class="ph-row"><h2>🏗️ Yard Status</h2><span class="pill pblue">${ST.yardReports.length} Report${ST.yardReports.length!==1?'s':''}</span></div></div>`;
   // Upload + manual entry options
   h+=`<div style="padding:8px 10px 6px">
