@@ -797,9 +797,12 @@ function initApp(){
         if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
       }
     });
-    ST.delays={};ST.delayRowIds={};
+    ST.hourly={};ST.delays={};ST.delayRowIds={};
     sv();
     if(RT.tab==='delays')renderDelays();
+    if(RT.tab==='results')renderResults();
+    if(RT.tab==='hourly')renderHourly();
+    if(RT.tab==='4hourly')renderFour();
     if(RT.tab==='history')renderHistory();
     if(RT.tab==='performance')renderPerformance();
   },60000);
@@ -2026,7 +2029,14 @@ function delSess(id){
   ST.sessions=ST.sessions.filter(function(s){
     return String(s.id)!==String(id)&&s.id!==nid;
   });
-  if(String(ST.activeId)===String(id)||ST.activeId===nid)ST.activeId=null;
+  if(String(ST.activeId)===String(id)||ST.activeId===nid){
+    ST.activeId=null;
+    ST.hourly={};ST.delays={};ST.delayRowIds={};
+  }
+  if(String(ST.activeId2)===String(id)||ST.activeId2===nid){
+    ST.activeId2=null;
+    ST.hourly={};ST.delays={};ST.delayRowIds={};
+  }
   _pendingDeleteSave=Date.now()+5000;
   sv();
   renderHistory();
@@ -3585,6 +3595,7 @@ function markVesselComplete(){
   else ST.sessions.unshift(savedSess);
   // Clear active session cleanly
   ST.activeId=null;
+  ST.hourly={};ST.delays={};ST.delayRowIds={};
   sv();
   alert('Vessel '+savedSess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
