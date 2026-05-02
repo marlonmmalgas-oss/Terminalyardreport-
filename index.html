@@ -397,7 +397,7 @@ function initSync(){
         if(k!=='_ts'&&k!=='_gen'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
-          if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
+          if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='activeId2'||k==='vesselSlot'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
           // Deep clone to prevent Firebase object mutation bleeding into ST
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
@@ -1493,29 +1493,43 @@ function shareDelays(){
   requestAnimationFrame(function(){
     requestAnimationFrame(function(){
       setTimeout(function(){
-        const el=host.firstElementChild;
-        const fullH=host.scrollHeight;
-        html2canvas(host,{
-          scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-          width:W,height:fullH,windowWidth:W,
-          scrollX:0,scrollY:0,allowTaint:true,logging:false
-        }).then(function(canvas){
-          document.body.removeChild(host);
-          canvas.toBlob(function(blob){
-            if(!blob)return;
-            const file=new File([blob],'Delays.png',{type:'image/png'});
-            if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-              navigator.share({files:[file],title:'Idle / Delays'});
-            } else {
-              const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-              a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-              setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-            }
-          },'image/png',0.96);
-        }).catch(function(e){
-          if(host.parentNode)document.body.removeChild(host);
-          alert('Share failed: '+e.message);
+        // Use bounding-rect walk for true height (CSS transform doesn't affect scrollHeight)
+        var hostTop=host.getBoundingClientRect().top;
+        var trueBot=0;
+        host.querySelectorAll('*').forEach(function(node){
+          var r=node.getBoundingClientRect();
+          if(r.bottom-hostTop>trueBot)trueBot=r.bottom-hostTop;
         });
+        var fullH=Math.max(trueBot+20,host.scrollHeight);
+        host.style.height=fullH+'px';
+        setTimeout(function(){
+          html2canvas(host,{
+            scale:2,useCORS:true,backgroundColor:'#f0f2f7',
+            width:W,height:fullH,windowWidth:W,windowHeight:fullH,
+            scrollX:0,scrollY:0,allowTaint:true,logging:false
+          }).then(function(canvas){
+            if(host.parentNode)document.body.removeChild(host);
+            canvas.toBlob(function(blob){
+              if(!blob)return;
+              const file=new File([blob],'Delays.png',{type:'image/png'});
+              var shared=false;
+              try{
+                if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+                  navigator.share({files:[file],title:'Idle / Delays'});
+                  shared=true;
+                }
+              }catch(se){shared=false;}
+              if(!shared){
+                const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+                a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+                setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+              }
+            },'image/png',0.96);
+          }).catch(function(e){
+            if(host.parentNode)document.body.removeChild(host);
+            alert('Share failed: '+e.message);
+          });
+        },100);
       },300);
     });
   });
@@ -2962,28 +2976,53 @@ async function shareReport(capId){
   document.body.appendChild(wrapper);
 
   try{
+    // Two rAF passes so browser fully lays out before we measure
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,200);});
-    const h=wrapper.scrollHeight;
-    wrapper.style.height=h+'px';
+    await new Promise(function(r){setTimeout(r,300);});
+
+    // CSS transform:scale() does NOT affect scrollHeight — the table still
+    // occupies its un-scaled height in layout flow. Measure the TRUE rendered
+    // bottom by walking every child's bounding rect relative to the wrapper top.
+    var wrapperTop=wrapper.getBoundingClientRect().top;
+    var trueBottom=0;
+    wrapper.querySelectorAll('*').forEach(function(node){
+      var rect=node.getBoundingClientRect();
+      var bottom=rect.bottom-wrapperTop;
+      if(bottom>trueBottom)trueBottom=bottom;
+    });
+    // Add a small bottom pad and fall back to scrollHeight if rect walk fails
+    var captureH=Math.max(trueBottom+20,wrapper.scrollHeight);
+    wrapper.style.height=captureH+'px';
+
+    // Second settle after height is fixed
+    await new Promise(function(r){setTimeout(r,100);});
+
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
+      width:PORTRAIT_W,height:captureH,
+      windowWidth:PORTRAIT_W,windowHeight:captureH,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
       if(!blob)return;
       const file=new File([blob],'Report.png',{type:'image/png'});
-      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-        await navigator.share({files:[file],title:'Terminal Report'});
-      }else{
+      // navigator.share with files is not supported on Edge/desktop — always
+      // fall back to direct download when canShare returns false or throws
+      var shared=false;
+      try{
+        if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+          await navigator.share({files:[file],title:'Terminal Report'});
+          shared=true;
+        }
+      }catch(shareErr){shared=false;}
+      if(!shared){
         const a=document.createElement('a');a.href=URL.createObjectURL(blob);
         a.download='Report.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
         setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
       }
     },'image/png',0.96);
   }catch(e){alert('Share failed: '+e.message);}
-  finally{document.body.removeChild(wrapper);}
+  finally{if(wrapper.parentNode)document.body.removeChild(wrapper);}
 }
 
 // ═══════════ GENERATORS ═══════════
@@ -3462,8 +3501,17 @@ async function shareYardReport(reportId){
   await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
   await new Promise(function(r){setTimeout(r,400);});
 
-  var captureH=wrapper.scrollHeight;
+  // Use bounding-rect walk for true height (CSS transform doesn't affect scrollHeight)
+  var wrapperTopY=wrapper.getBoundingClientRect().top;
+  var trueBottomY=0;
+  wrapper.querySelectorAll('*').forEach(function(node){
+    var rect=node.getBoundingClientRect();
+    var bottom=rect.bottom-wrapperTopY;
+    if(bottom>trueBottomY)trueBottomY=bottom;
+  });
+  var captureH=Math.max(trueBottomY+20,wrapper.scrollHeight);
   wrapper.style.height=captureH+'px';
+  await new Promise(function(r){setTimeout(r,100);});
 
   try{
     var canvas=await html2canvas(wrapper,{
@@ -3482,9 +3530,14 @@ async function shareYardReport(reportId){
     canvas.toBlob(async function(blob){
       if(!blob)return;
       var file=new File([blob],'Yard-Status.png',{type:'image/png'});
-      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-        await navigator.share({files:[file],title:'Yard Status'});
-      } else {
+      var shared=false;
+      try{
+        if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+          await navigator.share({files:[file],title:'Yard Status'});
+          shared=true;
+        }
+      }catch(shareErr){shared=false;}
+      if(!shared){
         var a=document.createElement('a');
         a.href=URL.createObjectURL(blob);
         a.download='Yard-Status.png';
@@ -3495,7 +3548,7 @@ async function shareYardReport(reportId){
       }
     },'image/png',0.96);
   }catch(e){alert('Share failed: '+e.message);}
-  finally{document.body.removeChild(wrapper);}
+  finally{if(wrapper.parentNode)document.body.removeChild(wrapper);}
 }
 // ════════════════════════════════════
 // EXPORT / IMPORT (manual fallback)
