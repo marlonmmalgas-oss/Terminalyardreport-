@@ -402,6 +402,21 @@ function initSync(){
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
       });
+      // Firebase converts JS arrays to keyed objects — restore them back to arrays
+      // e.g. sessions: {"0":{...},"1":{...}} must become [{...},{...}]
+      ['sessions','yardReports','generators','vesselAbbrevs'].forEach(function(k){
+        if(ST[k]&&!Array.isArray(ST[k])&&typeof ST[k]==='object'){
+          ST[k]=Object.values(ST[k]);
+        }
+        if(!Array.isArray(ST[k]))ST[k]=[];
+      });
+      // Null-guard scalar and object fields that Firebase may return as null
+      if(!ST.hourly||typeof ST.hourly!=='object'||Array.isArray(ST.hourly))ST.hourly={};
+      if(!ST.delays||typeof ST.delays!=='object'||Array.isArray(ST.delays))ST.delays={};
+      if(!ST.delayRowIds||typeof ST.delayRowIds!=='object'||Array.isArray(ST.delayRowIds))ST.delayRowIds={};
+      if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.settings);
+      if(!ST.timing||typeof ST.timing!=='object')ST.timing=Object.assign({},DEF.timing);
+      if(!ST.craneNames||typeof ST.craneNames!=='object')ST.craneNames=Object.assign({},DEF.craneNames);
       // Restore local images after remote data applied
       if(Object.keys(localImages).length){
         if(!ST.settings)ST.settings={};
@@ -2908,106 +2923,107 @@ async function shareReport(capId){
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
 
-  // PORTRAIT: fixed 420px width — tables scale down to fit
   const PORTRAIT_W=420;
 
+  // ── 1. Clone and clean ──────────────────────────────────────────────
   const clone=el.cloneNode(true);
 
-  // Stamp live input/select values into clone (cloneNode doesn't copy live .value)
+  // Stamp live input values (cloneNode doesn't carry live .value)
   var liveInputs=el.querySelectorAll('input,select,textarea');
   var cloneInputs=clone.querySelectorAll('input,select,textarea');
-  liveInputs.forEach(function(live,i){if(cloneInputs[i])cloneInputs[i].value=live.value;});
+  liveInputs.forEach(function(live,idx2){if(cloneInputs[idx2])cloneInputs[idx2].value=live.value;});
 
-  // Remove share button, UI controls outside table
+  // Remove share buttons and UI controls
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
-  // Replace ALL inputs with plain text spans (using stamped values)
-  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
-    if(inp.closest('td')||inp.closest('th')){
-      // Inside table cell — replace with plain text div
-      var div=document.createElement('div');
-      div.textContent=inp.value||'';
-      div.style.cssText='font-size:11px;font-weight:700;text-align:center;';
-      if(inp.parentNode)inp.parentNode.replaceChild(div,inp);
-    } else {
-      var span=document.createElement('span');
-      span.textContent=inp.value||'';
-      span.style.cssText='font-size:12px;font-weight:600;';
-      if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
-    }
-  });
+  clone.querySelectorAll('button,.add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
   clone.querySelectorAll('datalist').forEach(function(dl){dl.parentNode&&dl.parentNode.removeChild(dl);});
-  clone.querySelectorAll(':not(td):not(th) button, :not(td):not(th) .add-row-btn').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
 
-  // Make all wrappers non-scrolling so full table is visible
-  clone.querySelectorAll('.twrap,.table-wrapper,.yard-twrap').forEach(function(tw){
-    tw.style.overflow='visible';
-    tw.style.width='auto';
+  // Replace inputs with plain text spans
+  clone.querySelectorAll('input,select,textarea').forEach(function(inp){
+    var span=document.createElement('span');
+    span.textContent=inp.value||'';
+    span.style.cssText='font-size:11px;font-weight:700;';
+    if(inp.parentNode)inp.parentNode.replaceChild(span,inp);
   });
 
-  // Scale each table to fit within PORTRAIT_W
-  // Measure real table widths from live DOM, then scale clone tables accordingly
-  var liveTables=el.querySelectorAll('table');
-  var cloneTables=clone.querySelectorAll('table');
-  liveTables.forEach(function(liveT,i){
-    var realW=liveT.scrollWidth;
-    var cloneT=cloneTables[i];
-    if(!cloneT)return;
-    var contentW=PORTRAIT_W-24; // 12px padding each side
-    if(realW>contentW){
-      // Scale table down to fit portrait width
-      var scale=contentW/realW;
-      cloneT.style.transformOrigin='top left';
-      cloneT.style.transform='scale('+scale+')';
-      cloneT.style.marginBottom='-'+(realW*(1-scale))+'px'; // collapse dead space
-      // Wrap in a div to contain the scaled table
-      var wrap=document.createElement('div');
-      wrap.style.cssText='width:'+contentW+'px;overflow:hidden;';
-      cloneT.parentNode.insertBefore(wrap,cloneT);
-      wrap.appendChild(cloneT);
-    } else {
-      cloneT.style.width='100%';
-      cloneT.style.minWidth='unset';
-    }
-  });
-
+  // ── 2. Mount clone in DOM FIRST (off-screen) so getComputedStyle works ─
+  // We MUST be in the live DOM before reading computed styles.
+  // Class-based CSS (like .card{overflow:hidden}, .twrap{overflow-x:auto})
+  // is invisible to node.style — only getComputedStyle reveals it.
+  var RENDER_W=Math.max(el.scrollWidth, el.offsetWidth, 500);
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.style.cssText=[
+    'position:fixed',
+    'left:-'+(RENDER_W+200)+'px',
+    'top:0',
+    'width:'+RENDER_W+'px',
+    'background:#f0f2f7',
+    'font-family:Segoe UI,Arial,sans-serif',
+    'box-sizing:border-box',
+    'overflow:visible',
+    'z-index:-1'
+  ].join(';');
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
   try{
-    // Two rAF passes so browser fully lays out before we measure
+    // First paint — computed styles now available
     await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
-    await new Promise(function(r){setTimeout(r,300);});
+    await new Promise(function(r){setTimeout(r,200);});
 
-    // CSS transform:scale() does NOT affect scrollHeight — the table still
-    // occupies its un-scaled height in layout flow. Measure the TRUE rendered
-    // bottom by walking every child's bounding rect relative to the wrapper top.
-    var wrapperTop=wrapper.getBoundingClientRect().top;
-    var trueBottom=0;
-    wrapper.querySelectorAll('*').forEach(function(node){
-      var rect=node.getBoundingClientRect();
-      var bottom=rect.bottom-wrapperTop;
-      if(bottom>trueBottom)trueBottom=bottom;
+    // ── 3. Fix ALL overflow clipping using getComputedStyle ─────────────
+    // .card{overflow:hidden} and .twrap{overflow-x:auto} are class rules —
+    // they only show up in getComputedStyle, not node.style.
+    // Force every element that clips to overflow:visible via inline style.
+    Array.from(wrapper.querySelectorAll('*')).forEach(function(node){
+      try{
+        var cs=window.getComputedStyle(node);
+        if(cs.overflow!=='visible'||cs.overflowX!=='visible'||cs.overflowY!=='visible'){
+          node.style.overflow='visible';
+          node.style.overflowX='visible';
+          node.style.overflowY='visible';
+        }
+        if(cs.transform&&cs.transform!=='none'){
+          node.style.transform='none';
+        }
+        // Remove any fixed/max heights that could clip content
+        if(cs.maxHeight&&cs.maxHeight!=='none'&&cs.maxHeight!=='0px'){
+          node.style.maxHeight='none';
+        }
+      }catch(e){}
     });
-    // Add a small bottom pad and fall back to scrollHeight if rect walk fails
-    var captureH=Math.max(trueBottom+20,wrapper.scrollHeight);
+    wrapper.style.height='auto';
+    wrapper.style.overflow='visible';
+
+    // ── 4. Reflow after style changes ────────────────────────────────────
+    await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r);});});
+    await new Promise(function(r){setTimeout(r,150);});
+
+    // ── 5. Measure full height (no transforms = scrollHeight is accurate) ─
+    var captureH=wrapper.scrollHeight;
+    if(captureH<100){captureH=800;}
     wrapper.style.height=captureH+'px';
+    await new Promise(function(r){setTimeout(r,50);});
 
-    // Second settle after height is fixed
-    await new Promise(function(r){setTimeout(r,100);});
-
+    // ── 6. Render: scale canvas to portrait width ─────────────────────────
+    var scaleFactor=(PORTRAIT_W/RENDER_W)*2;
     const canvas=await html2canvas(wrapper,{
-      scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:captureH,
-      windowWidth:PORTRAIT_W,windowHeight:captureH,
-      scrollX:0,scrollY:0,allowTaint:true,logging:false
+      scale:scaleFactor,
+      useCORS:true,
+      backgroundColor:'#f0f2f7',
+      width:RENDER_W,
+      height:captureH,
+      windowWidth:RENDER_W,
+      windowHeight:captureH,
+      scrollX:0,
+      scrollY:0,
+      allowTaint:true,
+      logging:false
     });
+
     canvas.toBlob(async function(blob){
-      if(!blob)return;
+      if(!blob){alert('Failed to create image.');return;}
       const file=new File([blob],'Report.png',{type:'image/png'});
-      // navigator.share with files is not supported on Edge/desktop — always
-      // fall back to direct download when canShare returns false or throws
       var shared=false;
       try{
         if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
@@ -3016,11 +3032,16 @@ async function shareReport(capId){
         }
       }catch(shareErr){shared=false;}
       if(!shared){
-        const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-        a.download='Report.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+        const a=document.createElement('a');
+        a.href=URL.createObjectURL(blob);
+        a.download='Report.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
       }
     },'image/png',0.96);
+
   }catch(e){alert('Share failed: '+e.message);}
   finally{if(wrapper.parentNode)document.body.removeChild(wrapper);}
 }
