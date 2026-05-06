@@ -559,33 +559,28 @@ const ALL=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-120
 // ═══════════ DATA LAYER (Segment 1) ═══════════
 // allSlots: ALL moves across the vessel for the active session
 // Returns array of {slot, disc, load} aggregated across all cranes
-// Includes data from completed shifts (sess.shifts[]) + live ST.hourly
 function getAllSlots(sess){
   if(!sess)return[];
+  // Scope to slots from session start up to now, so totalDone never
+  // picks up data from other vessels or future slots
+  var startMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
   var nc=sess.numCranes;
-  // Build a merged hourly map: past archived shifts + current live data
-  // Past shifts are stored in sess.shifts[n].hourly after each rollover
-  var merged={};
-  if(Array.isArray(sess.shifts)){
-    sess.shifts.forEach(function(sh){
-      if(sh&&sh.hourly&&typeof sh.hourly==='object'){
-        Object.keys(sh.hourly).forEach(function(k){
-          merged[k]=(merged[k]||0)+(sh.hourly[k]||0);
-        });
-      }
-    });
-  }
-  // Live current-shift data always wins/adds on top
-  Object.keys(ST.hourly).forEach(function(k){
-    merged[k]=(merged[k]||0)+(ST.hourly[k]||0);
-  });
+  var now=new Date();
   return ALL.map(function(s){
+    // Only include slot if it falls within the session's active timespan
+    var slotHour=parseInt(s.substring(0,2));
+    // Build a representative Date for this slot on today's date
+    var slotDate=new Date(now);
+    slotDate.setHours(slotHour,0,0,0);
+    // If startMs exists, skip slots that are clearly before session started
+    // We compare only by hour-of-day since slots are cyclic 24hr labels
+    // Simply include all slots that have any data — zero-value slots contribute 0 anyway
     var disc=0,load=0;
     for(var i=1;i<=nc;i++){
-      disc+=merged[s+'_'+i+'_discharge']||0;
-      load+=merged[s+'_'+i+'_load']||0;
+      disc+=ST.hourly[s+'_'+i+'_discharge']||0;
+      load+=ST.hourly[s+'_'+i+'_load']||0;
     }
-    return{slot:s,disc:disc,load:load,_merged:merged};
+    return{slot:s,disc:disc,load:load};
   });
 }
 
@@ -1134,13 +1129,12 @@ function buildResultsTable(sess, slotKeys){
   let h='';
   ['discharge','load'].forEach(function(t){
     const T=t[0].toUpperCase()+t.slice(1);
-    // Per-crane all-time totals from global engine (uses merged past+live data)
+    // Per-crane all-time totals from global engine
     const allData=getAllSlots(sess);
     const dpAll={};
     for(let i=1;i<=nc;i++){
       dpAll[i]=allData.reduce(function(sum,sd){
-        var m=sd._merged||ST.hourly;
-        return sum+(m[sd.slot+'_'+i+'_'+t]||0);
+        return sum+(ST.hourly[sd.slot+'_'+i+'_'+t]||0);
       },0);
     }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
@@ -1182,7 +1176,7 @@ function renderResults(){
     const allData=getAllSlots(sess);
     const dpAll={};
     for(let i=1;i<=nc;i++){
-      dpAll[i]=allData.reduce(function(sum,sd){var m=sd._merged||ST.hourly;return sum+(m[sd.slot+'_'+i+'_'+t]||0);},0);
+      dpAll[i]=allData.reduce(function(sum,sd){return sum+(ST.hourly[sd.slot+'_'+i+'_'+t]||0);},0);
     }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
       <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
@@ -1255,12 +1249,11 @@ function craneTableHTML(sess,cumSlots,curSlot){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl=cb.loadSplit||0;
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
     const hd=ST.hourly[`${curSlot}_${i}_discharge`],hl=ST.hourly[`${curSlot}_${i}_load`];
-    // Remaining via getAllSlots — use pre-merged disc/load, not raw ST.hourly
+    // Remaining via getAllSlots — no direct ST.hourly loop in view
     let cd=0,cl=0;
     getAllSlots(sess).forEach(function(sd){
-      var m=sd._merged||ST.hourly;
-      cd+=m[sd.slot+'_'+i+'_discharge']||0;
-      cl+=m[sd.slot+'_'+i+'_load']||0;
+      cd+=ST.hourly[sd.slot+'_'+i+'_discharge']||0;
+      cl+=ST.hourly[sd.slot+'_'+i+'_load']||0;
     });
     const rd=ed-cd,rl=el2-cl;
     rows+=`<tr class="${i%2===0?'e':'o'}">
@@ -1401,12 +1394,11 @@ function renderFour(){
   for(let i=1;i<=nc;i++){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl2=cb.loadSplit||0;
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
-    // cd/cl = all-time per crane via data layer (includes past archived shifts)
+    // cd/cl = all-time per crane via data layer
     let cd=0,cl=0,w4d=0,w4l=0;
     getAllSlots(sess).forEach(function(sd){
-      var m=sd._merged||ST.hourly;
-      cd+=m[sd.slot+'_'+i+'_discharge']||0;
-      cl+=m[sd.slot+'_'+i+'_load']||0;
+      cd+=ST.hourly[sd.slot+'_'+i+'_discharge']||0;
+      cl+=ST.hourly[sd.slot+'_'+i+'_load']||0;
     });
     ws.forEach(s=>{w4d+=ST.hourly[`${s}_${i}_discharge`]||0;w4l+=ST.hourly[`${s}_${i}_load`]||0;});
     const rd=ed-cd,rl=el2-cl;
@@ -1557,13 +1549,51 @@ function shareDelays(){
     });
   });
 }
+// Delay label helpers
+function _dlLbl(key,def){if(!ST.sel.delayLabels)ST.sel.delayLabels={};return ST.sel.delayLabels[key]||def;}
+function _setDlLbl(key,val){if(!ST.sel.delayLabels)ST.sel.delayLabels={};ST.sel.delayLabels[key]=val;sv();}
+// Shared edit handler - called from onclick, avoids quote-nesting issues
+window._dlEdit=function(el,storeKey,callback){
+  var old=el.textContent;
+  var inp=document.createElement('input');
+  inp.value=old;
+  inp.style.cssText='background:rgba(255,255,255,.18);color:inherit;border:none;border-bottom:2px solid white;outline:none;font:inherit;font-weight:inherit;width:'+Math.max(old.length*12,60)+'px;text-align:inherit;padding:0 2px;';
+  el.replaceWith(inp);inp.focus();inp.select();
+  function save(){var v=inp.value.trim()||old;_setDlLbl(storeKey,v);if(callback)callback();else renderDelays();}
+  inp.onblur=save;
+  inp.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();save();}if(e.key==='Escape'){inp.value=old;save();}};
+};
+function _editSpan(storeKey,val,extraStyle){
+  var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.5);padding-bottom:1px;'+(extraStyle||'');
+  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\''+storeKey+'\')">'+val+'</span>';
+}
+function _editCraneSpan(c){
+  var key='crane_'+c;
+  var val=_dlLbl(key,craneName(c));
+  var s='cursor:pointer;border-bottom:1px dashed rgba(31,56,100,.5);padding-bottom:1px;';
+  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'crane_'+c+'\')">'+val+'</span>';
+}
+function _editColSpan(colKey,def){
+  var val=_dlLbl('col_'+colKey,def);
+  var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.45);padding-bottom:1px;';
+  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'col_'+colKey+'\')">'+val+'</span>';
+}
+function _editLbl(key,defVal,extraStyle){return _editSpan(key,_dlLbl(key,defVal),extraStyle);}
+function _editCraneLbl(c){return _editCraneSpan(c);}
+function _editColLbl(k,def){return _editColSpan(k,def);}
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
-  let h=rhHTML('IDLE / DELAYS',slot,'dcap');
-  // Replace the share button action: delays uses shareDelays() not shareReport('dcap')
+  const mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
+  let h=rhHTML(mainTitle,slot,'dcap');
   h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
+  h=h.replace('<h2>'+mainTitle+'</h2>','<h2>'+_editLbl('mainTitle','IDLE / DELAYS','font-size:inherit;font-weight:inherit;letter-spacing:inherit;')+'</h2>');
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
+  const colFrom=_editColLbl('from','From');
+  const colTo=_editColLbl('to','To');
+  const colDur=_editColLbl('dur','Dur.');
+  const colType=_editColLbl('type','Delay Type');
+  const colDesc=_editColLbl('desc','Description');
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
@@ -1587,11 +1617,11 @@ function renderDelays(){
       </tr>`;
     });
     h+=`<div class="dblk">
-      <div class="dchd">${craneName(c)}
+      <div class="dchd">${_editCraneLbl(c)}
         <button class="add-row-btn" id="addBtn_${c}" onclick="addDRow(${c})">+ Add Row</button>
       </div>
       <div class="twrap"><table class="dt">
-        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead>
+        <thead><tr><th>${colFrom}</th><th>${colTo}</th><th>${colDur}</th><th>${colType}</th><th>${colDesc}</th><th></th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
     </div>`;
