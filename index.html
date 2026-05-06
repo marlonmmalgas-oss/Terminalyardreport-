@@ -2964,6 +2964,12 @@ async function shareReport(capId){
   const PORTRAIT_W=420;
 
   // ── 1. Clone and clean ──────────────────────────────────────────────
+  // If a label is actively being edited (span replaced by input), save it first
+  // so the clone captures the updated text rather than the original.
+  el.querySelectorAll('input[style*="border-bottom:2px solid white"]').forEach(function(inp){
+    if(inp.onblur)inp.onblur();
+  });
+
   const clone=el.cloneNode(true);
 
   // Stamp live input values (cloneNode doesn't carry live .value)
@@ -2971,10 +2977,10 @@ async function shareReport(capId){
   var cloneInputs=clone.querySelectorAll('input,select,textarea');
   liveInputs.forEach(function(live,idx2){if(cloneInputs[idx2])cloneInputs[idx2].value=live.value;});
 
-  // Stamp live contenteditable content (cloneNode copies original HTML, not edited text)
-  var liveEditable=el.querySelectorAll('[contenteditable]');
-  var cloneEditable=clone.querySelectorAll('[contenteditable]');
-  liveEditable.forEach(function(live,idx2){if(cloneEditable[idx2])cloneEditable[idx2].innerHTML=live.innerHTML;});
+  // Stamp live editable-span text (cloneNode copies original innerHTML, not edited textContent)
+  var liveSpans=el.querySelectorAll('span[onclick*="_dlEdit"]');
+  var cloneSpans=clone.querySelectorAll('span[onclick*="_dlEdit"]');
+  liveSpans.forEach(function(live,idx2){if(cloneSpans[idx2])cloneSpans[idx2].textContent=live.textContent;});
 
   // Remove share buttons and UI controls
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
