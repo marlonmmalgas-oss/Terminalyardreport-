@@ -1452,7 +1452,7 @@ function shareDelays(){
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
       <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
+      <div class="rh-txt"><h2>${_dlLbl('mainTitle','IDLE / DELAYS')}</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
       <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
@@ -1482,14 +1482,14 @@ function shareDelays(){
       </tr>`;
     });
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
+      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${_dlLbl('crane_'+c,craneName(c))}</div>
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_from','From')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_to','To')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_dur','Dur.')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_type','Delay Type')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_desc','Description')}</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
       </table>
@@ -1549,51 +1549,13 @@ function shareDelays(){
     });
   });
 }
-// Delay label helpers
-function _dlLbl(key,def){if(!ST.sel.delayLabels)ST.sel.delayLabels={};return ST.sel.delayLabels[key]||def;}
-function _setDlLbl(key,val){if(!ST.sel.delayLabels)ST.sel.delayLabels={};ST.sel.delayLabels[key]=val;sv();}
-// Shared edit handler - called from onclick, avoids quote-nesting issues
-window._dlEdit=function(el,storeKey,callback){
-  var old=el.textContent;
-  var inp=document.createElement('input');
-  inp.value=old;
-  inp.style.cssText='background:rgba(255,255,255,.18);color:inherit;border:none;border-bottom:2px solid white;outline:none;font:inherit;font-weight:inherit;width:'+Math.max(old.length*12,60)+'px;text-align:inherit;padding:0 2px;';
-  el.replaceWith(inp);inp.focus();inp.select();
-  function save(){var v=inp.value.trim()||old;_setDlLbl(storeKey,v);if(callback)callback();else renderDelays();}
-  inp.onblur=save;
-  inp.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();save();}if(e.key==='Escape'){inp.value=old;save();}};
-};
-function _editSpan(storeKey,val,extraStyle){
-  var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.5);padding-bottom:1px;'+(extraStyle||'');
-  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\''+storeKey+'\')">'+val+'</span>';
-}
-function _editCraneSpan(c){
-  var key='crane_'+c;
-  var val=_dlLbl(key,craneName(c));
-  var s='cursor:pointer;border-bottom:1px dashed rgba(31,56,100,.5);padding-bottom:1px;';
-  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'crane_'+c+'\')">'+val+'</span>';
-}
-function _editColSpan(colKey,def){
-  var val=_dlLbl('col_'+colKey,def);
-  var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.45);padding-bottom:1px;';
-  return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'col_'+colKey+'\')">'+val+'</span>';
-}
-function _editLbl(key,defVal,extraStyle){return _editSpan(key,_dlLbl(key,defVal),extraStyle);}
-function _editCraneLbl(c){return _editCraneSpan(c);}
-function _editColLbl(k,def){return _editColSpan(k,def);}
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
-  const mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
-  let h=rhHTML(mainTitle,slot,'dcap');
+  let h=rhHTML('IDLE / DELAYS',slot,'dcap');
+  // Replace the share button action: delays uses shareDelays() not shareReport('dcap')
   h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
-  h=h.replace('<h2>'+mainTitle+'</h2>','<h2>'+_editLbl('mainTitle','IDLE / DELAYS','font-size:inherit;font-weight:inherit;letter-spacing:inherit;')+'</h2>');
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
-  const colFrom=_editColLbl('from','From');
-  const colTo=_editColLbl('to','To');
-  const colDur=_editColLbl('dur','Dur.');
-  const colType=_editColLbl('type','Delay Type');
-  const colDesc=_editColLbl('desc','Description');
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
@@ -1617,11 +1579,11 @@ function renderDelays(){
       </tr>`;
     });
     h+=`<div class="dblk">
-      <div class="dchd">${_editCraneLbl(c)}
+      <div class="dchd">${craneName(c)}
         <button class="add-row-btn" id="addBtn_${c}" onclick="addDRow(${c})">+ Add Row</button>
       </div>
       <div class="twrap"><table class="dt">
-        <thead><tr><th>${colFrom}</th><th>${colTo}</th><th>${colDur}</th><th>${colType}</th><th>${colDesc}</th><th></th></tr></thead>
+        <thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead>
         <tbody>${tbody}</tbody>
       </table></div>
     </div>`;
