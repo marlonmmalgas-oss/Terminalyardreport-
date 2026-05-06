@@ -1452,7 +1452,7 @@ function shareDelays(){
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
       <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
+      <div class="rh-txt"><h2>${_dlLbl('mainTitle','IDLE / DELAYS')}</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
       <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
@@ -1482,14 +1482,14 @@ function shareDelays(){
       </tr>`;
     });
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
+      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${_dlLbl('crane_'+c,craneName(c))}</div>
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_from','From')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_to','To')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_dur','Dur.')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_type','Delay Type')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_desc','Description')}</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
       </table>
@@ -2964,23 +2964,12 @@ async function shareReport(capId){
   const PORTRAIT_W=420;
 
   // ── 1. Clone and clean ──────────────────────────────────────────────
-  // If a label is actively being edited (span replaced by input), save it first
-  // so the clone captures the updated text rather than the original.
-  el.querySelectorAll('input[style*="border-bottom:2px solid white"]').forEach(function(inp){
-    if(inp.onblur)inp.onblur();
-  });
-
   const clone=el.cloneNode(true);
 
   // Stamp live input values (cloneNode doesn't carry live .value)
   var liveInputs=el.querySelectorAll('input,select,textarea');
   var cloneInputs=clone.querySelectorAll('input,select,textarea');
   liveInputs.forEach(function(live,idx2){if(cloneInputs[idx2])cloneInputs[idx2].value=live.value;});
-
-  // Stamp live editable-span text (cloneNode copies original innerHTML, not edited textContent)
-  var liveSpans=el.querySelectorAll('span[onclick*="_dlEdit"]');
-  var cloneSpans=clone.querySelectorAll('span[onclick*="_dlEdit"]');
-  liveSpans.forEach(function(live,idx2){if(cloneSpans[idx2])cloneSpans[idx2].textContent=live.textContent;});
 
   // Remove share buttons and UI controls
   clone.querySelectorAll('.rh-share').forEach(function(b){b.parentNode&&b.parentNode.removeChild(b);});
