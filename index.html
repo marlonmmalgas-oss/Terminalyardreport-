@@ -456,8 +456,11 @@ function initSync(){
     if(window._yardRef){
       window._yardRef.on('value',function(ySnap){
         var remoteYard=ySnap.val();
-        if(Array.isArray(remoteYard)){
-          ST.yardReports=remoteYard;
+        if(!remoteYard)return;
+        // Firebase converts JS arrays to keyed objects — restore to array
+        var yardArr=Array.isArray(remoteYard)?remoteYard:Object.values(remoteYard);
+        if(yardArr&&yardArr.length>=0){
+          ST.yardReports=yardArr;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){try{renderYard();}catch(e){}}
         }
@@ -784,10 +787,26 @@ function initApp(){
   RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();if(RT.tab==='4hourly')renderFour();},300000);
   // Shift rollover — runs every minute, saves results+delays at 06:00/18:00
   RT.lastShiftType=isDay()?'DAY':'NIGHT';
-  RT.lastShiftDate=new Date().toLocaleDateString('en-CA');
+  // Track the shift start date: for night shift after midnight, use yesterday's date as the shift start date
+  function _shiftStartDate(){
+    var now=new Date();
+    var h=now.getHours();
+    if(h>=6&&h<18){
+      // Day shift — starts today
+      return now.toLocaleDateString('en-CA');
+    } else if(h<6){
+      // Night shift that started yesterday at 18:00
+      var y=new Date(now);y.setDate(y.getDate()-1);
+      return y.toLocaleDateString('en-CA');
+    } else {
+      // Night shift that starts today at 18:00
+      return now.toLocaleDateString('en-CA');
+    }
+  }
+  RT.lastShiftDate=_shiftStartDate();
   RT.shiftRollTimer=setInterval(function(){
     var cShift=isDay()?'DAY':'NIGHT';
-    var cDate=new Date().toLocaleDateString('en-CA');
+    var cDate=_shiftStartDate();
     if(cShift===RT.lastShiftType&&cDate===RT.lastShiftDate)return;
     var outType=RT.lastShiftType,outDate=RT.lastShiftDate;
     RT.lastShiftType=cShift;RT.lastShiftDate=cDate;
@@ -1452,13 +1471,13 @@ function shareDelays(){
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
       <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>${_dlLbl('mainTitle','IDLE / DELAYS')}</h2><p>${tn}</p></div>
+      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
       <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
         ${sess.dockedOn?`<div style="font-size:11px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: ${formatDateTime(sess.dockedOn)}</div>`:''}
       </div>
-      <div style="flex:0 0 auto;"><span class="rh-slot">${ST.sel.delaySlotOverride||fs(slot)}</span></div>
+      <div style="flex:0 0 auto;"><span class="rh-slot">${fs(slot)}</span></div>
       <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span>
         ${sess.firstLift||sess.lastLift?`<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7">
           ${sess.firstLift?`<div>🟢 First Lift: <strong>${sess.firstLift}</strong></div>`:''}
@@ -1482,14 +1501,14 @@ function shareDelays(){
       </tr>`;
     });
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${_dlLbl('crane_'+c,craneName(c))}</div>
+      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
       <table style="width:100%;border-collapse:collapse">
         <thead><tr>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_from','From')}</th>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_to','To')}</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">${_dlLbl('col_dur','Dur.')}</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_type','Delay Type')}</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">${_dlLbl('col_desc','Description')}</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
+          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
       </table>
@@ -1587,16 +1606,6 @@ function renderDelays(){
   let h=rhHTML(mainTitle,slot,'dcap');
   h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
   h=h.replace('<h2>'+mainTitle+'</h2>','<h2>'+_editLbl('mainTitle','IDLE / DELAYS','font-size:inherit;font-weight:inherit;letter-spacing:inherit;')+'</h2>');
-  // Replace static slot badge with editable input (delay page only)
-  const slotDisplay=ST.sel.delaySlotOverride||fs(slot);
-  h=h.replace(
-    '<span class="rh-slot">'+fs(slot)+'</span>',
-    '<input id="delaySlotInput" value="'+slotDisplay.replace(/"/g,'&quot;')+'" '
-    +'style="background:var(--yellow);color:#000;font-weight:900;font-size:13px;padding:4px 12px;border-radius:7px;border:none;outline:none;text-align:center;width:auto;min-width:80px;max-width:180px;cursor:text;" '
-    +'title="Tap to edit time slot" '
-    +'oninput="if(!ST.sel)ST.sel={};ST.sel.delaySlotOverride=this.value;sv();" '
-    +'/>'
-  );
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
   const colFrom=_editColLbl('from','From');
@@ -2036,7 +2045,14 @@ function renderHistory(){
     var blocks=[];
     var isActiveSession=s.id===ST.activeId;
     var curShiftType=isDay()?'DAY':'NIGHT';
-    var curShiftDate=new Date().toLocaleDateString('en-CA');
+    // Use shift-start date: night shift after midnight belongs to the previous calendar day
+    var _now=new Date();
+    var _h=_now.getHours();
+    var _curShiftStartDate;
+    if(_h>=6&&_h<18){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+    else if(_h<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
+    else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+    var curShiftDate=_curShiftStartDate;
     var curShiftKey=curShiftType+'_'+curShiftDate;
     if(s.shifts&&s.shifts.length){
       s.shifts.forEach(function(sh){
@@ -2817,11 +2833,25 @@ function deleteYardReport(reportId){
   }
 }
 function addManualYardReport(){
-  const name=prompt('Report name (e.g. Yard Status 31 Mar 1200):');
-  if(!name)return;
-  ST.yardReports.unshift({id:Date.now(),name,uploadedAt:new Date().toISOString(),vessels:[],fuel:null,manual:true});
-  yardActiveReport=0;sv();renderYard();
+  // Replace the button with an inline form — avoids prompt() which is blocked in mobile WebViews
+  var btn=document.querySelector('[onclick="addManualYardReport()"]');
+  if(!btn)return;
+  var form=document.createElement('div');
+  form.style.cssText='display:flex;gap:6px;align-items:center;width:100%;margin-top:4px';
+  form.innerHTML='<input id="_myrInput" placeholder="Report name e.g. Yard Status 31 Mar 1200" style="flex:1;padding:9px 11px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none"/>'
+    +'<button onclick="_confirmManualYard()" style="padding:9px 14px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Create</button>'
+    +'<button onclick="renderYard()" style="padding:9px 10px;background:white;color:#888;border:1.5px solid #ccc;border-radius:8px;font-size:12px;cursor:pointer">✕</button>';
+  btn.replaceWith(form);
+  var inp=document.getElementById('_myrInput');
+  if(inp){inp.focus();inp.addEventListener('keydown',function(e){if(e.key==='Enter')_confirmManualYard();if(e.key==='Escape')renderYard();});}
 }
+window._confirmManualYard=function(){
+  var inp=document.getElementById('_myrInput');
+  var name=inp?inp.value.trim():'';
+  if(!name){if(inp){inp.style.borderColor='var(--red)';inp.focus();}return;}
+  ST.yardReports.unshift({id:Date.now(),name:name,uploadedAt:new Date().toISOString(),vessels:[],fuel:null,manual:true});
+  yardActiveReport=0;sv();renderYard();
+};
 
 function resolveFullVesselName(abbrev){
   // Try exact match first
