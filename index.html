@@ -2561,7 +2561,20 @@ function renderYard(){
     })()}
   </div>`;
 
-  if(!ST.yardReports.length){h+=noSess('📦','No yard reports yet.');$('sc-yard').innerHTML=h;return;}
+  if(!ST.yardReports.length){
+    h+=noSess('📦','No yard reports yet. If another user added a report, tap Yard again in a moment.');
+    $('sc-yard').innerHTML=h;
+    // Force-fetch from Firebase — catches case where listener fired before login
+    if(window._yardRef){
+      window._yardRef.once('value',function(snap){
+        var rv=snap.val();
+        if(!rv)return;
+        var arr=Array.isArray(rv)?rv:Object.values(rv);
+        if(arr&&arr.length){ST.yardReports=arr;try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}renderYard();}
+      });
+    }
+    return;
+  }
   // Report selector
   if(yardActiveReport===null||yardActiveReport>=ST.yardReports.length)yardActiveReport=0;
   // Report list with delete buttons (always shown)
@@ -2808,11 +2821,30 @@ function editYardFuel(reportId){
   r.fuel=parseFloat(val)||0;sv();renderYard();
 }
 function addYardVessel(reportId){
-  const r=ST.yardReports.find(x=>x.id===reportId);if(!r)return;
-  const name=prompt('Vessel name:');if(!name)return;
-  const voyage=prompt('Voyage number (optional):');
-  r.vessels.push({name,voyage:voyage||'',data:{}});sv();renderYard();
+  // Use inline form — prompt() is blocked in mobile WebViews
+  var btn=document.querySelector('[onclick="addYardVessel('+reportId+')"]');
+  if(!btn)return;
+  var form=document.createElement('div');
+  form.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 12px;background:#f6f8fc;border-top:1px solid var(--lb)';
+  form.innerHTML='<input id="_avName_'+reportId+'" placeholder="Vessel name" style="flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none"/>'
+    +'<input id="_avVoy_'+reportId+'" placeholder="Voyage (optional)" style="flex:1;min-width:100px;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none"/>'
+    +'<button onclick="_confirmAddVessel('+reportId+')" style="padding:8px 14px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Add</button>'
+    +'<button onclick="renderYard()" style="padding:8px 10px;background:white;color:#888;border:1.5px solid #ccc;border-radius:8px;font-size:12px;cursor:pointer">X</button>';
+  btn.replaceWith(form);
+  var inp=document.getElementById('_avName_'+reportId);
+  if(inp){inp.focus();inp.addEventListener('keydown',function(e){if(e.key==='Enter')_confirmAddVessel(reportId);if(e.key==='Escape')renderYard();});}
 }
+window._confirmAddVessel=function(reportId){
+  var nameEl=document.getElementById('_avName_'+reportId);
+  var voyEl=document.getElementById('_avVoy_'+reportId);
+  var name=nameEl?nameEl.value.trim():'';
+  if(!name){if(nameEl){nameEl.style.borderColor='var(--red)';nameEl.focus();}return;}
+  var voyage=voyEl?voyEl.value.trim():'';
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});
+  if(!r)return;
+  r.vessels.push({name:name,voyage:voyage,data:{}});
+  sv();renderYard();
+};
 function removeYardVessel(reportId,vi){
   const r=ST.yardReports.find(x=>x.id===reportId);if(!r)return;
   if(confirm(`Remove ${r.vessels[vi]?.name}?`)){r.vessels.splice(vi,1);sv();renderYard();}
