@@ -564,20 +564,34 @@ const ALL=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-120
 // Returns array of {slot, disc, load} aggregated across all cranes
 function getAllSlots(sess){
   if(!sess)return[];
-  // Scope to slots from session start up to now, so totalDone never
-  // picks up data from other vessels or future slots
-  var startMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
   var nc=sess.numCranes;
-  var now=new Date();
+  var isActive=sess.id===ST.activeId||sess.id===ST.activeId2;
+  // For completed (non-active) sessions: aggregate from stored shift data only
+  // This prevents a new vessel's live ST.hourly from contaminating old session totals
+  if(!isActive){
+    // Merge all stored shift hourly data into one flat object
+    var merged={};
+    if(sess.shifts&&sess.shifts.length){
+      sess.shifts.forEach(function(sh){
+        var shData=sh.hourly||{};
+        Object.keys(shData).forEach(function(k){merged[k]=(merged[k]||0)+(shData[k]||0);});
+      });
+    }
+    // Fallback to _results.hourly if no shifts stored
+    if(!Object.keys(merged).length&&sess._results&&sess._results.hourly){
+      Object.assign(merged,sess._results.hourly);
+    }
+    return ALL.map(function(s){
+      var disc=0,load=0;
+      for(var i=1;i<=nc;i++){
+        disc+=merged[s+'_'+i+'_discharge']||0;
+        load+=merged[s+'_'+i+'_load']||0;
+      }
+      return{slot:s,disc:disc,load:load};
+    });
+  }
+  // Active session: read from live ST.hourly as before
   return ALL.map(function(s){
-    // Only include slot if it falls within the session's active timespan
-    var slotHour=parseInt(s.substring(0,2));
-    // Build a representative Date for this slot on today's date
-    var slotDate=new Date(now);
-    slotDate.setHours(slotHour,0,0,0);
-    // If startMs exists, skip slots that are clearly before session started
-    // We compare only by hour-of-day since slots are cyclic 24hr labels
-    // Simply include all slots that have any data — zero-value slots contribute 0 anyway
     var disc=0,load=0;
     for(var i=1;i<=nc;i++){
       disc+=ST.hourly[s+'_'+i+'_discharge']||0;
@@ -2743,8 +2757,8 @@ function renderYardReport(report){
   h+=`</tbody></table></div>`;
 
   // ── Add vessel ──
-  h+=`<div style="padding:10px 12px;border-top:1px solid var(--lb)">
-    <button onclick="addYardVessel(${report.id})" style="background:var(--navy);color:white;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:800;cursor:pointer">+ Add Vessel</button>
+  h+=`<div id="addVesselWrap_${report.id}" style="padding:10px 12px;border-top:1px solid var(--lb)">
+    <button id="addVesselBtn_${report.id}" onclick="addYardVessel(${report.id})" style="background:var(--navy);color:white;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:800;cursor:pointer">+ Add Vessel</button>
   </div>`;
 
   // ── Summary totals (matches template bottom section) ──
@@ -2821,16 +2835,15 @@ function editYardFuel(reportId){
   r.fuel=parseFloat(val)||0;sv();renderYard();
 }
 function addYardVessel(reportId){
-  // Use inline form — prompt() is blocked in mobile WebViews
-  var btn=document.querySelector('[onclick="addYardVessel('+reportId+')"]');
-  if(!btn)return;
-  var form=document.createElement('div');
-  form.style.cssText='display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 12px;background:#f6f8fc;border-top:1px solid var(--lb)';
-  form.innerHTML='<input id="_avName_'+reportId+'" placeholder="Vessel name" style="flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none"/>'
-    +'<input id="_avVoy_'+reportId+'" placeholder="Voyage (optional)" style="flex:1;min-width:100px;padding:8px 10px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none"/>'
-    +'<button onclick="_confirmAddVessel('+reportId+')" style="padding:8px 14px;background:var(--navy);color:white;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Add</button>'
-    +'<button onclick="renderYard()" style="padding:8px 10px;background:white;color:#888;border:1.5px solid #ccc;border-radius:8px;font-size:12px;cursor:pointer">X</button>';
-  btn.replaceWith(form);
+  // Use stable id lookup — querySelector with () in attribute is unreliable on mobile browsers
+  var wrap=document.getElementById('addVesselWrap_'+reportId);
+  if(!wrap)return;
+  wrap.innerHTML='<input id="_avName_'+reportId+'" placeholder="Vessel name" style="flex:1;min-width:120px;padding:8px 10px;border:1.5px solid #dde2ea;border-radius:8px;font-size:13px;outline:none;margin-bottom:6px;width:100%;box-sizing:border-box"/>'
+    +'<input id="_avVoy_'+reportId+'" placeholder="Voyage (optional)" style="flex:1;min-width:100px;padding:8px 10px;border:1.5px solid #dde2ea;border-radius:8px;font-size:13px;outline:none;margin-bottom:6px;width:100%;box-sizing:border-box"/>'
+    +'<div style="display:flex;gap:6px">'
+    +'<button onclick="_confirmAddVessel('+reportId+')" style="padding:8px 16px;background:#1F3864;color:white;border:none;border-radius:8px;font-size:12px;font-weight:800;cursor:pointer">Add</button>'
+    +'<button onclick="renderYard()" style="padding:8px 12px;background:white;color:#888;border:1.5px solid #ccc;border-radius:8px;font-size:12px;cursor:pointer">Cancel</button>'
+    +'</div>';
   var inp=document.getElementById('_avName_'+reportId);
   if(inp){inp.focus();inp.addEventListener('keydown',function(e){if(e.key==='Enter')_confirmAddVessel(reportId);if(e.key==='Escape')renderYard();});}
 }
