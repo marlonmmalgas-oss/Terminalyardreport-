@@ -24,7 +24,7 @@ body.dark .ph{background:var(--navy);}
 body.dark .asec{background:var(--card);border-color:var(--border);}
 body.dark .atitle{color:#90a8d0;}
 body.dark p,body.dark label,body.dark td,body.dark th.sub{color:var(--txt);}
-#darkToggle{position:fixed;bottom:62px;right:10px;z-index:999;background:var(--navy);color:white;border:none;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);display:none;}
+
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-height:100vh;-webkit-text-size-adjust:100%;}
 ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#bbb;border-radius:3px}
@@ -293,7 +293,6 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 
 <!-- APP -->
 <div id="appShell">
-  <button id="darkToggle" onclick="toggleDark()" title="Toggle dark mode">🌙</button>
   <div class="abanner" id="abanner" style="display:none" onclick="exitAdminMode()">⚠️ Admin acting as Operator — tap to return to Admin Mode</div>
   <div class="swrap" id="swrap">
     <div class="sc active" id="sc-input"></div>
@@ -414,9 +413,8 @@ function initSync(){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='activeId2'||k==='vesselSlot'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
-          // On fresh load: don't overwrite live hourly/delay data from Firebase if active session
-          // exists in localStorage — Firebase may carry stale data from a prior completed vessel
-          if(!isOwnSave2&&(k==='hourly'||k==='delays'||k==='delayRowIds')&&(ST.activeId||ST.activeId2))return;
+          // REMOVED: the block that prevented hourly/delay sync when active session exists
+          // That caused cross-device hourly data to NOT appear on other devices.
           // Deep clone to prevent Firebase object mutation bleeding into ST
           try{ST[k]=JSON.parse(JSON.stringify(remote[k]));}catch(e){ST[k]=remote[k];}
         }
@@ -821,17 +819,14 @@ function doLogin(){
 function toggleDark(){
   var d=document.body.classList.toggle('dark');
   ST.settings.darkMode=d;
-  $('darkToggle').textContent=d?'☀️':'🌙';
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   sv();
 }
 function applyDark(){
   var d=ST.settings&&ST.settings.darkMode;
   document.body.classList.toggle('dark',!!d);
-  var btn=$('darkToggle');
-  if(btn){btn.textContent=d?'☀️':'🌙';btn.style.display='flex';}
 }
-function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);var btn=$('darkToggle');if(btn)btn.style.display='none';}
+function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
 function initApp(){
   applyDark();
   // Prevent browser from opening dragged files
