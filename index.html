@@ -9,7 +9,22 @@
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 <style>
-:root{--navy:#1F3864;--navyL:#2a4a80;--yellow:#FFFF00;--lb:#BDD7EE;--red:#c0392b;--green:#1e8449;--gray:#f0f2f7;--border:#dde2ea;}
+:root{--navy:#1F3864;--navyL:#2a4a80;--yellow:#FFFF00;--lb:#BDD7EE;--red:#c0392b;--green:#1e8449;--gray:#f0f2f7;--border:#dde2ea;--bg:#ffffff;--txt:#1a1a2e;--card:#ffffff;}
+body.dark{--gray:#181c24;--border:#2e3650;--bg:#1e2230;--txt:#e4e8f0;--card:#252a3a;--lb:#2e3650;}
+body.dark #appShell{background:#181c24;}
+body.dark .swrap{background:var(--gray);}
+body.dark .card{background:var(--card);border-color:var(--border);}
+body.dark .card-hd{background:#111828;}
+body.dark input[type=number],body.dark input[type=text],body.dark input[type=email],body.dark input[type=password],body.dark select{background:var(--bg);color:var(--txt);border-color:var(--border);}
+body.dark table{color:var(--txt);}
+body.dark tr.e{background:#1e2230;}
+body.dark tr.o{background:#252a3a;}
+body.dark .twrap{background:var(--card);}
+body.dark .ph{background:var(--navy);}
+body.dark .asec{background:var(--card);border-color:var(--border);}
+body.dark .atitle{color:#90a8d0;}
+body.dark p,body.dark label,body.dark td,body.dark th.sub{color:var(--txt);}
+#darkToggle{position:fixed;bottom:62px;right:10px;z-index:999;background:var(--navy);color:white;border:none;border-radius:50%;width:36px;height:36px;font-size:16px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);display:none;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-height:100vh;-webkit-text-size-adjust:100%;}
 ::-webkit-scrollbar{width:3px;height:3px}::-webkit-scrollbar-thumb{background:#bbb;border-radius:3px}
@@ -278,6 +293,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 
 <!-- APP -->
 <div id="appShell">
+  <button id="darkToggle" onclick="toggleDark()" title="Toggle dark mode">🌙</button>
   <div class="abanner" id="abanner" style="display:none" onclick="exitAdminMode()">⚠️ Admin acting as Operator — tap to return to Admin Mode</div>
   <div class="swrap" id="swrap">
     <div class="sc active" id="sc-input"></div>
@@ -446,6 +462,7 @@ function initSync(){
         })) ST.users.push(JSON.parse(JSON.stringify(du)));
       });
       try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+      applyDark();
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
@@ -596,12 +613,30 @@ function getAllSlots(sess){
       return{slot:s,disc:disc,load:load};
     });
   }
-  // Active session: read from live ST.hourly as before
+  // Active session: merge ALL stored shifts + current live ST.hourly
+  // This ensures done/remain never reset mid-vessel even after 3+ days
+  var liveMerged={};
+  // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
+  if(sess.shifts&&sess.shifts.length){
+    sess.shifts.forEach(function(sh){
+      var shData=sh.hourly||{};
+      Object.keys(shData).forEach(function(k){liveMerged[k]=(liveMerged[k]||0)+(shData[k]||0);});
+    });
+  }
+  // Step 2: add current live ST.hourly (current shift not yet snapshotted)
+  // Strip session prefix: '{sessId}_{slot}_{ci}_{type}' -> '{slot}_{ci}_{type}'
+  var _pfx=sess.id+'_';
+  Object.keys(ST.hourly).forEach(function(k){
+    if(k.indexOf(_pfx)===0){
+      var sk=k.slice(_pfx.length);
+      liveMerged[sk]=(liveMerged[sk]||0)+(ST.hourly[k]||0);
+    }
+  });
   return ALL.map(function(s){
     var disc=0,load=0;
     for(var i=1;i<=nc;i++){
-      disc+=ST.hourly[hk(sess.id,s,i,'discharge')]||0;
-      load+=ST.hourly[hk(sess.id,s,i,'load')]||0;
+      disc+=liveMerged[s+'_'+i+'_discharge']||0;
+      load+=liveMerged[s+'_'+i+'_load']||0;
     }
     return{slot:s,disc:disc,load:load};
   });
@@ -783,8 +818,22 @@ function doLogin(){
   $('appShell').style.display='flex';
   initApp();
 }
-function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
+function toggleDark(){
+  var d=document.body.classList.toggle('dark');
+  ST.settings.darkMode=d;
+  $('darkToggle').textContent=d?'☀️':'🌙';
+  try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+  sv();
+}
+function applyDark(){
+  var d=ST.settings&&ST.settings.darkMode;
+  document.body.classList.toggle('dark',!!d);
+  var btn=$('darkToggle');
+  if(btn){btn.textContent=d?'☀️':'🌙';btn.style.display='flex';}
+}
+function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);var btn=$('darkToggle');if(btn)btn.style.display='none';}
 function initApp(){
+  applyDark();
   // Prevent browser from opening dragged files
   document.addEventListener('dragover',function(e){e.preventDefault();});
   document.addEventListener('drop',function(e){e.preventDefault();});
@@ -1220,10 +1269,10 @@ function renderResults(){
     }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
       <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
-    let pT=0;h+=`<tr class="ry"><td class="lbl">Planned</td>`;
+    let pT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_planned','Planned',false)}</td>`;
     for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[t+'Split']||0;pT+=v;h+=`<td>${v}</td>`;}
     h+=`<td>${pT}</td></tr>`;
-    let obT=0;h+=`<tr class="ry"><td class="lbl">Opening Bal.</td>`;
+    let obT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_opening','Opening Bal.',false)}</td>`;
     for(let i=1;i<=nc;i++){const v=effSplit(sess,i,t);obT+=v;h+=`<td>${v}</td>`;}
     h+=`<td>${obT}</td></tr>`;
     sl.forEach(function(s,ri){
@@ -1235,10 +1284,10 @@ function renderResults(){
       }
       h+=`<td class="bold">${rT||''}</td></tr>`;
     });
-    let dT=0;h+=`<tr class="ry"><td class="lbl">Total Done</td>`;
+    let dT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_done','Total Done',false)}</td>`;
     for(let i=1;i<=nc;i++){dT+=dpAll[i];h+=`<td>${dpAll[i]}</td>`;}
     h+=`<td>${dT}</td></tr>`;
-    let rT2=0;h+=`<tr class="ry"><td class="lbl">Total Remain</td>`;
+    let rT2=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_remain','Total Remain',false)}</td>`;
     for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
     h+=`<td${rT2<0?' style="color:var(--red)"':''}>${rT2}</td></tr>`;
     h+=`</table></div></div>`;
@@ -1368,11 +1417,11 @@ function summaryHTML(sess){
   const tp=Math.max(tgt/mx*100,tgt>0?5:0);
   return`<div class="card" style="margin:8px 10px"><div class="twrap">
     <table class="rt">
-      <thead><tr><th class="grp" style="text-align:left;padding-left:9px">Summary</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr></thead>
+      <thead><tr><th class="grp" style="text-align:left;padding-left:9px">${_adminLbl('sum_hd','Summary',true)}</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr></thead>
       <tbody>
-        <tr class="ry"><td style="font-weight:800;padding-left:9px">Total Remaining</td><td>${g.baseTotalDisc-g.totalDoneDisc}</td><td>${g.baseTotalLoad-g.totalDoneLoad}</td><td style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
-        <tr class="o"><td style="padding-left:9px">Total Done</td><td>${g.totalDoneDisc}</td><td>${g.totalDoneLoad}</td><td class="bold">${g.totalDone}</td></tr>
-        <tr class="e"><td style="padding-left:9px">Total Done 12hrs</td><td>${g.total12Disc}</td><td>${g.total12Load}</td><td class="bold">${g.total12}</td></tr>
+        <tr class="ry"><td style="font-weight:800;padding-left:9px">${_adminLbl('sum_remaining','Total Remaining',false)}</td><td>${g.baseTotalDisc-g.totalDoneDisc}</td><td>${g.baseTotalLoad-g.totalDoneLoad}</td><td style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
+        <tr class="o"><td style="padding-left:9px">${_adminLbl('sum_done','Total Done',false)}</td><td>${g.totalDoneDisc}</td><td>${g.totalDoneLoad}</td><td class="bold">${g.totalDone}</td></tr>
+        <tr class="e"><td style="padding-left:9px">${_adminLbl('sum_done12','Total Done 12hrs',false)}</td><td>${g.total12Disc}</td><td>${g.total12Load}</td><td class="bold">${g.total12}</td></tr>
       </tbody>
     </table>
   </div></div>
@@ -2073,7 +2122,7 @@ function renderHistory(){
     var uid='h_'+s.id;
     // Build shift blocks — one collapsible pair per shift
     var blocks=[];
-    var isActiveSession=s.id===ST.activeId;
+    var isActiveSession=s.id===ST.activeId||s.id===ST.activeId2;
     var curShiftType=isDay()?'DAY':'NIGHT';
     // Use shift-start date: night shift after midnight belongs to the previous calendar day
     var _now=new Date();
@@ -2395,7 +2444,8 @@ function renderAdmin(){
     'ph_performance':'HOURLY PERFORMANCE',
     'yrd_title':'YARD STATUS REPORT','yrd_col_vessels':'VESSELS','yrd_col_type':'TYPE','yrd_col_export':'EXPORT','yrd_col_import':'IMPORT','yrd_col_departed':'DEPARTED',
     'yrd_sum_exports':'TOTAL EXPORTS','yrd_sum_imports':'TOTAL IMPORTS','yrd_sum_departed':'TOTAL DEPARTED','yrd_sum_inyard':'IN YARD',
-    'mainTitle':'IDLE / DELAYS'
+    'mainTitle':'IDLE / DELAYS',
+    'sum_hd':'Summary','sum_remaining':'Total Remaining','sum_done':'Total Done','sum_done12':'Total Done 12hrs'
   };
   var _customLbls=Object.keys(_lblDefs).filter(function(k){return _lblStore[k]&&_lblStore[k]!==_lblDefs[k];});
   if(_customLbls.length){
