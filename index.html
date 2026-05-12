@@ -1653,17 +1653,20 @@ window._dlEdit=function(el,storeKey,callback){
   inp.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();save();}if(e.key==='Escape'){inp.value=old;save();}};
 };
 function _editSpan(storeKey,val,extraStyle){
+  if(!(RT.user&&RT.user.role==='admin'&&!RT.adminOp))return val;
   var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.5);padding-bottom:1px;'+(extraStyle||'');
   return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\''+storeKey+'\')">'+val+'</span>';
 }
 function _editCraneSpan(c){
   var key='crane_'+c;
   var val=_dlLbl(key,craneName(c));
+  if(!(RT.user&&RT.user.role==='admin'&&!RT.adminOp))return val;
   var s='cursor:pointer;border-bottom:1px dashed rgba(31,56,100,.5);padding-bottom:1px;';
   return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'crane_'+c+'\')">'+val+'</span>';
 }
 function _editColSpan(colKey,def){
   var val=_dlLbl('col_'+colKey,def);
+  if(!(RT.user&&RT.user.role==='admin'&&!RT.adminOp))return val;
   var s='cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.45);padding-bottom:1px;';
   return '<span title="Tap to rename" style="'+s+'" onclick="_dlEdit(this,\'col_'+colKey+'\')">'+val+'</span>';
 }
