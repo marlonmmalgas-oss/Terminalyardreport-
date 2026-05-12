@@ -987,16 +987,18 @@ function renderInput(){
   }
   h+=`</div>`;
 
-  h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Hourly Moves — ${fs(slot)}</div>
+  if(sess){
+    h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Hourly Moves — ${fs(slot)}</div>
     <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
-  for(let i=1;i<=nc;i++){
-    h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
-      <div class="g2">
-        <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
-        <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
-      </div></div>`;
+    for(let i=1;i<=nc;i++){
+      h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
+        <div class="g2">
+          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
+          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
+        </div></div>`;
+    }
+    h+=`</div>`;
   }
-  h+=`</div>`;
 
   h+=`<div style="padding:0 10px 28px">`;
   if(!locked){h+=`<button class="btn" onclick="saveSession()" style="margin-bottom:10px">💾 Save Session</button>`;}
@@ -1036,15 +1038,18 @@ function onCraneChange(){
   }
   bh+=`</div>`;
 
-  let mh=`<div class="sec"><div class="st">Hourly Moves — ${fs(slot)}</div><p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
-  for(let i=1;i<=nc;i++){
-    mh+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
-      <div class="g2">
-        <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
-        <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
-      </div></div>`;
+  let mh='';
+  if(sess){
+    mh=`<div class="sec"><div class="st">Hourly Moves — ${fs(slot)}</div><p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
+    for(let i=1;i<=nc;i++){
+      mh+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
+        <div class="g2">
+          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
+          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
+        </div></div>`;
+    }
+    mh+=`</div>`;
   }
-  mh+=`</div>`;
 
   const oldB=$('craneBalanceSection');
   if(oldB){
