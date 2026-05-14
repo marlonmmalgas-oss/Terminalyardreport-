@@ -648,6 +648,43 @@ function getAllSlots(sess){
   });
 }
 
+
+// Per-crane all-time total: merges stored shifts[] + live ST.hourly
+// This is the correct source for "Total Done" and "Remaining" per crane
+function getCraneTotal(sess, craneIdx, type){
+  if(!sess)return 0;
+  var total=0;
+  var pfx=sess.id+'_';
+  // Step 1: sum from all stored/snapshotted shifts
+  if(sess.shifts&&sess.shifts.length){
+    sess.shifts.forEach(function(sh){
+      var shData=sh.hourly||{};
+      Object.keys(shData).forEach(function(k){
+        // key format: slot_ci_type e.g. "07:00_1_discharge"
+        var parts=k.split('_');
+        if(parts.length>=3){
+          var ci=parseInt(parts[parts.length-2]);
+          var t=parts[parts.length-1];
+          if(ci===craneIdx&&t===type)total+=shData[k]||0;
+        }
+      });
+    });
+  }
+  // Step 2: add live ST.hourly (current shift, not yet snapshotted)
+  Object.keys(ST.hourly).forEach(function(k){
+    if(k.indexOf(pfx)===0){
+      var sk=k.slice(pfx.length); // slot_ci_type
+      var parts=sk.split('_');
+      if(parts.length>=3){
+        var ci=parseInt(parts[parts.length-2]);
+        var t=parts[parts.length-1];
+        if(ci===craneIdx&&t===type)total+=ST.hourly[k]||0;
+      }
+    }
+  });
+  return total;
+}
+
 // shiftSlots: FILTERED to current 12-hour window (06-18 day / 18-06 night)
 // Auto-resets at shift boundary — NO manual reset
 function getShiftSlots(sess){
@@ -1281,12 +1318,9 @@ function buildResultsTable(sess, slotKeys){
   ['discharge','load'].forEach(function(t){
     const T=t[0].toUpperCase()+t.slice(1);
     // Per-crane all-time totals from global engine
-    const allData=getAllSlots(sess);
     const dpAll={};
     for(let i=1;i<=nc;i++){
-      dpAll[i]=allData.reduce(function(sum,sd){
-        return sum+(ST.hourly[hk(sess.id,sd.slot,i,t)]||0);
-      },0);
+      dpAll[i]=getCraneTotal(sess,i,t);
     }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
       <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
@@ -1324,10 +1358,9 @@ function renderResults(){
   const sl=shiftSlots();
   ['discharge','load'].forEach(function(t){
     const T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
-    const allData=getAllSlots(sess);
     const dpAll={};
     for(let i=1;i<=nc;i++){
-      dpAll[i]=allData.reduce(function(sum,sd){return sum+(ST.hourly[hk(sess.id,sd.slot,i,t)]||0);},0);
+      dpAll[i]=getCraneTotal(sess,i,t);
     }
     h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
       <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
@@ -1400,12 +1433,8 @@ function craneTableHTML(sess,cumSlots,curSlot){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl=cb.loadSplit||0;
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
     const hd=ST.hourly[hk(sess.id,curSlot,i,'discharge')],hl=ST.hourly[hk(sess.id,curSlot,i,'load')];
-    // Remaining via getAllSlots — no direct ST.hourly loop in view
-    let cd=0,cl=0;
-    getAllSlots(sess).forEach(function(sd){
-      cd+=ST.hourly[hk(sess.id,sd.slot,i,'discharge')]||0;
-      cl+=ST.hourly[hk(sess.id,sd.slot,i,'load')]||0;
-    });
+    // Remaining via getCraneTotal — aggregates stored shifts + live ST.hourly
+    let cd=getCraneTotal(sess,i,'discharge'),cl=getCraneTotal(sess,i,'load');
     const rd=ed-cd,rl=el2-cl;
     rows+=`<tr class="${i%2===0?'e':'o'}">
       <td class="crane-cell">${craneName(i)}</td>
@@ -1547,10 +1576,8 @@ function renderFour(){
     const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
     // cd/cl = all-time per crane via data layer
     let cd=0,cl=0,w4d=0,w4l=0;
-    getAllSlots(sess).forEach(function(sd){
-      cd+=ST.hourly[hk(sess.id,sd.slot,i,'discharge')]||0;
-      cl+=ST.hourly[hk(sess.id,sd.slot,i,'load')]||0;
-    });
+    cd=getCraneTotal(sess,i,'discharge');
+    cl=getCraneTotal(sess,i,'load');
     ws.forEach(s=>{w4d+=ST.hourly[hk(sess.id,s,i,'discharge')]||0;w4l+=ST.hourly[hk(sess.id,s,i,'load')]||0;});
     const rd=ed-cd,rl=el2-cl;
     rows+=`<tr class="${i%2===0?'e':'o'}">
