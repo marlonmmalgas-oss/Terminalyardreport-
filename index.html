@@ -3016,32 +3016,32 @@ function renderYardReport(report){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_exports','TOTAL EXPORTS',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandEx}</span>
+        <span data-sum="ex" style="font-size:16px;font-weight:900">${grandEx}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL "GP"</span>
-        <span style="font-size:16px;font-weight:900">${totalGP}</span>
+        <span data-sum="gp" style="font-size:16px;font-weight:900">${totalGP}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_imports','TOTAL IMPORTS',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandIm}</span>
+        <span data-sum="im" style="font-size:16px;font-weight:900">${grandIm}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL REEF</span>
-        <span style="font-size:16px;font-weight:900">${totalReef}</span>
+        <span data-sum="reef" style="font-size:16px;font-weight:900">${totalReef}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_departed','TOTAL DEPARTED',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandDep}</span>
+        <span data-sum="dep" style="font-size:16px;font-weight:900">${grandDep}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL MTY</span>
-        <span style="font-size:16px;font-weight:900">${totalMty}</span>
+        <span data-sum="mty" style="font-size:16px;font-weight:900">${totalMty}</span>
       </div>
     </div>
     <div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px">
       <span style="font-size:13px;font-weight:900;color:white">${_adminLbl('yrd_sum_inyard','IN YARD',true)}</span>
-      <span style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
+      <span data-sum="yard" style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
     </div>
     <div style="margin-top:8px;display:flex;gap:6px">
       <button data-delyard="${report.id}" onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
