@@ -333,6 +333,7 @@ var dbRef = null;
 
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
+var _myLastYardSave=0;    // timestamp of last yard save — used to skip own yard echo
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
 var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
@@ -370,6 +371,7 @@ function sv(){
     payload.yardReports=[];
     dbRef.set(payload).catch(function(e){console.log('sync err:',e.message);});
     if(window._yardRef){
+      _myLastYardSave=Date.now();
       window._yardRef.set(yardBackup).catch(function(e){console.log('yard sync err:',e.message);});
     }
   }
@@ -473,11 +475,15 @@ function initSync(){
     // Also listen to yardReports separately
     if(window._yardRef){
       window._yardRef.on('value',function(ySnap){
+        // Skip own-save echo: yard has no _gen; use dedicated yard save timestamp
+        var isOwnYard=(Date.now()-_myLastYardSave)<1500;
+        if(isOwnYard)return;
         var remoteYard=ySnap.val();
         if(!remoteYard)return;
         // Firebase converts JS arrays to keyed objects — restore to array
         var yardArr=Array.isArray(remoteYard)?remoteYard:Object.values(remoteYard);
-        if(yardArr&&yardArr.length>=0){
+        // Bug fix: length>0 not length>=0 (>=0 is always true, wipes data on empty)
+        if(yardArr&&yardArr.length>0){
           ST.yardReports=yardArr;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){
@@ -523,7 +529,8 @@ const DEF={
     {abbrev:'fal',full:'MSC FALCON'}
   ],
   yardReports:[],
-  activeId:null
+  activeId:null,
+  hourlyShiftKey:null
 };
 const saved=ld();
 // Deep copy state from saved localStorage, falling back to DEF for missing keys
@@ -547,6 +554,7 @@ if(!ST.delayRows||typeof ST.delayRows!=='object')ST.delayRows={};
 if(!ST.delayRowIds||typeof ST.delayRowIds!=='object')ST.delayRowIds={};
 if(!Array.isArray(ST.vesselAbbrevs))ST.vesselAbbrevs=DEF.vesselAbbrevs.map(function(x){return Object.assign({},x);});
 if(!Array.isArray(ST.yardReports))ST.yardReports=[];
+if(ST.hourlyShiftKey===undefined)ST.hourlyShiftKey=null;
 if(!Array.isArray(ST.generators))ST.generators=[];
 if(!ST.timing||typeof ST.timing!=='object')ST.timing=Object.assign({},DEF.timing);
 if(!ST.craneNames||typeof ST.craneNames!=='object')ST.craneNames=Object.assign({},DEF.craneNames);
@@ -869,6 +877,50 @@ function initApp(){
     }
   }
   RT.lastShiftDate=_shiftStartDate();
+  // ── Missed-rollover detection ──
+  // If app was closed when shift boundary passed, ST.hourly has stale data.
+  // Detect by comparing stored hourlyShiftKey to the current shift.
+  var _curShiftKey=(isDay()?'DAY':'NIGHT')+'_'+_shiftStartDate();
+  if(ST.hourlyShiftKey && ST.hourlyShiftKey !== _curShiftKey){
+    // Shift boundary was crossed while app was closed — snapshot then clear
+    var _missedType=ST.hourlyShiftKey.split('_')[0];
+    var _missedDate=ST.hourlyShiftKey.split('_').slice(1).join('_');
+    var _activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
+    _activeIds.forEach(function(aid){
+      var _raw=ST.sessions.find(function(x){return x.id===aid;});
+      if(!_raw)return;
+      if(!_raw.shifts)_raw.shifts=[];
+      var _mKey=_missedType+'_'+_missedDate;
+      if(!_raw.shifts.find(function(sh){return sh.key===_mKey;})){
+        var _mNc=_raw.numCranes||2;
+        var _mSlots=_missedType==='DAY'?ALL.slice(0,12):ALL.slice(12);
+        var _mEntry={key:_mKey,type:_missedType,date:_missedDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+        _mSlots.forEach(function(slot){
+          for(var ci=1;ci<=_mNc;ci++){['discharge','load'].forEach(function(t){
+            var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;
+            if(ST.hourly[k])_mEntry.hourly[sk]=ST.hourly[k];
+          });}
+        });
+        for(var ci=1;ci<=_mNc;ci++){
+          var rk=aid+'_c'+ci;
+          (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
+            var dk=aid+'_'+ci+'_'+r;
+            if(ST.delays[dk])_mEntry.delays[dk]=Object.assign({},ST.delays[dk]);
+          });
+        }
+        _raw.shifts.push(_mEntry);
+        var _sidx=ST.sessions.findIndex(function(x){return x.id===aid;});
+        if(_sidx>=0)ST.sessions[_sidx]=JSON.parse(JSON.stringify(_raw));
+      }
+    });
+    ST.hourly={};ST.delays={};ST.delayRowIds={};
+    ST.hourlyShiftKey=_curShiftKey;
+    sv();
+  } else if(!ST.hourlyShiftKey){
+    // First ever load — stamp the current shift key
+    ST.hourlyShiftKey=_curShiftKey;
+    sv();
+  }
   RT.shiftRollTimer=setInterval(function(){
     var cShift=isDay()?'DAY':'NIGHT';
     var cDate=_shiftStartDate();
@@ -897,6 +949,8 @@ function initApp(){
       }
     });
     ST.hourly={};ST.delays={};ST.delayRowIds={};
+    // Stamp the new shift key so app-restart can detect missed rollovers
+    ST.hourlyShiftKey=cShift+'_'+cDate;
     sv();
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='results')renderResults();
@@ -1179,6 +1233,14 @@ function newVessel(){
   ST.hourly={};
   ST.delayRowIds={};
   ST.delays={};
+  // Stamp current shift key so missed-rollover detection works
+  var _nvShiftType=isDay()?'DAY':'NIGHT';
+  var _nvNow=new Date(),_nvH=_nvNow.getHours();
+  var _nvDate;
+  if(_nvH>=6&&_nvH<18){_nvDate=_nvNow.toLocaleDateString('en-CA');}
+  else if(_nvH<6){var _nvy=new Date(_nvNow);_nvy.setDate(_nvy.getDate()-1);_nvDate=_nvy.toLocaleDateString('en-CA');}
+  else{_nvDate=_nvNow.toLocaleDateString('en-CA');}
+  ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
   sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   _myLastSave=Date.now();
