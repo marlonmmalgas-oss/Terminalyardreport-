@@ -372,7 +372,18 @@ function sv(){
     dbRef.set(payload).catch(function(e){console.log('sync err:',e.message);});
     if(window._yardRef){
       _myLastYardSave=Date.now();
-      window._yardRef.set(yardBackup).catch(function(e){console.log('yard sync err:',e.message);});
+      // Sanitize keys: Firebase forbids '/' in keys — replace with __S__
+      var yardForFb=JSON.parse(JSON.stringify(yardBackup));
+      yardForFb.forEach(function(r){
+        if(r.vessels)r.vessels.forEach(function(v){
+          if(v.data){
+            Object.keys(v.data).forEach(function(k){
+              if(k.indexOf('/')>=0){var sk=k.replace(/\//g,'__S__');v.data[sk]=v.data[k];delete v.data[k];}
+            });
+          }
+        });
+      });
+      window._yardRef.set(yardForFb).catch(function(e){console.log('yard sync err:',e.message);});
     }
   }
 }
@@ -484,6 +495,16 @@ function initSync(){
         var yardArr=Array.isArray(remoteYard)?remoteYard:Object.values(remoteYard);
         // Bug fix: length>0 not length>=0 (>=0 is always true, wipes data on empty)
         if(yardArr&&yardArr.length>0){
+          // Restore sanitized keys: __S__ back to /
+          yardArr.forEach(function(r){
+            if(r.vessels)r.vessels.forEach(function(v){
+              if(v.data){
+                Object.keys(v.data).forEach(function(k){
+                  if(k.indexOf('__S__')>=0){var rk=k.replace(/__S__/g,'/');v.data[rk]=v.data[k];delete v.data[k];}
+                });
+              }
+            });
+          });
           ST.yardReports=yardArr;
           try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           if(RT.user&&RT.tab==='yard'){
@@ -2787,7 +2808,16 @@ function renderYard(){
         var rv=snap.val();
         if(!rv)return;
         var arr=Array.isArray(rv)?rv:Object.values(rv);
-        if(arr&&arr.length){ST.yardReports=arr;try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+        if(arr&&arr.length){
+          // Restore sanitized keys: __S__ back to /
+          arr.forEach(function(r){
+            if(r.vessels)r.vessels.forEach(function(v){
+              if(v.data){Object.keys(v.data).forEach(function(k){
+                if(k.indexOf('__S__')>=0){var rk=k.replace(/__S__/g,'/');v.data[rk]=v.data[k];delete v.data[k];}
+              });}
+            });
+          });
+          ST.yardReports=arr;try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
           var _openForm2=document.querySelector('[id^="_avName_"],[id="_myrInput"]');
           if(!_openForm2)renderYard();}
       });
