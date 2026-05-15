@@ -940,38 +940,50 @@ function initApp(){
   // Detect by comparing stored hourlyShiftKey to the current shift.
   var _curShiftKey=(isDay()?'DAY':'NIGHT')+'_'+_shiftStartDate();
   if(ST.hourlyShiftKey && ST.hourlyShiftKey !== _curShiftKey){
-    // Shift boundary was crossed while app was closed — snapshot then clear
+    // Shift boundary was crossed while app was closed.
+    // SAFETY CHECK: only snapshot+clear if ST.hourly actually contains keys
+    // belonging to the stale shift's slots. If the device was closed for multiple
+    // shifts, ST.hourly may already hold the CURRENT shift's data (synced from
+    // Firebase) — in that case we must NOT clear it, only update the key.
     var _missedType=ST.hourlyShiftKey.split('_')[0];
     var _missedDate=ST.hourlyShiftKey.split('_').slice(1).join('_');
+    var _staleSlots=_missedType==='DAY'?ALL.slice(0,12):ALL.slice(12);
     var _activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
-    _activeIds.forEach(function(aid){
-      var _raw=ST.sessions.find(function(x){return x.id===aid;});
-      if(!_raw)return;
-      if(!_raw.shifts)_raw.shifts=[];
-      var _mKey=_missedType+'_'+_missedDate;
-      if(!_raw.shifts.find(function(sh){return sh.key===_mKey;})){
-        var _mNc=_raw.numCranes||2;
-        var _mSlots=_missedType==='DAY'?ALL.slice(0,12):ALL.slice(12);
-        var _mEntry={key:_mKey,type:_missedType,date:_missedDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
-        _mSlots.forEach(function(slot){
-          for(var ci=1;ci<=_mNc;ci++){['discharge','load'].forEach(function(t){
-            var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;
-            if(ST.hourly[k])_mEntry.hourly[sk]=ST.hourly[k];
-          });}
-        });
-        for(var ci=1;ci<=_mNc;ci++){
-          var rk=aid+'_c'+ci;
-          (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
-            var dk=aid+'_'+ci+'_'+r;
-            if(ST.delays[dk])_mEntry.delays[dk]=Object.assign({},ST.delays[dk]);
-          });
-        }
-        _raw.shifts.push(_mEntry);
-        var _sidx=ST.sessions.findIndex(function(x){return x.id===aid;});
-        if(_sidx>=0)ST.sessions[_sidx]=JSON.parse(JSON.stringify(_raw));
-      }
+    // Check: does ST.hourly have any entry whose slot portion matches the stale shift's slots?
+    var _hourlyBelongsToStaleShift=Object.keys(ST.hourly).some(function(k){
+      return _staleSlots.some(function(s){return k.indexOf('_'+s+'_')>=0;});
     });
-    ST.hourly={};ST.delays={};ST.delayRowIds={};
+    if(_hourlyBelongsToStaleShift){
+      // ST.hourly contains data from the stale (just-ended) shift — safe to snapshot+clear
+      _activeIds.forEach(function(aid){
+        var _raw=ST.sessions.find(function(x){return x.id===aid;});
+        if(!_raw)return;
+        if(!_raw.shifts)_raw.shifts=[];
+        var _mKey=_missedType+'_'+_missedDate;
+        if(!_raw.shifts.find(function(sh){return sh.key===_mKey;})){
+          var _mNc=_raw.numCranes||2;
+          var _mEntry={key:_mKey,type:_missedType,date:_missedDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+          _staleSlots.forEach(function(slot){
+            for(var ci=1;ci<=_mNc;ci++){['discharge','load'].forEach(function(t){
+              var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;
+              if(ST.hourly[k])_mEntry.hourly[sk]=ST.hourly[k];
+            });}
+          });
+          for(var ci=1;ci<=_mNc;ci++){
+            var rk=aid+'_c'+ci;
+            (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
+              var dk=aid+'_'+ci+'_'+r;
+              if(ST.delays[dk])_mEntry.delays[dk]=Object.assign({},ST.delays[dk]);
+            });
+          }
+          _raw.shifts.push(_mEntry);
+          var _sidx=ST.sessions.findIndex(function(x){return x.id===aid;});
+          if(_sidx>=0)ST.sessions[_sidx]=JSON.parse(JSON.stringify(_raw));
+        }
+      });
+      ST.hourly={};ST.delays={};ST.delayRowIds={};
+    }
+    // Always advance the shift key regardless, so next open doesn't re-trigger
     ST.hourlyShiftKey=_curShiftKey;
     sv();
   } else if(!ST.hourlyShiftKey){
@@ -3016,32 +3028,32 @@ function renderYardReport(report){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_exports','TOTAL EXPORTS',false)}</span>
-        <span data-sum="ex" style="font-size:16px;font-weight:900">${grandEx}</span>
+        <span style="font-size:16px;font-weight:900">${grandEx}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL "GP"</span>
-        <span data-sum="gp" style="font-size:16px;font-weight:900">${totalGP}</span>
+        <span style="font-size:16px;font-weight:900">${totalGP}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_imports','TOTAL IMPORTS',false)}</span>
-        <span data-sum="im" style="font-size:16px;font-weight:900">${grandIm}</span>
+        <span style="font-size:16px;font-weight:900">${grandIm}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL REEF</span>
-        <span data-sum="reef" style="font-size:16px;font-weight:900">${totalReef}</span>
+        <span style="font-size:16px;font-weight:900">${totalReef}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_departed','TOTAL DEPARTED',false)}</span>
-        <span data-sum="dep" style="font-size:16px;font-weight:900">${grandDep}</span>
+        <span style="font-size:16px;font-weight:900">${grandDep}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">TOTAL MTY</span>
-        <span data-sum="mty" style="font-size:16px;font-weight:900">${totalMty}</span>
+        <span style="font-size:16px;font-weight:900">${totalMty}</span>
       </div>
     </div>
     <div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px">
       <span style="font-size:13px;font-weight:900;color:white">${_adminLbl('yrd_sum_inyard','IN YARD',true)}</span>
-      <span data-sum="yard" style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
+      <span style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
     </div>
     <div style="margin-top:8px;display:flex;gap:6px">
       <button data-delyard="${report.id}" onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
