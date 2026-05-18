@@ -305,6 +305,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-history"></div>
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
+    <div class="sc" id="sc-activitylog"></div>
   </div>
   <nav class="bnav" id="bnav"></nav>
 </div>
@@ -421,8 +422,10 @@ function initSync(){
       // Only apply remote data if it came from another device
       // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
       var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      // Preserve local activityLog before remote overwrite — merge after
+      var _localLog=Array.isArray(ST.activityLog)?ST.activityLog.slice():[];
       Object.keys(remote).forEach(function(k){
-        if(k!=='_ts'&&k!=='_gen'&&k!=='users'){
+        if(k!=='_ts'&&k!=='_gen'&&k!=='users'&&k!=='activityLog'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='activeId2'||k==='vesselSlot'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
@@ -440,6 +443,11 @@ function initSync(){
         }
         if(!Array.isArray(ST[k]))ST[k]=[];
       });
+      // Merge remote activityLog with local (so cross-device logs are combined)
+      var _remoteLog=Array.isArray(remote.activityLog)?remote.activityLog:(remote.activityLog&&typeof remote.activityLog==='object'?Object.values(remote.activityLog):[]);
+      var _mergedLog=_localLog.concat(_remoteLog.filter(function(re){return!_localLog.find(function(le){return le.ts===re.ts&&le.user===re.user&&le.action===re.action;});}));
+      _mergedLog.sort(function(a,b){return(b.ts||'')>(a.ts||'')?1:-1;});
+      ST.activityLog=_mergedLog.slice(0,_ACT_MAX);
       // Null-guard scalar and object fields that Firebase may return as null
       if(!ST.hourly||typeof ST.hourly!=='object'||Array.isArray(ST.hourly))ST.hourly={};
       if(!ST.delays||typeof ST.delays!=='object'||Array.isArray(ST.delays))ST.delays={};
@@ -556,6 +564,7 @@ const DEF={
     {abbrev:'fal',full:'MSC FALCON'}
   ],
   yardReports:[],
+  activityLog:[],
   activeId:null,
   hourlyShiftKey:null
 };
@@ -583,6 +592,7 @@ if(!Array.isArray(ST.vesselAbbrevs))ST.vesselAbbrevs=DEF.vesselAbbrevs.map(funct
 if(!Array.isArray(ST.yardReports))ST.yardReports=[];
 if(ST.hourlyShiftKey===undefined)ST.hourlyShiftKey=null;
 if(!Array.isArray(ST.generators))ST.generators=[];
+if(!Array.isArray(ST.activityLog))ST.activityLog=[];
 if(!ST.timing||typeof ST.timing!=='object')ST.timing=Object.assign({},DEF.timing);
 if(!ST.craneNames||typeof ST.craneNames!=='object')ST.craneNames=Object.assign({},DEF.craneNames);
 // Always ensure ST.users is a fresh array - never reference DEF.users
@@ -650,19 +660,27 @@ function getAllSlots(sess){
   // This ensures done/remain never reset mid-vessel even after 3+ days
   var liveMerged={};
   // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
+  // Also build a set of short keys already covered by snapshotted shifts
+  var _snapshotedSlotKeys={};
   if(sess.shifts&&sess.shifts.length){
     sess.shifts.forEach(function(sh){
       var shData=sh.hourly||{};
-      Object.keys(shData).forEach(function(k){liveMerged[k]=(liveMerged[k]||0)+(shData[k]||0);});
+      Object.keys(shData).forEach(function(k){
+        liveMerged[k]=(liveMerged[k]||0)+(shData[k]||0);
+        _snapshotedSlotKeys[k]=true;
+      });
     });
   }
   // Step 2: add current live ST.hourly (current shift not yet snapshotted)
+  // SKIP any key already covered by sess.shifts[] to prevent double-counting
   // Strip session prefix: '{sessId}_{slot}_{ci}_{type}' -> '{slot}_{ci}_{type}'
   var _pfx=sess.id+'_';
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(_pfx)===0){
       var sk=k.slice(_pfx.length);
-      liveMerged[sk]=(liveMerged[sk]||0)+(ST.hourly[k]||0);
+      if(!_snapshotedSlotKeys[sk]){
+        liveMerged[sk]=(liveMerged[sk]||0)+(ST.hourly[k]||0);
+      }
     }
   });
   return ALL.map(function(s){
@@ -683,11 +701,14 @@ function getCraneTotal(sess, craneIdx, type){
   var total=0;
   var pfx=sess.id+'_';
   // Step 1: sum from all stored/snapshotted shifts
+  // Also build set of short keys already covered to prevent double-counting
+  var _snapKeys={};
   if(sess.shifts&&sess.shifts.length){
     sess.shifts.forEach(function(sh){
       var shData=sh.hourly||{};
       Object.keys(shData).forEach(function(k){
-        // key format: slot_ci_type e.g. "07:00_1_discharge"
+        _snapKeys[k]=true;
+        // key format: slot_ci_type e.g. "0600-0700_1_discharge"
         var parts=k.split('_');
         if(parts.length>=3){
           var ci=parseInt(parts[parts.length-2]);
@@ -698,9 +719,11 @@ function getCraneTotal(sess, craneIdx, type){
     });
   }
   // Step 2: add live ST.hourly (current shift, not yet snapshotted)
+  // SKIP keys already covered by sess.shifts[] to prevent double-counting
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(pfx)===0){
       var sk=k.slice(pfx.length); // slot_ci_type
+      if(_snapKeys[sk])return; // already counted from snapshot
       var parts=sk.split('_');
       if(parts.length>=3){
         var ci=parseInt(parts[parts.length-2]);
@@ -886,6 +909,9 @@ function doLogin(){
   RT.user=u;
   $('loginScreen').style.display='none';
   $('appShell').style.display='flex';
+  if(!ST.activityLog)ST.activityLog=[];
+  logActivity('User Login','User: '+u.name+' ('+u.role+')');
+  try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   initApp();
 }
 function toggleDark(){
@@ -898,7 +924,7 @@ function applyDark(){
   var d=ST.settings&&ST.settings.darkMode;
   document.body.classList.toggle('dark',!!d);
 }
-function doLogout(){RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
+function doLogout(){logActivity('User Logout','Signed out');try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
 function initApp(){
   applyDark();
   // Prevent browser from opening dragged files
@@ -1034,13 +1060,20 @@ function initApp(){
       }
     });
     ST.hourly={};ST.delays={};ST.delayRowIds={};
+    // Reset First Lift and Last Lift on all active sessions at shift boundary
+    [ST.activeId,ST.activeId2].filter(Boolean).forEach(function(aid){
+      var _rs=ST.sessions.find(function(x){return x.id===aid;});
+      if(_rs){_rs.firstLift='';_rs.lastLift='';}
+    });
     // Stamp the new shift key so app-restart can detect missed rollovers
     ST.hourlyShiftKey=cShift+'_'+cDate;
+    logActivity('Shift Rollover','New shift: '+cShift+' starting '+cDate,'Previous: '+outType+' '+outDate);
     sv();
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='results')renderResults();
     if(RT.tab==='hourly')renderHourly();
     if(RT.tab==='4hourly')renderFour();
+    if(RT.tab==='input')renderInput();
     if(RT.tab==='history')renderHistory();
     if(RT.tab==='performance')renderPerformance();
   },60000);
@@ -1049,7 +1082,7 @@ function initApp(){
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'}];
   if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
   if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
   return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
@@ -1057,7 +1090,7 @@ function tabs(){
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -1127,8 +1160,8 @@ function renderInput(){
     for(let i=1;i<=nc;i++){
       h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
         <div class="g2">
-          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
-          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
+          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
+          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
         </div></div>`;
     }
     h+=`</div>`;
@@ -1178,8 +1211,8 @@ function onCraneChange(){
     for(let i=1;i<=nc;i++){
       mh+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
         <div class="g2">
-          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;sv()"/></div>
-          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;sv()"/></div>
+          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
+          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
         </div></div>`;
     }
     mh+=`</div>`;
@@ -1244,6 +1277,7 @@ function saveSession(){
   const idx=ST.sessions.findIndex(x=>x.id===id);
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
+  logActivity('Session Saved',s.vesselName,'Cranes: '+nc+' | Target: '+(s.target||0));
   sv();
   renderInput();
   // Extend own-save protection for 3s so Firebase echoes can't revert locked state
@@ -1259,6 +1293,7 @@ function unlockSess(){
   const raw=ST.sessions.find(function(x){return x.id===aid;});
   if(!raw)return;
   raw.locked=false;
+  logActivity('Session Unlocked',(raw.vesselName||'Unknown')+' — unlocked for editing');
   sv();
   renderInput();
   var t=Date.now();
@@ -1326,6 +1361,7 @@ function newVessel(){
   else if(_nvH<6){var _nvy=new Date(_nvNow);_nvy.setDate(_nvy.getDate()-1);_nvDate=_nvy.toLocaleDateString('en-CA');}
   else{_nvDate=_nvNow.toLocaleDateString('en-CA');}
   ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
+  logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
   sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   _myLastSave=Date.now();
@@ -2461,6 +2497,7 @@ function setActive(id){
   // Unlock for editing when setting active from history
   const raw=ST.sessions.find(function(x){return x.id===id;});
   if(raw)raw.locked=false;
+  logActivity('Session Activated',(raw?raw.vesselName:'')+'  — set as active session');
   sv();
   // Extend protection so Firebase echo can't revert activeId or locked state
   _myLastSave=Date.now();
@@ -2483,6 +2520,7 @@ function delSess(id){
     ST.activeId2=null;
     ST.hourly={};ST.delays={};ST.delayRowIds={};
   }
+  logActivity('Session Deleted','Session ID: '+id);
   _pendingDeleteSave=Date.now()+5000;
   sv();
   renderHistory();
@@ -2527,6 +2565,80 @@ function buildAnalysisData(){
     }
   });
   return data;
+}
+
+// ═══════════ ACTIVITY LOG ═══════════
+// Max entries stored to avoid localStorage bloat
+var _ACT_MAX = 500;
+
+function logActivity(action, detail, extra){
+  if(!ST.activityLog)ST.activityLog=[];
+  var user=RT.user?RT.user.name+' ('+RT.user.role+')':'System';
+  var entry={
+    ts:new Date().toISOString(),
+    user:user,
+    action:action,
+    detail:detail||'',
+    extra:extra||''
+  };
+  ST.activityLog.unshift(entry);
+  if(ST.activityLog.length>_ACT_MAX)ST.activityLog=ST.activityLog.slice(0,_ACT_MAX);
+  // Note: sv() is NOT called here — caller already calls sv() after the action
+  // This prevents double-saves; the log entry goes with the next sv() from the caller
+}
+
+function renderActivityLog(){
+  if(!ST.activityLog)ST.activityLog=[];
+  var log=ST.activityLog;
+  var h='<div class="ph"><div class="ph-row"><h2>📝 Activity Log</h2>';
+  h+='<button onclick="if(confirm(\'Clear all log entries?\')){{ST.activityLog=[];sv();renderActivityLog();}}" style="background:var(--red);color:white;border:none;border-radius:7px;padding:6px 12px;font-size:11px;font-weight:800;cursor:pointer">🗑️ Clear</button>';
+  h+='</div><p style="color:rgba(255,255,255,.6);font-size:11px;margin-top:2px">All app activity — admin view only</p></div>';
+  h+='<div style="padding:10px">';
+  if(!log.length){
+    h+='<div style="text-align:center;padding:40px 20px;color:#bbb;font-size:13px">No activity recorded yet.<br><span style="font-size:11px">Actions will appear here as operators use the app.</span></div>';
+  } else {
+    // Filter bar
+    h+='<div style="margin-bottom:10px"><input id="logFilter" type="text" placeholder="🔍 Filter by user, action or detail..." style="width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:9px;font-size:13px;outline:none" oninput="renderActivityLog()"/></div>';
+    var fv=document.getElementById('logFilter')?document.getElementById('logFilter').value.trim().toLowerCase():'';
+    var filtered=fv?log.filter(function(e){return (e.user||'').toLowerCase().includes(fv)||(e.action||'').toLowerCase().includes(fv)||(e.detail||'').toLowerCase().includes(fv)||(e.extra||'').toLowerCase().includes(fv);}):log;
+    h+='<div style="font-size:11px;color:#888;margin-bottom:8px">'+filtered.length+' entr'+(filtered.length===1?'y':'ies')+(fv?' matching \"'+fv+'\"':'')+'</div>';
+    // Group by date
+    var byDate={};
+    var dateOrder=[];
+    filtered.forEach(function(e){
+      var d=e.ts?e.ts.substring(0,10):'Unknown';
+      if(!byDate[d]){byDate[d]=[];dateOrder.push(d);}
+      byDate[d].push(e);
+    });
+    dateOrder.forEach(function(d){
+      var entries=byDate[d];
+      var dLabel;
+      try{dLabel=new Date(d).toLocaleDateString('en-ZA',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});}catch(ex){dLabel=d;}
+      h+='<div style="font-size:10px;font-weight:900;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--lb)">'+dLabel+'</div>';
+      entries.forEach(function(e){
+        var t=e.ts?e.ts.substring(11,16):'--:--';
+        var actionColour={
+          'Session Saved':'#1e8449','Session Unlocked':'#2980b9',
+          'New Vessel':'#8e44ad','Vessel Switched':'#0891b2',
+          'Vessel Complete':'#27ae60','Session Deleted':'#c0392b',
+          'Session Activated':'#2980b9','Delay Added':'#e67e22',
+          'Delay Removed':'#e74c3c','Delay Updated':'#f39c12',
+          'Hourly Move':'#16a085','User Login':'#1F3864','User Logout':'#7f8c8d',
+          'Firebase Push':'#2c3e50','Shift Rollover':'#8e44ad'
+        }[e.action]||'#555';
+        h+='<div style="display:flex;gap:10px;padding:8px 10px;background:white;border-radius:8px;margin-bottom:5px;box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid '+actionColour+'">';
+        h+='<div style="flex-shrink:0;min-width:38px;font-size:11px;font-weight:700;color:#888;padding-top:1px">'+t+'</div>';
+        h+='<div style="flex:1;min-width:0">';
+        h+='<div style="font-size:12px;font-weight:800;color:'+actionColour+'">'+e.action+'</div>';
+        if(e.detail)h+='<div style="font-size:11px;color:#444;margin-top:2px">'+e.detail+'</div>';
+        if(e.extra)h+='<div style="font-size:10px;color:#888;margin-top:1px">'+e.extra+'</div>';
+        h+='<div style="font-size:10px;color:#aaa;margin-top:3px">'+e.user+'</div>';
+        h+='</div></div>';
+      });
+    });
+  }
+  h+='</div>';
+  document.getElementById('sc-activitylog').innerHTML=h;
 }
 
 // ═══════════ ADMIN ═══════════
@@ -4180,6 +4292,8 @@ function markVesselComplete(){
   ST.activeId=null;
   ST.hourly={};ST.delays={};ST.delayRowIds={};
   sv();
+  logActivity('Vessel Complete',savedSess.vesselName+' — marked complete and archived');
+  try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   alert('Vessel '+savedSess.vesselName+' saved to history. Start a new vessel in Input.');
   switchTab('input');
 }
