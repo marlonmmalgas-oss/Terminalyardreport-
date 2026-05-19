@@ -2766,13 +2766,15 @@ function _xmodExport(allIdxs){
       delays:!!(document.getElementById('xd_'+i)&&document.getElementById('xd_'+i).checked)
     };
   });
+  // Capture allShifts BEFORE _xmodClose deletes window._xmodAllShifts
+  var capturedShifts=(window._xmodAllShifts||[]).slice();
   _xmodClose();
-  _doExportShifts(selected,shiftOpts);
+  _doExportShifts(selected,shiftOpts,capturedShifts);
 }
 
 // ── Step 2: build workbook from selected shift indices ──
-function _doExportShifts(selectedIdxs,shiftOpts){
-  var allShifts=window._xmodAllShifts||[];
+function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
+  var allShifts=capturedShifts||window._xmodAllShifts||[];
   shiftOpts=shiftOpts||{};
   // Wrap each item with its index so we can look up shiftOpts
   var itemsWrapped=selectedIdxs.map(function(i){return {data:allShifts[i],idx:i};}).filter(function(x){return !!x.data;});
