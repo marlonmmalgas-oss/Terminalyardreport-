@@ -338,6 +338,7 @@ var _myLastYardSave=0;    // timestamp of last yard save — used to skip own ya
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
 var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
+var _hadRemoteUpdate=false; // true once we've received a non-own Firebase update
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
@@ -422,6 +423,8 @@ function initSync(){
       // Only apply remote data if it came from another device
       // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
       var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      // Track that we've received a real remote update (not our own echo)
+      if(!isOwnSave2&&remote)_hadRemoteUpdate=true;
       // Preserve local activityLog before remote overwrite — merge after
       var _localLog=Array.isArray(ST.activityLog)?ST.activityLog.slice():[];
       Object.keys(remote).forEach(function(k){
@@ -1026,7 +1029,13 @@ function initApp(){
     });
     ST.delays={};ST.delayRowIds={};
     ST.hourlyShiftKey=_curShiftKey;
-    sv();
+    // Delay the save so Firebase listener can load latest data first.
+    // If a remote update arrives in that window (_hadRemoteUpdate=true),
+    // skip this save entirely — Firebase already has the correct state
+    // and we don't want to overwrite it with our stale localStorage snapshot.
+    setTimeout(function(){
+      if(!_hadRemoteUpdate){sv();}
+    },3000);
   } else if(!ST.hourlyShiftKey){
     // First ever load — stamp the current shift key
     ST.hourlyShiftKey=_curShiftKey;
@@ -2426,10 +2435,11 @@ function renderHistory(){
     if(s.shifts&&s.shifts.length){
       s.shifts.forEach(function(sh){
         var isCurrentShift=isActiveSession&&sh.key===curShiftKey;
-        // For current shift: use live ST.hourly filtered to current-shift slots only
+        // For current shift: merge snapshotted sh.hourly (floor) with live ST.hourly (top)
+        // so data still shows on devices where ST.hourly is stale or empty after sync lag
         var hourlyData;
         if(isCurrentShift){
-          hourlyData={};
+          hourlyData=Object.assign({},sh.hourly||{});
           var _pfx=s.id+'_';
           Object.keys(ST.hourly).forEach(function(k){
             if(k.indexOf(_pfx)!==0)return;
@@ -2439,7 +2449,8 @@ function renderHistory(){
             if(_curShiftSlotsSet[slotPart])hourlyData[sk]=ST.hourly[k];
           });
         } else { hourlyData=sh.hourly||{}; }
-        var delayData=isCurrentShift?ST.delays:(sh.delays||{});
+        // Delays: merge snapshot sh.delays (floor) with live ST.delays for current shift
+        var delayData=isCurrentShift?Object.assign({},sh.delays||{},ST.delays):(sh.delays||{});
         if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
           blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
         }
