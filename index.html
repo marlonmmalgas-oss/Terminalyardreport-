@@ -1443,164 +1443,45 @@ function buildResultsTable(sess, slotKeys){
   return h;
 }
 
-// Update a past shift's hourly snapshot (for results editing of completed shifts)
-function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
-  var raw=ST.sessions.find(function(x){return x.id===sessId;});
-  if(!raw||!raw.shifts)return;
-  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
-  if(!sh)return;
-  if(!sh.hourly)sh.hourly={};
-  var sk=slot+'_'+ci+'_'+type;
-  sh.hourly[sk]=parseFloat(val)||0;
-  _myLastSave=Date.now();
-  sv();
-  // Re-render results so totals update live
-  renderResults();
-}
-
 function renderResults(){
-  var sess=getSess();
-  var curShiftType=isDay()?'DAY':'NIGHT';
-  var _now=new Date(),_h=_now.getHours();
-  var _curShiftStartDate;
-  if(_h>=6&&_h<18){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
-  else if(_h<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
-  else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
-  var curShiftKey=curShiftType+'_'+_curShiftStartDate;
-
-  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${curShiftType} SHIFT</span></div></div>`;
+  const sess=getSess();
+  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${isDay()?'DAY':'NIGHT'} SHIFT</span></div></div>`;
   if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
-  var nc=sess.numCranes;
-  var sl=shiftSlots();
-
-  // Build shift blocks: past shifts (from sess.shifts) + current shift
-  var shiftBlocks=[];
-  var pastShiftKeys={};
-
-  if(sess.shifts&&sess.shifts.length){
-    sess.shifts.forEach(function(sh){
-      var isCurrent=sh.key===curShiftKey;
-      // Slots for this shift type
-      var shSlots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
-      shiftBlocks.push({
-        key:sh.key,
-        label:buildShiftLabel(sh.type,sh.date||sh.start||''),
-        isCurrent:isCurrent,
-        isPast:!isCurrent,
-        slots:shSlots,
-        shiftObj:sh  // reference to snapshot for past edits
-      });
-      if(!isCurrent) pastShiftKeys[sh.key]=true;
+  const nc=sess.numCranes;
+  const sl=shiftSlots();
+  ['discharge','load'].forEach(function(t){
+    const T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
+    const dpAll={};
+    for(let i=1;i<=nc;i++){
+      dpAll[i]=getCraneTotal(sess,i,t);
+    }
+    h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
+      <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
+    let pT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_planned','Planned',false)}</td>`;
+    for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[t+'Split']||0;pT+=v;h+=`<td>${v}</td>`;}
+    h+=`<td>${pT}</td></tr>`;
+    let obT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_opening','Opening Bal.',false)}</td>`;
+    for(let i=1;i<=nc;i++){const v=effSplit(sess,i,t);obT+=v;h+=`<td>${v}</td>`;}
+    h+=`<td>${obT}</td></tr>`;
+    sl.forEach(function(s,ri){
+      let rT=0;
+      h+=`<tr class="${ri%2===0?'o':'e'}"><td class="lbl" style="font-size:9.5px">${fs(s)}</td>`;
+      for(let i=1;i<=nc;i++){
+        const k=hk(sess.id,s,i,t),sk=s+'_'+i+'_'+t,v=ST.hourly[k]||0;rT+=v;
+        h+=`<td><input class="ci" type="number" value="${v||''}" placeholder="-" oninput="ST.hourly[hk('${sess.id}','${s}',${i},'${t}')]=parseFloat(this.value)||0;sv()"/></td>`;
+      }
+      h+=`<td class="bold">${rT||''}</td></tr>`;
     });
-  }
-
-  // Current shift block: if not already in shiftBlocks, add it
-  var hasCurrentBlock=shiftBlocks.find(function(b){return b.isCurrent;});
-  if(!hasCurrentBlock){
-    shiftBlocks.push({
-      key:curShiftKey,
-      label:buildShiftLabel(curShiftType,_curShiftStartDate),
-      isCurrent:true,
-      isPast:false,
-      slots:sl,
-      shiftObj:null
-    });
-  }
-
-  // Render each shift block as a collapsible
-  shiftBlocks.forEach(function(block, bi){
-    var blockId='res_block_'+bi;
-    var isOpen=block.isCurrent;
-    var shiftIcon=block.label.indexOf('0600')>=0?'☀️':'🌙';
-    var headerBg=block.isCurrent?'#1f3864':'#374151';
-    var badge=block.isCurrent?'<span style="background:var(--yellow);color:#000;font-size:9px;font-weight:900;padding:2px 7px;border-radius:5px;margin-left:8px;">CURRENT</span>':'';
-
-    h+='<div style="margin:8px 10px;">';
-    h+='<div onclick="resBlockToggle(\''+blockId+'\')" style="display:flex;align-items:center;justify-content:space-between;background:'+headerBg+';color:white;padding:10px 13px;border-radius:'+(isOpen?'8px 8px 0 0':'8px')+';cursor:pointer;font-size:12px;font-weight:800;user-select:none;" id="'+blockId+'_hdr">';
-    h+='<span>'+shiftIcon+' '+block.label+badge+'</span>';
-    h+='<span id="'+blockId+'_arr">'+(isOpen?'▼':'▶')+'</span>';
-    h+='</div>';
-    h+='<div id="'+blockId+'" style="display:'+(isOpen?'block':'none')+';border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px;overflow:hidden;">';
-
-    // Build discharge + load tables for this block
-    ['discharge','load'].forEach(function(t){
-      var T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
-      // All-time totals still use getCraneTotal (includes all shifts + live)
-      var dpAll={};
-      for(var i=1;i<=nc;i++) dpAll[i]=getCraneTotal(sess,i,t);
-
-      h+='<div class="card" style="margin:0;border-radius:0;box-shadow:none;border-bottom:1px solid #edf0f5;">';
-      h+='<div class="card-hd" style="border-radius:0;">'+T+'</div>';
-      h+='<div class="twrap"><table class="gt">';
-      h+='<tr><th>Time</th>'+[...Array(nc)].map(function(_,i){return'<th>'+craneName(i+1)+'</th>';}).join('')+'<th>Total</th></tr>';
-
-      // Planned row
-      var pT=0;
-      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_planned','Planned',false)+'</td>';
-      for(var i=1;i<=nc;i++){var v=sess.craneBalances[i]&&sess.craneBalances[i][t+'Split']||0;pT+=v;h+='<td>'+v+'</td>';}
-      h+='<td>'+pT+'</td></tr>';
-
-      // Opening balance row
-      var obT=0;
-      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_opening','Opening Bal.',false)+'</td>';
-      for(var i=1;i<=nc;i++){var v=effSplit(sess,i,t);obT+=v;h+='<td>'+v+'</td>';}
-      h+='<td>'+obT+'</td></tr>';
-
-      // Slot rows
-      var blockSlots=block.slots;
-      blockSlots.forEach(function(s,ri){
-        var rT=0;
-        h+='<tr class="'+(ri%2===0?'o':'e')+'"><td class="lbl" style="font-size:9.5px">'+fs(s)+'</td>';
-        for(var i=1;i<=nc;i++){
-          var v;
-          if(block.isCurrent){
-            // Current shift: read/write ST.hourly directly
-            v=ST.hourly[hk(sess.id,s,i,t)]||0;
-            rT+=v;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;sv()"/></td>';
-          } else {
-            // Past shift: read from snapshot, write via updateShiftHourly
-            var sk=s+'_'+i+'_'+t;
-            v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
-            rT+=v;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+block.key+'\',\''+s+'\','+i+',\''+t+'\',this.value)"/></td>';
-          }
-        }
-        h+='<td class="bold">'+(rT||'')+'</td></tr>';
-      });
-
-      // Total Done row
-      var dT=0;
-      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_done','Total Done',false)+'</td>';
-      for(var i=1;i<=nc;i++){dT+=dpAll[i];h+='<td>'+dpAll[i]+'</td>';}
-      h+='<td>'+dT+'</td></tr>';
-
-      // Total Remain row
-      var rT2=0;
-      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_remain','Total Remain',false)+'</td>';
-      for(var i=1;i<=nc;i++){var r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+='<td'+(r<0?' style="color:var(--red)"':'')+'>'+r+'</td>';}
-      h+='<td'+(rT2<0?' style="color:var(--red)"':'')+'>'+rT2+'</td></tr>';
-
-      h+='</table></div></div>';
-    });
-
-    h+='</div></div>'; // close block content + block wrapper
+    let dT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_done','Total Done',false)}</td>`;
+    for(let i=1;i<=nc;i++){dT+=dpAll[i];h+=`<td>${dpAll[i]}</td>`;}
+    h+=`<td>${dT}</td></tr>`;
+    let rT2=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_remain','Total Remain',false)}</td>`;
+    for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
+    h+=`<td${rT2<0?' style="color:var(--red)"':''}>${rT2}</td></tr>`;
+    h+=`</table></div></div>`;
   });
-
   h+=`<div style="height:20px"></div>`;
   $('sc-results').innerHTML=h;
-}
-
-// Toggle result shift collapsible, update header border-radius too
-function resBlockToggle(id){
-  var el=document.getElementById(id);
-  var arr=document.getElementById(id+'_arr');
-  var hdr=document.getElementById(id+'_hdr');
-  if(!el)return;
-  var open=el.style.display==='block';
-  el.style.display=open?'none':'block';
-  if(arr)arr.textContent=open?'▶':'▼';
-  if(hdr)hdr.style.borderRadius=open?'8px':'8px 8px 0 0';
 }
 
 // ═══════════ REPORT HEADER (no share button in capture) ═══════════
@@ -2619,9 +2500,384 @@ function renderHistory(){
       ${(RT.user&&RT.user.role==='admin')?`<button class="btn btn-sm btn-red" data-delid="${s.id}" onclick="delSessConfirm('${s.id}')">🗑️ Delete</button>`:''}
     </div></div>`;
   });
-  h+=`<div style="padding:10px 10px 20px"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div>`;
+  h+=`<div style="padding:10px 10px 20px;display:flex;flex-direction:column;gap:10px">
+    <button class="btn" onclick="exportHistoryExcel()" style="background:#1e6e3a">📥 Export History to Excel</button>
+    <button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button>
+  </div>`;
   $('sc-history').innerHTML=h;
 }
+
+// ═══════════ EXCEL EXPORT ═══════════
+function exportHistoryExcel(){
+  if(!window.XLSX){alert('XLSX library not loaded.');return;}
+  if(!ST.sessions||!ST.sessions.length){alert('No sessions to export.');return;}
+
+  var wb=XLSX.utils.book_new();
+  var allDelayFreq={};// {delayType: count} across all sessions
+
+  // ── Styles (cell style objects for SheetJS-style) ──
+  function cs(opts){return Object.assign({font:{name:'Arial',sz:10},alignment:{wrapText:true,vertical:'center'}},opts||{});}
+  var HDR={font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F3864'}},alignment:{horizontal:'center',vertical:'center'},border:{bottom:{style:'thin',color:{rgb:'FFFFFF'}}}};
+  var HDR_YELLOW={font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'}};
+  var TOTAL_NAVY={font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1A3A5C'}},alignment:{horizontal:'center',vertical:'center'}};
+  var TOTAL_YELLOW={font:{name:'Arial',sz:11,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFFF00'}},alignment:{horizontal:'center',vertical:'center'}};
+  var EVEN={fill:{fgColor:{rgb:'BDD7EE'}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'}};
+  var ODD={fill:{fgColor:{rgb:'FFFFFF'}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'}};
+  var ODD_L=Object.assign({},ODD,{alignment:{horizontal:'left',vertical:'center',indent:1}});
+  var EVEN_L=Object.assign({},EVEN,{alignment:{horizontal:'left',vertical:'center',indent:1}});
+  var DELAY_HDR={font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFF176'}},alignment:{horizontal:'center',vertical:'center'}};
+  var DELAY_CRANE={font:{name:'Arial',sz:11,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFE600'}},alignment:{horizontal:'left',vertical:'center',indent:1}};
+  var SEC_HDR={font:{name:'Arial',sz:12,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F3864'}},alignment:{horizontal:'left',vertical:'center',indent:1}};
+  var SEC_HDR_NIGHT={font:{name:'Arial',sz:12,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'2D3748'}},alignment:{horizontal:'left',vertical:'center',indent:1}};
+
+  function _cn(n){return(ST.craneNames&&ST.craneNames[n])||('CR'+n);}
+  function _dur(f,t){if(!f||!t)return'';var fh=parseInt(f),fm=parseInt((f.split(':')[1]||0)),th=parseInt(t),tm=parseInt((t.split(':')[1]||0));var d=(th*60+tm)-(fh*60+fm);if(d<0)d+=1440;return Math.floor(d/60)+':'+String(d%60).padStart(2,'0');}
+  function _fs(s){return s.replace('-',' – ');}
+
+  // Helper: set a cell with value + style
+  function sc2(ws,r,c,v,style){
+    var addr=XLSX.utils.encode_cell({r:r,c:c});
+    ws[addr]={v:v,t:typeof v==='number'?'n':'s',s:style};
+  }
+  function scn(ws,r,c,v,style){// numeric cell
+    var addr=XLSX.utils.encode_cell({r:r,c:c});
+    ws[addr]={v:v||0,t:'n',s:style||ODD};
+  }
+  function merge(ws,r1,c1,r2,c2){
+    if(!ws['!merges'])ws['!merges']=[];
+    ws['!merges'].push({s:{r:r1,c:c1},e:{r:r2,c:c2}});
+  }
+
+  var summaryRows=[];// for Summary sheet
+
+  // ── Per-vessel sheet ──
+  ST.sessions.forEach(function(sess){
+    var nc=sess.numCranes||2;
+    var sheetName=(sess.vesselName||'Vessel').replace(/[:\\\/?*\[\]]/g,'').substring(0,28).trim()||'Vessel';
+    // Deduplicate sheet names
+    var base=sheetName,n=2;
+    while(wb.SheetNames.indexOf(sheetName)>=0){sheetName=base.substring(0,25)+'_'+n;n++;}
+
+    var ws={'!cols':[],'!rows':[]};
+    var row=0;
+
+    // ── Vessel header ──
+    merge(ws,row,0,row,6+nc*2);
+    sc2(ws,row,0,sess.vesselName||'Unknown',{font:{name:'Arial',sz:16,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F3864'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+    ws['!rows'].push({hpt:28});row++;
+
+    // Meta row
+    var meta='Cranes: '+nc+'  |  Target: '+(sess.target||0)+'  |  Docked: '+(sess.dockedOn?new Date(sess.dockedOn).toLocaleString('en-ZA',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}):'—')+'  |  First Lift: '+(sess.firstLift||'—')+'  |  Last Lift: '+(sess.lastLift||'—');
+    merge(ws,row,0,row,6+nc*2);
+    sc2(ws,row,0,meta,{font:{name:'Arial',sz:10,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'243F6E'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+    ws['!rows'].push({hpt:18});row++;
+
+    // Blank spacer
+    merge(ws,row,0,row,6+nc*2);sc2(ws,row,0,'',{fill:{fgColor:{rgb:'F0F2F7'}}});ws['!rows'].push({hpt:6});row++;
+
+    // Collect all-vessel totals for summary
+    var vTotalD=0,vTotalL=0;
+
+    // Determine shifts to export
+    var shiftsToExport=[];
+    if(sess.shifts&&sess.shifts.length){
+      sess.shifts.forEach(function(sh){shiftsToExport.push(sh);});
+    }
+    // If active session — also include live data as current shift if not snapshotted
+    var isActive=sess.id===ST.activeId||sess.id===ST.activeId2;
+    var _now2=new Date(),_h2=_now2.getHours();
+    var _csd;
+    if(_h2>=6&&_h2<18){_csd=_now2.toLocaleDateString('en-CA');}
+    else if(_h2<6){var _yy=new Date(_now2);_yy.setDate(_yy.getDate()-1);_csd=_yy.toLocaleDateString('en-CA');}
+    else{_csd=_now2.toLocaleDateString('en-CA');}
+    var _csk=(isDay()?'DAY':'NIGHT')+'_'+_csd;
+    if(isActive&&!shiftsToExport.find(function(s){return s.key===_csk;})){
+      // Build ephemeral shift entry from live ST.hourly
+      var _liveH={},_liveD={};
+      var _pfxE=sess.id+'_';
+      Object.keys(ST.hourly).forEach(function(k){if(k.indexOf(_pfxE)===0){var sk=k.slice(_pfxE.length);_liveH[sk]=ST.hourly[k];}});
+      Object.keys(ST.delays).forEach(function(k){_liveD[k]=ST.delays[k];});
+      if(Object.keys(_liveH).length||Object.keys(_liveD).length){
+        shiftsToExport.push({key:_csk,type:isDay()?'DAY':'NIGHT',date:_csd,hourly:_liveH,delays:_liveD,_live:true});
+      }
+    }
+
+    if(!shiftsToExport.length){
+      // Old flat _results fallback
+      if(sess._results){
+        shiftsToExport.push({key:'ALL',type:'ALL',date:'',hourly:sess._results.hourly||{},delays:sess._results.delays||{}});
+      }
+    }
+
+    shiftsToExport.forEach(function(sh){
+      var shType=sh.type||'';
+      var shDate=sh.date||'';
+      var isNight=shType==='NIGHT';
+      // Build label
+      var shLabel;
+      if(shType==='DAY'){
+        var dp=shDate.split('-');var dd=new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2]));
+        shLabel='☀ DAY SHIFT  0600 – 1800  '+dd.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'});
+      } else if(shType==='NIGHT'){
+        var dp2=shDate.split('-');var dd2=new Date(parseInt(dp2[0]),parseInt(dp2[1])-1,parseInt(dp2[2]));
+        var dd3=new Date(dd2);dd3.setDate(dd3.getDate()+1);
+        var mon=dd2.toLocaleDateString('en-ZA',{month:'short'}),yr=dd2.toLocaleDateString('en-ZA',{year:'2-digit'});
+        shLabel='☾ NIGHT SHIFT  1800 – 0600  '+String(dd2.getDate()).padStart(2,'0')+'/'+String(dd3.getDate()).padStart(2,'0')+'-'+mon+'-'+yr;
+      } else {
+        shLabel='ALL SHIFTS';
+      }
+
+      var shHdr=isNight?SEC_HDR_NIGHT:SEC_HDR;
+
+      // ── RESULTS SECTION ──
+      merge(ws,row,0,row,6+nc*2);
+      sc2(ws,row,0,'RESULTS — '+shLabel,shHdr);
+      ws['!rows'].push({hpt:22});row++;
+
+      ['discharge','load'].forEach(function(t){
+        var T=t==='discharge'?'DISCHARGE':'LOAD';
+        // Sub-header
+        merge(ws,row,0,row,6+nc*2);
+        sc2(ws,row,0,T,{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'2A4A80'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+        ws['!rows'].push({hpt:18});row++;
+
+        // Column headers: Time | CR1 | CR2 ... | Total
+        sc2(ws,row,0,'Time',HDR);
+        for(var ci=1;ci<=nc;ci++){sc2(ws,row,ci,_cn(ci),HDR);}
+        sc2(ws,row,nc+1,'Total',HDR);
+        ws['!rows'].push({hpt:16});row++;
+
+        // Planned row
+        sc2(ws,row,0,'Planned',HDR_YELLOW);
+        var pT=0;
+        for(var ci=1;ci<=nc;ci++){var pv=(sess.craneBalances&&sess.craneBalances[ci]&&sess.craneBalances[ci][t+'Split'])||0;pT+=pv;scn(ws,row,ci,pv,HDR_YELLOW);}
+        scn(ws,row,nc+1,pT,HDR_YELLOW);
+        ws['!rows'].push({hpt:15});row++;
+
+        // Slots for this shift
+        var shSlots=shType==='DAY'?[
+          '0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200',
+          '1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800'
+        ]:shType==='NIGHT'?[
+          '1800-1900','1900-2000','2000-2100','2100-2200','2200-2300','2300-0000',
+          '0000-0100','0100-0200','0200-0300','0300-0400','0400-0500','0500-0600'
+        ]:(['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800','1800-1900','1900-2000','2000-2100','2100-2200','2200-2300','2300-0000','0000-0100','0100-0200','0200-0300','0300-0400','0400-0500','0500-0600']);
+
+        var shTd=0;
+        shSlots.forEach(function(s,ri){
+          var rT=0;
+          var rowStyle=ri%2===0?ODD:EVEN;
+          sc2(ws,row,0,_fs(s),ri%2===0?ODD_L:EVEN_L);
+          for(var ci=1;ci<=nc;ci++){
+            var sk=s+'_'+ci+'_'+t;
+            var v=(sh.hourly&&sh.hourly[sk])||0;rT+=v;
+            scn(ws,row,ci,v,rowStyle);
+          }
+          scn(ws,row,nc+1,rT,Object.assign({},rowStyle,{font:{name:'Arial',sz:10,bold:true}}));
+          shTd+=rT;
+          ws['!rows'].push({hpt:14});row++;
+        });
+
+        // Total Done row
+        sc2(ws,row,0,'TOTAL DONE',TOTAL_YELLOW);
+        var dT=0;
+        for(var ci=1;ci<=nc;ci++){
+          var ct=0;
+          shSlots.forEach(function(s2){ct+=(sh.hourly&&sh.hourly[s2+'_'+ci+'_'+t])||0;});
+          dT+=ct;scn(ws,row,ci,ct,TOTAL_YELLOW);
+        }
+        scn(ws,row,nc+1,dT,TOTAL_YELLOW);
+        ws['!rows'].push({hpt:16});row++;
+        if(t==='discharge')vTotalD+=dT; else vTotalL+=dT;
+
+        // Blank gap
+        row++;ws['!rows'].push({hpt:6});
+      });
+
+      // ── DELAYS SECTION ──
+      merge(ws,row,0,row,5);
+      sc2(ws,row,0,'DELAYS — '+shLabel,shHdr);
+      ws['!rows'].push({hpt:22});row++;
+
+      // Delay col headers
+      ['From','To','Duration','Delay Type','Description'].forEach(function(lbl,ci){sc2(ws,row,ci,lbl,HDR);});
+      ws['!rows'].push({hpt:16});row++;
+
+      var hasDelays=false;
+      for(var ci=1;ci<=nc;ci++){
+        // Find all delay keys for this crane in this shift's delay data
+        var delayData=sh.delays||{};
+        // For live/active sessions, also check ST.delays if this is current shift
+        var effDelays=delayData;
+        if(sh._live)effDelays=ST.delays;
+
+        var craneDelays=[];
+        Object.keys(effDelays).forEach(function(k){
+          var parts=k.split('_');
+          if(parts.length<3)return;
+          var kCrane=parseInt(parts[parts.length-2]);
+          if(kCrane===ci){
+            var dd=effDelays[k];
+            if(dd&&(dd.from||dd.to||dd.type)){craneDelays.push(dd);}
+          }
+        });
+        if(!craneDelays.length)continue;
+        hasDelays=true;
+
+        // Crane sub-header
+        merge(ws,row,0,row,5);
+        sc2(ws,row,0,_cn(ci),DELAY_CRANE);
+        ws['!rows'].push({hpt:18});row++;
+
+        craneDelays.forEach(function(dd,ri){
+          var d=_dur(dd.from,dd.to);
+          var rs=ri%2===0?ODD:EVEN;
+          sc2(ws,row,0,dd.from||'',Object.assign({},rs,{alignment:{horizontal:'center',vertical:'center'}}));
+          sc2(ws,row,1,dd.to||'',Object.assign({},rs,{alignment:{horizontal:'center',vertical:'center'}}));
+          sc2(ws,row,2,d,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true},alignment:{horizontal:'center',vertical:'center'}}));
+          sc2(ws,row,3,dd.type||'',Object.assign({},rs,{alignment:{horizontal:'left',vertical:'center',indent:1}}));
+          sc2(ws,row,4,dd.desc||'',Object.assign({},rs,{alignment:{horizontal:'left',vertical:'center',indent:1}}));
+          ws['!rows'].push({hpt:14});row++;
+          // Tally delay frequency
+          if(dd.type){var dt=(dd.type||'').trim().toUpperCase();if(dt)allDelayFreq[dt]=(allDelayFreq[dt]||0)+1;}
+        });
+      }
+      if(!hasDelays){
+        sc2(ws,row,0,'No delays recorded.',{font:{name:'Arial',sz:10,color:{rgb:'999999'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+        ws['!rows'].push({hpt:14});row++;
+      }
+
+      // Shift spacer
+      merge(ws,row,0,row,6+nc*2);sc2(ws,row,0,'',{fill:{fgColor:{rgb:'E8ECF4'}}});ws['!rows'].push({hpt:10});row++;
+    });
+
+    summaryRows.push({vessel:sess.vesselName||'Unknown',cranes:nc,target:sess.target||0,totalD:vTotalD,totalL:vTotalL,total:vTotalD+vTotalL,pct:sess.target?Math.round((vTotalD+vTotalL)/sess.target*100):0,shifts:(sess.shifts&&sess.shifts.length)||0,completed:sess.completed?'Yes':'Active'});
+
+    // Column widths
+    ws['!cols']=[{wch:14}];
+    for(var ci=1;ci<=nc;ci++)ws['!cols'].push({wch:10});
+    ws['!cols'].push({wch:10});// Total
+    ws['!cols'].push({wch:12},{wch:18},{wch:14},{wch:22},{wch:30});
+
+    // Set sheet range
+    ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:row,c:Math.max(6+nc*2,5)}});
+    XLSX.utils.book_append_sheet(wb,ws,sheetName);
+  });
+
+  // ── SUMMARY sheet ──
+  var wss={'!cols':[{wch:22},{wch:10},{wch:10},{wch:14},{wch:12},{wch:12},{wch:10},{wch:10},{wch:12}]};
+  var sr=0;
+  merge(wss,sr,0,sr,8);
+  sc2(wss,sr,0,'VESSEL HISTORY SUMMARY',{font:{name:'Arial',sz:16,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F3864'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+  wss['!rows']=[{hpt:30}];sr++;
+  merge(wss,sr,0,sr,8);
+  sc2(wss,sr,0,'Exported: '+new Date().toLocaleString('en-ZA',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}),{font:{name:'Arial',sz:10,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'243F6E'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+  wss['!rows'].push({hpt:16});sr++;
+  wss['!rows'].push({hpt:8});sr++;// spacer
+
+  var sumHdrs=['Vessel','Cranes','Target','Discharge','Load','Total','% Target','Shifts','Status'];
+  sumHdrs.forEach(function(lbl,ci){sc2(wss,sr,ci,lbl,HDR);});
+  wss['!rows'].push({hpt:18});sr++;
+
+  summaryRows.forEach(function(r,ri){
+    var rs=ri%2===0?ODD:EVEN;
+    var rsL=ri%2===0?ODD_L:EVEN_L;
+    sc2(wss,sr,0,r.vessel,rsL);
+    scn(wss,sr,1,r.cranes,rs);scn(wss,sr,2,r.target,rs);
+    scn(wss,sr,3,r.totalD,rs);scn(wss,sr,4,r.totalL,rs);
+    scn(wss,sr,5,r.total,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true}}));
+    sc2(wss,sr,6,r.pct+'%',rs);
+    scn(wss,sr,7,r.shifts,rs);
+    sc2(wss,sr,8,r.completed,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true,color:{rgb:r.completed==='Active'?'1e8449':'555555'}}}));
+    wss['!rows'].push({hpt:15});sr++;
+  });
+
+  // Totals row
+  if(summaryRows.length){
+    var totD=summaryRows.reduce(function(a,r){return a+r.totalD;},0);
+    var totL=summaryRows.reduce(function(a,r){return a+r.totalL;},0);
+    var totT=summaryRows.reduce(function(a,r){return a+r.target;},0);
+    sc2(wss,sr,0,'TOTAL',TOTAL_NAVY);
+    sc2(wss,sr,1,'',TOTAL_NAVY);scn(wss,sr,2,totT,TOTAL_YELLOW);
+    scn(wss,sr,3,totD,TOTAL_YELLOW);scn(wss,sr,4,totL,TOTAL_YELLOW);
+    scn(wss,sr,5,totD+totL,TOTAL_YELLOW);
+    sc2(wss,sr,6,totT?Math.round((totD+totL)/totT*100)+'%':'—',TOTAL_YELLOW);
+    sc2(wss,sr,7,'',TOTAL_NAVY);sc2(wss,sr,8,'',TOTAL_NAVY);
+    wss['!rows'].push({hpt:18});sr++;
+  }
+
+  wss['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:sr,c:8}});
+  XLSX.utils.book_append_sheet(wb,wss,'Summary');
+
+  // ── DELAY FREQUENCY sheet ──
+  var sorted=Object.keys(allDelayFreq).sort(function(a,b){return allDelayFreq[b]-allDelayFreq[a];});
+  if(sorted.length){
+    var wsd={'!cols':[{wch:28},{wch:10},{wch:52},{wch:10}]};
+    var dr=0;
+    var maxCount=allDelayFreq[sorted[0]]||1;
+
+    merge(wsd,dr,0,dr,3);
+    sc2(wsd,dr,0,'DELAY FREQUENCY ANALYSIS',{font:{name:'Arial',sz:16,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F3864'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+    wsd['!rows']=[{hpt:30}];dr++;
+    merge(wsd,dr,0,dr,3);
+    sc2(wsd,dr,0,'Frequency of all delay types across all vessels and shifts',{font:{name:'Arial',sz:10,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'243F6E'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
+    wsd['!rows'].push({hpt:16});dr++;
+    wsd['!rows'].push({hpt:8});dr++;// spacer
+
+    // Column headers
+    ['Delay Type','Count','Frequency Bar','% of Total'].forEach(function(lbl,ci){sc2(wsd,dr,ci,lbl,HDR);});
+    wsd['!rows'].push({hpt:18});dr++;
+
+    var totalDelays=Object.values(allDelayFreq).reduce(function(a,v){return a+v;},0)||1;
+    var barChars='█';
+    var maxBarCells=40;
+
+    sorted.forEach(function(dt,ri){
+      var cnt=allDelayFreq[dt];
+      var pct=Math.round(cnt/totalDelays*100);
+      var barLen=Math.max(1,Math.round(cnt/maxCount*maxBarCells));
+      var bar=barChars.repeat(barLen);
+      var rs=ri%2===0?ODD:EVEN;
+      var rsL=ri%2===0?ODD_L:EVEN_L;
+      // Colour the bar: top 3 are red/orange/yellow, rest navy
+      var barClr=ri===0?'C0392B':ri===1?'E67E22':ri===2?'F1C40F':'1F3864';
+      sc2(wsd,dr,0,dt,rsL);
+      scn(wsd,dr,1,cnt,Object.assign({},rs,{font:{name:'Arial',sz:11,bold:true}}));
+      sc2(wsd,dr,2,bar,{font:{name:'Arial',sz:8,bold:true,color:{rgb:barClr}},fill:{fgColor:{rgb:ri%2===0?'FFFFFF':'EEF2F8'}},alignment:{horizontal:'left',vertical:'center'}});
+      sc2(wsd,dr,3,pct+'%',Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true}}));
+      wsd['!rows'].push({hpt:16});dr++;
+    });
+
+    // Total row
+    sc2(wsd,dr,0,'TOTAL',TOTAL_NAVY);
+    scn(wsd,dr,1,totalDelays,TOTAL_YELLOW);
+    sc2(wsd,dr,2,'',TOTAL_NAVY);
+    sc2(wsd,dr,3,'100%',TOTAL_YELLOW);
+    wsd['!rows'].push({hpt:18});dr++;
+
+    wsd['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:dr,c:3}});
+    XLSX.utils.book_append_sheet(wb,wsd,'Delay Frequency');
+  }
+
+  // Move Summary and Delay Frequency to front
+  var finalOrder=['Summary'];
+  if(sorted.length)finalOrder.push('Delay Frequency');
+  wb.SheetNames.forEach(function(n){if(finalOrder.indexOf(n)<0)finalOrder.push(n);});
+  wb.SheetNames=finalOrder;
+
+  // Write using xlsx-style if available, else plain xlsx
+  var wbOpts={bookType:'xlsx',type:'array',cellStyles:true};
+  try{
+    var buf=XLSX.write(wb,wbOpts);
+    var blob=new Blob([buf],{type:'application/octet-stream'});
+    var a=document.createElement('a');
+    var fname='TerminalHistory_'+new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-')+'.xlsx';
+    a.href=URL.createObjectURL(blob);a.download=fname;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+  }catch(e){alert('Export failed: '+e.message);}
+}
+
 function setActive(id){
   ST.activeId=id;
   // Unlock for editing when setting active from history
