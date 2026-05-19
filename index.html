@@ -1443,45 +1443,164 @@ function buildResultsTable(sess, slotKeys){
   return h;
 }
 
+// Update a past shift's hourly snapshot (for results editing of completed shifts)
+function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
+  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  if(!raw||!raw.shifts)return;
+  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
+  if(!sh)return;
+  if(!sh.hourly)sh.hourly={};
+  var sk=slot+'_'+ci+'_'+type;
+  sh.hourly[sk]=parseFloat(val)||0;
+  _myLastSave=Date.now();
+  sv();
+  // Re-render results so totals update live
+  renderResults();
+}
+
 function renderResults(){
-  const sess=getSess();
-  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${isDay()?'DAY':'NIGHT'} SHIFT</span></div></div>`;
+  var sess=getSess();
+  var curShiftType=isDay()?'DAY':'NIGHT';
+  var _now=new Date(),_h=_now.getHours();
+  var _curShiftStartDate;
+  if(_h>=6&&_h<18){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  else if(_h<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
+  else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  var curShiftKey=curShiftType+'_'+_curShiftStartDate;
+
+  let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${curShiftType} SHIFT</span></div></div>`;
   if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
-  const nc=sess.numCranes;
-  const sl=shiftSlots();
-  ['discharge','load'].forEach(function(t){
-    const T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
-    const dpAll={};
-    for(let i=1;i<=nc;i++){
-      dpAll[i]=getCraneTotal(sess,i,t);
-    }
-    h+=`<div class="card"><div class="card-hd">${T}</div><div class="twrap"><table class="gt">
-      <tr><th>Time</th>${[...Array(nc)].map(function(_,i){return`<th>${craneName(i+1)}</th>`;}).join('')}<th>Total</th></tr>`;
-    let pT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_planned','Planned',false)}</td>`;
-    for(let i=1;i<=nc;i++){const v=sess.craneBalances[i]?.[t+'Split']||0;pT+=v;h+=`<td>${v}</td>`;}
-    h+=`<td>${pT}</td></tr>`;
-    let obT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_opening','Opening Bal.',false)}</td>`;
-    for(let i=1;i<=nc;i++){const v=effSplit(sess,i,t);obT+=v;h+=`<td>${v}</td>`;}
-    h+=`<td>${obT}</td></tr>`;
-    sl.forEach(function(s,ri){
-      let rT=0;
-      h+=`<tr class="${ri%2===0?'o':'e'}"><td class="lbl" style="font-size:9.5px">${fs(s)}</td>`;
-      for(let i=1;i<=nc;i++){
-        const k=hk(sess.id,s,i,t),sk=s+'_'+i+'_'+t,v=ST.hourly[k]||0;rT+=v;
-        h+=`<td><input class="ci" type="number" value="${v||''}" placeholder="-" oninput="ST.hourly[hk('${sess.id}','${s}',${i},'${t}')]=parseFloat(this.value)||0;sv()"/></td>`;
-      }
-      h+=`<td class="bold">${rT||''}</td></tr>`;
+  var nc=sess.numCranes;
+  var sl=shiftSlots();
+
+  // Build shift blocks: past shifts (from sess.shifts) + current shift
+  var shiftBlocks=[];
+  var pastShiftKeys={};
+
+  if(sess.shifts&&sess.shifts.length){
+    sess.shifts.forEach(function(sh){
+      var isCurrent=sh.key===curShiftKey;
+      // Slots for this shift type
+      var shSlots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
+      shiftBlocks.push({
+        key:sh.key,
+        label:buildShiftLabel(sh.type,sh.date||sh.start||''),
+        isCurrent:isCurrent,
+        isPast:!isCurrent,
+        slots:shSlots,
+        shiftObj:sh  // reference to snapshot for past edits
+      });
+      if(!isCurrent) pastShiftKeys[sh.key]=true;
     });
-    let dT=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_done','Total Done',false)}</td>`;
-    for(let i=1;i<=nc;i++){dT+=dpAll[i];h+=`<td>${dpAll[i]}</td>`;}
-    h+=`<td>${dT}</td></tr>`;
-    let rT2=0;h+=`<tr class="ry"><td class="lbl">${_adminLbl('res_remain','Total Remain',false)}</td>`;
-    for(let i=1;i<=nc;i++){const r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+=`<td${r<0?' style="color:var(--red)"':''}>${r}</td>`;}
-    h+=`<td${rT2<0?' style="color:var(--red)"':''}>${rT2}</td></tr>`;
-    h+=`</table></div></div>`;
+  }
+
+  // Current shift block: if not already in shiftBlocks, add it
+  var hasCurrentBlock=shiftBlocks.find(function(b){return b.isCurrent;});
+  if(!hasCurrentBlock){
+    shiftBlocks.push({
+      key:curShiftKey,
+      label:buildShiftLabel(curShiftType,_curShiftStartDate),
+      isCurrent:true,
+      isPast:false,
+      slots:sl,
+      shiftObj:null
+    });
+  }
+
+  // Render each shift block as a collapsible
+  shiftBlocks.forEach(function(block, bi){
+    var blockId='res_block_'+bi;
+    var isOpen=block.isCurrent;
+    var shiftIcon=block.label.indexOf('0600')>=0?'☀️':'🌙';
+    var headerBg=block.isCurrent?'#1f3864':'#374151';
+    var badge=block.isCurrent?'<span style="background:var(--yellow);color:#000;font-size:9px;font-weight:900;padding:2px 7px;border-radius:5px;margin-left:8px;">CURRENT</span>':'';
+
+    h+='<div style="margin:8px 10px;">';
+    h+='<div onclick="resBlockToggle(\''+blockId+'\')" style="display:flex;align-items:center;justify-content:space-between;background:'+headerBg+';color:white;padding:10px 13px;border-radius:'+(isOpen?'8px 8px 0 0':'8px')+';cursor:pointer;font-size:12px;font-weight:800;user-select:none;" id="'+blockId+'_hdr">';
+    h+='<span>'+shiftIcon+' '+block.label+badge+'</span>';
+    h+='<span id="'+blockId+'_arr">'+(isOpen?'▼':'▶')+'</span>';
+    h+='</div>';
+    h+='<div id="'+blockId+'" style="display:'+(isOpen?'block':'none')+';border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px;overflow:hidden;">';
+
+    // Build discharge + load tables for this block
+    ['discharge','load'].forEach(function(t){
+      var T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
+      // All-time totals still use getCraneTotal (includes all shifts + live)
+      var dpAll={};
+      for(var i=1;i<=nc;i++) dpAll[i]=getCraneTotal(sess,i,t);
+
+      h+='<div class="card" style="margin:0;border-radius:0;box-shadow:none;border-bottom:1px solid #edf0f5;">';
+      h+='<div class="card-hd" style="border-radius:0;">'+T+'</div>';
+      h+='<div class="twrap"><table class="gt">';
+      h+='<tr><th>Time</th>'+[...Array(nc)].map(function(_,i){return'<th>'+craneName(i+1)+'</th>';}).join('')+'<th>Total</th></tr>';
+
+      // Planned row
+      var pT=0;
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_planned','Planned',false)+'</td>';
+      for(var i=1;i<=nc;i++){var v=sess.craneBalances[i]&&sess.craneBalances[i][t+'Split']||0;pT+=v;h+='<td>'+v+'</td>';}
+      h+='<td>'+pT+'</td></tr>';
+
+      // Opening balance row
+      var obT=0;
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_opening','Opening Bal.',false)+'</td>';
+      for(var i=1;i<=nc;i++){var v=effSplit(sess,i,t);obT+=v;h+='<td>'+v+'</td>';}
+      h+='<td>'+obT+'</td></tr>';
+
+      // Slot rows
+      var blockSlots=block.slots;
+      blockSlots.forEach(function(s,ri){
+        var rT=0;
+        h+='<tr class="'+(ri%2===0?'o':'e')+'"><td class="lbl" style="font-size:9.5px">'+fs(s)+'</td>';
+        for(var i=1;i<=nc;i++){
+          var v;
+          if(block.isCurrent){
+            // Current shift: read/write ST.hourly directly
+            v=ST.hourly[hk(sess.id,s,i,t)]||0;
+            rT+=v;
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;sv()"/></td>';
+          } else {
+            // Past shift: read from snapshot, write via updateShiftHourly
+            var sk=s+'_'+i+'_'+t;
+            v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
+            rT+=v;
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+block.key+'\',\''+s+'\','+i+',\''+t+'\',this.value)"/></td>';
+          }
+        }
+        h+='<td class="bold">'+(rT||'')+'</td></tr>';
+      });
+
+      // Total Done row
+      var dT=0;
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_done','Total Done',false)+'</td>';
+      for(var i=1;i<=nc;i++){dT+=dpAll[i];h+='<td>'+dpAll[i]+'</td>';}
+      h+='<td>'+dT+'</td></tr>';
+
+      // Total Remain row
+      var rT2=0;
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_remain','Total Remain',false)+'</td>';
+      for(var i=1;i<=nc;i++){var r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+='<td'+(r<0?' style="color:var(--red)"':'')+'>'+r+'</td>';}
+      h+='<td'+(rT2<0?' style="color:var(--red)"':'')+'>'+rT2+'</td></tr>';
+
+      h+='</table></div></div>';
+    });
+
+    h+='</div></div>'; // close block content + block wrapper
   });
+
   h+=`<div style="height:20px"></div>`;
   $('sc-results').innerHTML=h;
+}
+
+// Toggle result shift collapsible, update header border-radius too
+function resBlockToggle(id){
+  var el=document.getElementById(id);
+  var arr=document.getElementById(id+'_arr');
+  var hdr=document.getElementById(id+'_hdr');
+  if(!el)return;
+  var open=el.style.display==='block';
+  el.style.display=open?'none':'block';
+  if(arr)arr.textContent=open?'▶':'▼';
+  if(hdr)hdr.style.borderRadius=open?'8px':'8px 8px 0 0';
 }
 
 // ═══════════ REPORT HEADER (no share button in capture) ═══════════
