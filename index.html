@@ -2708,7 +2708,7 @@ function exportHistoryExcel(){
 
   var mh='<div class="xmod-overlay" id="xmodOverlay" onclick="if(event.target===this)_xmodClose()">';
   mh+='<div class="xmod-box">';
-  mh+='<div class="xmod-hd"><h3>📥 Export to Excel</h3><p>Select the shifts you want to include — each becomes its own sheet.</p></div>';
+  mh+='<div class="xmod-hd"><h3>📥 Export to Excel</h3><p>Select the shifts and data you want to include.</p></div>';
   mh+='<div class="xmod-body">';
 
   Object.keys(byVessel).forEach(function(vid){
@@ -2719,7 +2719,18 @@ function exportHistoryExcel(){
     mh+='<label class="xmod-vhd"><input type="checkbox" checked onchange="_xmodVessel(this,\''+allIdxs.join(',')+'\')" id="xv_'+vid+'"/><span class="xmod-vname">'+vn+'</span><span class="xmod-vmeta">'+vg.sess.numCranes+' cranes · target '+vg.sess.target+'</span></label>';
     mh+='<div class="xmod-shifts">';
     vg.items.forEach(function(it){
-      mh+='<label class="xmod-shift"><input type="checkbox" checked id="xs_'+it.idx+'" onchange="_xmodUpdGo()"/><span class="xmod-slbl">'+_shiftDisplayLabel(it.item.sh)+'</span>'+(it.item.sh._live?'<span class="xmod-smeta">LIVE</span>':'')+'</label>';
+      var i=it.idx;
+      mh+='<div class="xmod-shift" style="flex-direction:column;align-items:flex-start;gap:6px;padding:9px 10px">';
+      mh+='<div style="display:flex;align-items:center;gap:8px;width:100%">';
+      mh+='<input type="checkbox" checked id="xs_'+i+'" style="width:15px;height:15px;accent-color:var(--navy);flex-shrink:0" onchange="_xmodUpdGo()"/>';
+      mh+='<span class="xmod-slbl">'+_shiftDisplayLabel(it.item.sh)+'</span>';
+      mh+=(it.item.sh._live?'<span class="xmod-smeta">LIVE</span>':'');
+      mh+='</div>';
+      mh+='<div style="display:flex;gap:12px;padding-left:23px">';
+      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" checked id="xr_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Results</label>';
+      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" checked id="xd_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Delays</label>';
+      mh+='</div>';
+      mh+='</div>';
     });
     mh+='</div></div>';
   });
@@ -2748,15 +2759,24 @@ function _xmodUpdGo(){
 function _xmodExport(allIdxs){
   var selected=allIdxs.filter(function(i){var el=document.getElementById('xs_'+i);return el&&el.checked;});
   if(!selected.length){alert('Please select at least one shift.');return;}
+  var shiftOpts={};
+  selected.forEach(function(i){
+    shiftOpts[i]={
+      results:!!(document.getElementById('xr_'+i)&&document.getElementById('xr_'+i).checked),
+      delays:!!(document.getElementById('xd_'+i)&&document.getElementById('xd_'+i).checked)
+    };
+  });
   _xmodClose();
-  _doExportShifts(selected);
+  _doExportShifts(selected,shiftOpts);
 }
 
 // ── Step 2: build workbook from selected shift indices ──
-function _doExportShifts(selectedIdxs){
+function _doExportShifts(selectedIdxs,shiftOpts){
   var allShifts=window._xmodAllShifts||[];
-  // If modal was closed, rebuild allShifts from sessions (shouldn't happen but safe)
-  var items=selectedIdxs.map(function(i){return allShifts[i];}).filter(Boolean);
+  shiftOpts=shiftOpts||{};
+  // Wrap each item with its index so we can look up shiftOpts
+  var itemsWrapped=selectedIdxs.map(function(i){return {data:allShifts[i],idx:i};}).filter(function(x){return !!x.data;});
+  var items=itemsWrapped.map(function(x){return x.data;});
   if(!items.length){alert('Nothing to export.');return;}
 
   var wb=XLSX.utils.book_new();
@@ -2799,7 +2819,11 @@ function _doExportShifts(selectedIdxs){
   }
 
   // ── Per-shift sheet ──
-  items.forEach(function(item){
+  itemsWrapped.forEach(function(wrapped){
+    var item=wrapped.data,origIdx=wrapped.idx;
+    var opts=shiftOpts[origIdx]||{results:true,delays:true};
+    var includeResults=opts.results!==false;
+    var includeDelays=opts.delays!==false;
     var sess=item.sess,sh=item.sh,nc=item.nc;
     var shType=sh.type||'';
     var isNight=shType==='NIGHT';
@@ -2839,6 +2863,7 @@ function _doExportShifts(selectedIdxs){
     mg(ws,row,0,row,maxCols);sc(ws,row,0,'',ST_spacer());ws['!rows'].push({hpt:6});row++;
 
     // ── RESULTS heading ──
+    if(includeResults){
     mg(ws,row,0,row,maxCols);
     sc(ws,row,0,'RESULTS',ST_h2(false));
     ws['!rows'].push({hpt:20});row++;
@@ -2893,8 +2918,10 @@ function _doExportShifts(selectedIdxs){
       // Spacer
       mg(ws,row,0,row,maxCols);sc(ws,row,0,'',ST_spacer());ws['!rows'].push({hpt:5});row++;
     });
+    }// end includeResults
 
     // ── DELAYS heading ──
+    if(includeDelays){
     mg(ws,row,0,row,maxCols);
     sc(ws,row,0,'DELAYS',ST_h2(true));
     ws['!rows'].push({hpt:20});row++;
@@ -2915,7 +2942,7 @@ function _doExportShifts(selectedIdxs){
       if(!craneDelays.length)continue;
       hasDelays=true;
 
-      // Crane category heading
+      // Crane category heading — highlighted yellow
       mg(ws,row,0,row,maxCols);
       sc(ws,row,0,_cn(ci),ST_crane_hdr());
       ws['!rows'].push({hpt:17});row++;
@@ -2941,6 +2968,7 @@ function _doExportShifts(selectedIdxs){
       sc(ws,row,0,'No delays recorded.',{font:{name:'Arial',sz:10,color:{rgb:'999999'}},alignment:{horizontal:'left',vertical:'center',indent:1}});
       ws['!rows'].push({hpt:14});row++;
     }
+    }// end includeDelays
 
     // Column widths
     ws['!cols']=[{wch:15}];
@@ -3018,7 +3046,7 @@ function _doExportShifts(selectedIdxs){
     sc(wda,dr,hc2+1,'Total Bar',{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'center',vertical:'center'}});
     wda['!rows'].push({hpt:15});dr++;
 
-    var barMax=32;
+    var barMax=24;
     sortedTypes.forEach(function(dt,ri){
       var rs=ri%2===0?ST_o():ST_e();
       var rsL=ri%2===0?ST_oL():ST_eL();
@@ -3029,17 +3057,19 @@ function _doExportShifts(selectedIdxs){
         rowTotal+=mins;
         var timeStr=mins>0?_durFmt(mins):'—';
         sc(wda,dr,cc,timeStr,Object.assign({},rs,{alignment:{horizontal:'center',vertical:'center'}}));
-        // Bar for this crane
+        // Bar shows actual time proportional to max — label inside bar is the time string
         var barLen=maxMins>0?Math.round(mins/maxMins*barMax):0;
         var barClr=ci===1?'1F3864':ci===2?'0E7490':ci===3?'1A5C35':'7C3AED';
-        sc(wda,dr,cc+1,barLen>0?'█'.repeat(barLen):'',{font:{name:'Arial',sz:7,bold:true,color:{rgb:barClr}},fill:{fgColor:{rgb:ri%2===0?'FFFFFF':LB}},alignment:{horizontal:'left',vertical:'center'}});
+        var barText=barLen>0?('█'.repeat(barLen)+'  '+timeStr):'';
+        sc(wda,dr,cc+1,barText,{font:{name:'Arial',sz:7,bold:true,color:{rgb:barClr}},fill:{fgColor:{rgb:ri%2===0?'FFFFFF':LB}},alignment:{horizontal:'left',vertical:'center'}});
         cc+=2;
       });
       // Total for this type
       var totStr=rowTotal>0?_durFmt(rowTotal):'—';
       var totBarLen=maxMins>0?Math.round(rowTotal/maxMins*barMax):0;
+      var totBarText=totBarLen>0?('█'.repeat(totBarLen)+'  '+totStr):'';
       sc(wda,dr,cc,totStr,ST_total_y());
-      sc(wda,dr,cc+1,totBarLen>0?'█'.repeat(totBarLen):'',{font:{name:'Arial',sz:7,bold:true,color:{rgb:'92400E'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'left',vertical:'center'}});
+      sc(wda,dr,cc+1,totBarText,{font:{name:'Arial',sz:7,bold:true,color:{rgb:'92400E'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'left',vertical:'center'}});
       wda['!rows'].push({hpt:17});dr++;
     });
 
