@@ -1544,7 +1544,25 @@ function renderResults(){
     ['discharge','load'].forEach(function(t){
       var T=_adminLbl('res_hd_'+t, t[0].toUpperCase()+t.slice(1), false);
       var dpAll={};
-      for(var i=1;i<=nc;i++) dpAll[i]=getCraneTotal(sess,i,t);
+      for(var i=1;i<=nc;i++){
+        if(block.isCurrent){
+          dpAll[i]=getCraneTotal(sess,i,t);
+        } else {
+          // Past shift: sum only from that shift's own hourly snapshot
+          var pastTotal=0;
+          if(block.shiftObj&&block.shiftObj.hourly){
+            Object.keys(block.shiftObj.hourly).forEach(function(k){
+              var parts=k.split('_');
+              if(parts.length>=3){
+                var ci=parseInt(parts[parts.length-2]);
+                var ty=parts[parts.length-1];
+                if(ci===i&&ty===t)pastTotal+=block.shiftObj.hourly[k]||0;
+              }
+            });
+          }
+          dpAll[i]=pastTotal;
+        }
+      }
 
       h+='<div class="card" style="margin:0;border-radius:0;box-shadow:none;border-bottom:1px solid #edf0f5;">';
       h+='<div class="card-hd" style="border-radius:0;">'+T+'</div>';
@@ -2578,8 +2596,23 @@ function renderHistory(){
             if(_curShiftSlotsSet[slotPart])hourlyData[sk]=ST.hourly[k];
           });
         } else { hourlyData=sh.hourly||{}; }
-        // Delays: merge snapshot sh.delays (floor) with live ST.delays for current shift
-        var delayData=isCurrentShift?Object.assign({},sh.delays||{},ST.delays):(sh.delays||{});
+        // Delays: for current shift use only live ST.delays filtered to this shift's hours.
+        // For past shifts use the snapshot only. Never merge sh.delays + ST.delays —
+        // that causes day-shift entries to bleed into the night-shift display.
+        var delayData;
+        if(isCurrentShift){
+          // Filter ST.delays to entries whose 'from' time falls in the current shift window
+          var _isDayShift=(sh.type||curShiftType)==='DAY';
+          delayData={};
+          Object.keys(ST.delays).forEach(function(dk){
+            var dd=ST.delays[dk];if(!dd||!dd.from)return;
+            var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
+            var inShift=_isDayShift?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
+            if(inShift)delayData[dk]=dd;
+          });
+        } else {
+          delayData=sh.delays||{};
+        }
         if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
           blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
         }
@@ -2596,8 +2629,17 @@ function renderHistory(){
         var slotPart=slotEnd>=0?sk.substring(0,slotEnd):sk;
         if(_curShiftSlotsSet[slotPart])_liveHourly[sk]=ST.hourly[k];
       });
-      if(Object.keys(_liveHourly).length||Object.keys(ST.delays).length){
-        blocks.push({label:buildShiftLabel(curShiftType,curShiftDate),hourly:_liveHourly,delays:ST.delays,isCurrent:true});
+      // Filter live ST.delays to current shift hours only (prevent bleed from previous shift)
+      var _isDaySh=curShiftType==='DAY';
+      var _liveDelays={};
+      Object.keys(ST.delays).forEach(function(dk){
+        var dd=ST.delays[dk];if(!dd||!dd.from)return;
+        var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
+        var inShift=_isDaySh?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
+        if(inShift)_liveDelays[dk]=dd;
+      });
+      if(Object.keys(_liveHourly).length||Object.keys(_liveDelays).length){
+        blocks.push({label:buildShiftLabel(curShiftType,curShiftDate),hourly:_liveHourly,delays:_liveDelays,isCurrent:true});
       }
     }
     // Fallback for old sessions with flat _results
@@ -2715,20 +2757,23 @@ function exportHistoryExcel(){
     var vg=byVessel[vid];
     var vn=vg.sess.vesselName||'Unknown';
     var allIdxs=vg.items.map(function(x){return x.idx;});
+    var hasLive=vg.items.some(function(x){return !!(x.item.sh._live);});
     mh+='<div class="xmod-vessel">';
-    mh+='<label class="xmod-vhd"><input type="checkbox" checked onchange="_xmodVessel(this,\''+allIdxs.join(',')+'\')" id="xv_'+vid+'"/><span class="xmod-vname">'+vn+'</span><span class="xmod-vmeta">'+vg.sess.numCranes+' cranes · target '+vg.sess.target+'</span></label>';
+    mh+='<label class="xmod-vhd"><input type="checkbox" '+(hasLive?'checked':'')+' onchange="_xmodVessel(this,\''+allIdxs.join(',')+'\')" id="xv_'+vid+'"/><span class="xmod-vname">'+vn+'</span><span class="xmod-vmeta">'+vg.sess.numCranes+' cranes · target '+vg.sess.target+'</span></label>';
     mh+='<div class="xmod-shifts">';
     vg.items.forEach(function(it){
       var i=it.idx;
+      var isLive=!!(it.item.sh._live);
+      var defaultChecked=isLive; // only live shift checked by default; past shifts unchecked
       mh+='<div class="xmod-shift" style="flex-direction:column;align-items:flex-start;gap:6px;padding:9px 10px">';
       mh+='<div style="display:flex;align-items:center;gap:8px;width:100%">';
-      mh+='<input type="checkbox" checked id="xs_'+i+'" style="width:15px;height:15px;accent-color:var(--navy);flex-shrink:0" onchange="_xmodUpdGo()"/>';
+      mh+='<input type="checkbox" '+(defaultChecked?'checked':'')+' id="xs_'+i+'" style="width:15px;height:15px;accent-color:var(--navy);flex-shrink:0" onchange="_xmodUpdGo()"/>';
       mh+='<span class="xmod-slbl">'+_shiftDisplayLabel(it.item.sh)+'</span>';
-      mh+=(it.item.sh._live?'<span class="xmod-smeta">LIVE</span>':'');
+      mh+=(isLive?'<span class="xmod-smeta">LIVE</span>':'');
       mh+='</div>';
       mh+='<div style="display:flex;gap:12px;padding-left:23px">';
-      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" checked id="xr_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Results</label>';
-      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" checked id="xd_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Delays</label>';
+      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" '+(defaultChecked?'checked':'')+' id="xr_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Results</label>';
+      mh+='<label style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:#444;cursor:pointer"><input type="checkbox" '+(defaultChecked?'checked':'')+' id="xd_'+i+'" style="accent-color:var(--navy)" onchange="_xmodUpdGo()"/> Delays</label>';
       mh+='</div>';
       mh+='</div>';
     });
@@ -2744,11 +2789,16 @@ function exportHistoryExcel(){
   host.innerHTML=mh;
   document.body.appendChild(host);
   window._xmodAllShifts=allShifts;
+  _xmodUpdGo(); // set Export button state based on defaults
 }
 
 function _xmodClose(){var h=document.getElementById('xmodHost');if(h)h.remove();delete window._xmodAllShifts;}
 function _xmodVessel(cb,idxStr){
-  idxStr.split(',').forEach(function(i){var el=document.getElementById('xs_'+i.trim());if(el)el.checked=cb.checked;});
+  idxStr.split(',').forEach(function(i){
+    var el=document.getElementById('xs_'+i.trim());if(el)el.checked=cb.checked;
+    var er=document.getElementById('xr_'+i.trim());if(er)er.checked=cb.checked;
+    var ed=document.getElementById('xd_'+i.trim());if(ed)ed.checked=cb.checked;
+  });
   _xmodUpdGo();
 }
 function _xmodUpdGo(){
@@ -2787,22 +2837,29 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
 
   // ─── Shared style objects ───
   var NAVY='1F3864',NAVYD='162852',NAVYL='2A4A80',YELLOW='FFFF00',LB='BDD7EE',TEAL='0E7490',GREEN_D='1A5C35',AMBER='B45309';
-  function ST_h1(){return{font:{name:'Arial',sz:14,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_h2(dark){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:dark?NAVYD:NAVYL}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_h3_day(){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'0E7490'}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_h3_night(){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'374151'}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_cat(yellow){return yellow?{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'center',vertical:'center'}}:{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1A3A5C'}},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_col_hdr(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_col_hdr_l(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_crane_hdr(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFE600'}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_e(){return{fill:{fgColor:{rgb:LB}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_o(){return{fill:{fgColor:{rgb:'FFFFFF'}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_eL(){return{fill:{fgColor:{rgb:LB}},font:{name:'Arial',sz:10},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_oL(){return{fill:{fgColor:{rgb:'FFFFFF'}},font:{name:'Arial',sz:10},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_total_y(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_total_n(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1A3A5C'}},alignment:{horizontal:'center',vertical:'center'}};}
-  function ST_meta(){return{font:{name:'Arial',sz:9,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVYD}},alignment:{horizontal:'left',vertical:'center',indent:1}};}
-  function ST_spacer(){return{fill:{fgColor:{rgb:'E8ECF4'}}};}
+  var _BDR_W={style:'thin',color:{rgb:'FFFFFF'}};   // white border for dark headers
+  var _BDR_D={style:'thin',color:{rgb:'BDD7EE'}};   // light-blue border for data rows
+  var _BDR_N={style:'thin',color:{rgb:'1F3864'}};   // navy border for accent rows
+  var _BW={top:_BDR_W,bottom:_BDR_W,left:_BDR_W,right:_BDR_W};
+  var _BD={top:_BDR_D,bottom:_BDR_D,left:_BDR_D,right:_BDR_D};
+  var _BN={top:_BDR_N,bottom:_BDR_N,left:_BDR_N,right:_BDR_N};
+
+  function ST_h1(){return{font:{name:'Arial',sz:14,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_h2(dark){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:dark?NAVYD:NAVYL}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_h3_day(){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'0E7490'}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_h3_night(){return{font:{name:'Arial',sz:11,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'374151'}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_cat(yellow){return yellow?{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'center',vertical:'center'},border:_BN}:{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1A3A5C'}},alignment:{horizontal:'center',vertical:'center'},border:_BW};}
+  function ST_col_hdr(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'center',vertical:'center'},border:_BW};}
+  function ST_col_hdr_l(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVY}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_crane_hdr(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:'FFE600'}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BN};}
+  function ST_e(){return{fill:{fgColor:{rgb:LB}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'},border:_BD};}
+  function ST_o(){return{fill:{fgColor:{rgb:'FFFFFF'}},font:{name:'Arial',sz:10},alignment:{horizontal:'center',vertical:'center'},border:_BD};}
+  function ST_eL(){return{fill:{fgColor:{rgb:LB}},font:{name:'Arial',sz:10},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BD};}
+  function ST_oL(){return{fill:{fgColor:{rgb:'FFFFFF'}},font:{name:'Arial',sz:10},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BD};}
+  function ST_total_y(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'000000'}},fill:{fgColor:{rgb:YELLOW}},alignment:{horizontal:'center',vertical:'center'},border:_BN};}
+  function ST_total_n(){return{font:{name:'Arial',sz:10,bold:true,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1A3A5C'}},alignment:{horizontal:'center',vertical:'center'},border:_BW};}
+  function ST_meta(){return{font:{name:'Arial',sz:9,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:NAVYD}},alignment:{horizontal:'left',vertical:'center',indent:1},border:_BW};}
+  function ST_spacer(){return{fill:{fgColor:{rgb:'E8ECF4'}},border:_BD};}
 
   function sc(ws,r,c,v,s){var a=XLSX.utils.encode_cell({r:r,c:c});ws[a]={v:v,t:typeof v==='number'?'n':'s',s:s};}
   function scn2(ws,r,c,v,s){var a=XLSX.utils.encode_cell({r:r,c:c});ws[a]={v:v||0,t:'n',s:s||ST_o()};}
