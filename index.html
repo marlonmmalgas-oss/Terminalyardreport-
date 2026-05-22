@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
 <title>Terminal Report</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
 <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 <style>
@@ -357,6 +357,7 @@ var dbRef = null;
 
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
+var _saveProtectUntil=0; // blocks session overwrite from Firebase for N ms after save
 var _myLastYardSave=0;    // timestamp of last yard save — used to skip own yard echo
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
@@ -454,7 +455,8 @@ function initSync(){
         if(k!=='_ts'&&k!=='_gen'&&k!=='users'&&k!=='activityLog'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
-          if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='activeId2'||k==='vesselSlot'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
+          // Also skip if we're within the save-protection window (handles mobile Firebase timing)
+          if((isOwnSave2||Date.now()<_saveProtectUntil)&&(k==='sessions'||k==='activeId'||k==='activeId2'||k==='vesselSlot'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
           // REMOVED: the block that prevented hourly/delay sync when active session exists
           // That caused cross-device hourly data to NOT appear on other devices.
           // Deep clone to prevent Firebase object mutation bleeding into ST
@@ -1312,7 +1314,8 @@ function saveSession(){
   logActivity('Session Saved',s.vesselName,'Cranes: '+nc+' | Target: '+(s.target||0));
   sv();
   renderInput();
-  // Extend own-save protection for 3s so Firebase echoes can't revert locked state
+  // Extend own-save protection for 6s so Firebase echoes can't revert locked state (esp. on mobile)
+  _saveProtectUntil=Date.now()+6000;
   _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
@@ -1329,6 +1332,7 @@ function unlockSess(){
   sv();
   renderInput();
   var t=Date.now();
+  _saveProtectUntil=t+6000;
   _myLastSave=t;
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
@@ -1396,6 +1400,7 @@ function newVessel(){
   logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
   sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+  _saveProtectUntil=Date.now()+6000;
   _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
@@ -2602,9 +2607,12 @@ function renderHistory(){
         var delayData;
         if(isCurrentShift){
           // Filter ST.delays to entries whose 'from' time falls in the current shift window
+          // AND whose key belongs to this session (prefix = s.id) — prevents old vessel bleed
           var _isDayShift=(sh.type||curShiftType)==='DAY';
+          var _sidPfx=String(s.id)+'_';
           delayData={};
           Object.keys(ST.delays).forEach(function(dk){
+            if(dk.indexOf(_sidPfx)!==0)return; // must belong to this session
             var dd=ST.delays[dk];if(!dd||!dd.from)return;
             var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
             var inShift=_isDayShift?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
@@ -2629,10 +2637,12 @@ function renderHistory(){
         var slotPart=slotEnd>=0?sk.substring(0,slotEnd):sk;
         if(_curShiftSlotsSet[slotPart])_liveHourly[sk]=ST.hourly[k];
       });
-      // Filter live ST.delays to current shift hours only (prevent bleed from previous shift)
+      // Filter live ST.delays to current shift hours only AND this session's ID — prevent bleed from old vessel
       var _isDaySh=curShiftType==='DAY';
+      var _sidPfx2=String(s.id)+'_';
       var _liveDelays={};
       Object.keys(ST.delays).forEach(function(dk){
+        if(dk.indexOf(_sidPfx2)!==0)return; // must belong to this session
         var dd=ST.delays[dk];if(!dd||!dd.from)return;
         var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
         var inShift=_isDaySh?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
