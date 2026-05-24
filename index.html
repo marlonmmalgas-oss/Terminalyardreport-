@@ -687,19 +687,11 @@ function getAllSlots(sess){
   // Active session: merge ALL stored shifts + current live ST.hourly
   // This ensures done/remain never reset mid-vessel even after 3+ days
   var liveMerged={};
-  // Compute current shift key so we skip its snapshot (same logic as getCraneTotal)
-  var _as_now=new Date(),_as_h=_as_now.getHours();
-  var _as_csd;
-  if(_as_h>=6&&_as_h<18){_as_csd=_as_now.toLocaleDateString('en-CA');}
-  else if(_as_h<6){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
-  else{_as_csd=_as_now.toLocaleDateString('en-CA');}
-  var _as_curKey=(_as_h>=6&&_as_h<18?'DAY':'NIGHT')+'_'+_as_csd;
   // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
-  // Skip the current shift's snapshot — live ST.hourly is always the authority for it
+  // Also build a set of short keys already covered by snapshotted shifts
   var _snapshotedSlotKeys={};
   if(sess.shifts&&sess.shifts.length){
     sess.shifts.forEach(function(sh){
-      if(sh.key===_as_curKey)return; // current shift: live ST.hourly wins
       var shData=sh.hourly||{};
       Object.keys(shData).forEach(function(k){
         liveMerged[k]=(liveMerged[k]||0)+(shData[k]||0);
@@ -1505,46 +1497,6 @@ function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
   renderResults();
 }
 
-// Live-update Total Done, Total Remain, and row total cells without full re-render.
-// Called from oninput on current-shift hourly inputs in renderResults.
-function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
-  var sess=getSess();
-  if(!sess||String(sess.id)!==String(sessId))return;
-  // Recompute Total Done per crane from ST.hourly directly (bypasses snapshot issue)
-  var slots=[];
-  document.querySelectorAll('#'+blockId+' input.ci').forEach(function(inp){
-    // inputs are grouped: nc inputs per slot row, alternating discharge/load sections
-    // We read directly from ST.hourly using getCraneTotal which is now fixed
-  });
-  // Use getCraneTotal (fixed) for per-crane totals
-  var doneRowId='res_done_'+blockId+'_'+t;
-  var remRowId='res_rem_'+blockId+'_'+t;
-  var dT=0;
-  for(var i=1;i<=nc;i++){
-    var done=getCraneTotal(sess,i,t);
-    var doneCell=document.getElementById(doneRowId+'_c'+i);
-    if(doneCell)doneCell.textContent=done;
-    dT+=done;
-    var split=effSplit(sess,i,t);
-    var rem=split-done;
-    var remCell=document.getElementById(remRowId+'_c'+i);
-    if(remCell){remCell.textContent=rem;remCell.style.color=rem<0?'var(--red)':'';}
-  }
-  var doneTot=document.getElementById(doneRowId+'_tot');
-  if(doneTot)doneTot.textContent=dT;
-  var remTot=0;
-  for(var i=1;i<=nc;i++)remTot+=effSplit(sess,i,t)-getCraneTotal(sess,i,t);
-  var remTotEl=document.getElementById(remRowId+'_tot');
-  if(remTotEl){remTotEl.textContent=remTot;remTotEl.style.color=remTot<0?'var(--red)':'';}
-  // Also update the row total for the changed slot row
-  var rowTotEl=document.getElementById('rrowtot_'+blockId+'_'+t+'_'+slotRi);
-  if(rowTotEl){
-    var rT=0;
-    for(var i=1;i<=nc;i++)rT+=ST.hourly[hk(sessId,changedSlot,i,t)]||0;
-    rowTotEl.textContent=rT||'';
-  }
-}
-
 function renderResults(){
   var sess=getSess();
   var curShiftType=isDay()?'DAY':'NIGHT';
@@ -1644,6 +1596,7 @@ function renderResults(){
       for(var i=1;i<=nc;i++){var v=effSplit(sess,i,t);obT+=v;h+='<td>'+v+'</td>';}
       h+='<td>'+obT+'</td></tr>';
 
+      var blockSlots=block.slots;
       blockSlots.forEach(function(s,ri){
         var rT=0;
         h+='<tr class="'+(ri%2===0?'o':'e')+'"><td class="lbl" style="font-size:9.5px">'+fs(s)+'</td>';
@@ -1652,8 +1605,7 @@ function renderResults(){
           if(block.isCurrent){
             v=ST.hourly[hk(sess.id,s,i,t)]||0;
             rT+=v;
-            var rowTotId='rrowtot_'+blockId+'_'+t+'_'+ri;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;_resLiveTotals(\''+sess.id+'\',\''+blockId+'\',\''+t+'\','+nc+',\''+s+'\','+ri+');sv()"/></td>';
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;sv()"/></td>';
           } else {
             var sk=s+'_'+i+'_'+t;
             v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
@@ -1661,21 +1613,18 @@ function renderResults(){
             h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+block.key+'\',\''+s+'\','+i+',\''+t+'\',this.value)"/></td>';
           }
         }
-        var rtId=block.isCurrent?'id="rrowtot_'+blockId+'_'+t+'_'+ri+'"':'';
-        h+='<td class="bold" '+rtId+'>'+(rT||'')+'</td></tr>';
+        h+='<td class="bold">'+(rT||'')+'</td></tr>';
       });
 
       var dT=0;
-      var doneRowId='res_done_'+blockId+'_'+t;
-      var remRowId='res_rem_'+blockId+'_'+t;
-      h+='<tr class="ry" id="'+doneRowId+'"><td class="lbl">'+_adminLbl('res_done','Total Done',false)+'</td>';
-      for(var i=1;i<=nc;i++){dT+=dpAll[i];h+='<td id="'+doneRowId+'_c'+i+'">'+dpAll[i]+'</td>';}
-      h+='<td id="'+doneRowId+'_tot">'+dT+'</td></tr>';
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_done','Total Done',false)+'</td>';
+      for(var i=1;i<=nc;i++){dT+=dpAll[i];h+='<td>'+dpAll[i]+'</td>';}
+      h+='<td>'+dT+'</td></tr>';
 
       var rT2=0;
-      h+='<tr class="ry" id="'+remRowId+'"><td class="lbl">'+_adminLbl('res_remain','Total Remain',false)+'</td>';
-      for(var i=1;i<=nc;i++){var r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+='<td id="'+remRowId+'_c'+i+'"'+(r<0?' style="color:var(--red)"':'')+'>'+r+'</td>';}
-      h+='<td id="'+remRowId+'_tot"'+(rT2<0?' style="color:var(--red)"':'')+'>'+rT2+'</td></tr>';
+      h+='<tr class="ry"><td class="lbl">'+_adminLbl('res_remain','Total Remain',false)+'</td>';
+      for(var i=1;i<=nc;i++){var r=effSplit(sess,i,t)-dpAll[i];rT2+=r;h+='<td'+(r<0?' style="color:var(--red)"':'')+'>'+r+'</td>';}
+      h+='<td'+(rT2<0?' style="color:var(--red)"':'')+'>'+rT2+'</td></tr>';
 
       h+='</table></div></div>';
     });
