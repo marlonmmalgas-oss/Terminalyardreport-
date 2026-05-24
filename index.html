@@ -687,11 +687,19 @@ function getAllSlots(sess){
   // Active session: merge ALL stored shifts + current live ST.hourly
   // This ensures done/remain never reset mid-vessel even after 3+ days
   var liveMerged={};
+  // Compute current shift key so we skip its snapshot (same logic as getCraneTotal)
+  var _as_now=new Date(),_as_h=_as_now.getHours();
+  var _as_csd;
+  if(_as_h>=6&&_as_h<18){_as_csd=_as_now.toLocaleDateString('en-CA');}
+  else if(_as_h<6){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
+  else{_as_csd=_as_now.toLocaleDateString('en-CA');}
+  var _as_curKey=(_as_h>=6&&_as_h<18?'DAY':'NIGHT')+'_'+_as_csd;
   // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
-  // Also build a set of short keys already covered by snapshotted shifts
+  // Skip the current shift's snapshot — live ST.hourly is always the authority for it
   var _snapshotedSlotKeys={};
   if(sess.shifts&&sess.shifts.length){
     sess.shifts.forEach(function(sh){
+      if(sh.key===_as_curKey)return; // current shift: live ST.hourly wins
       var shData=sh.hourly||{};
       Object.keys(shData).forEach(function(k){
         liveMerged[k]=(liveMerged[k]||0)+(shData[k]||0);
