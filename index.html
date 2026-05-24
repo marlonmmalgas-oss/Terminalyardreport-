@@ -728,15 +728,27 @@ function getCraneTotal(sess, craneIdx, type){
   if(!sess)return 0;
   var total=0;
   var pfx=sess.id+'_';
-  // Step 1: sum from all stored/snapshotted shifts
-  // Also build set of short keys already covered to prevent double-counting
+
+  // Compute the current shift key so we never let a stale partial snapshot
+  // of the CURRENT shift block the live ST.hourly values for those same slots.
+  // Only PAST shift snapshots should claim _snapKeys.
+  var _now=new Date(),_nh=_now.getHours();
+  var _csd;
+  if(_nh>=6&&_nh<18){_csd=_now.toLocaleDateString('en-CA');}
+  else if(_nh<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_csd=_y.toLocaleDateString('en-CA');}
+  else{_csd=_now.toLocaleDateString('en-CA');}
+  var _curShiftKey=(_nh>=6&&_nh<18?'DAY':'NIGHT')+'_'+_csd;
+
+  // Step 1: sum from PAST shift snapshots only (skip current shift snapshot).
+  // Build _snapKeys only from past shifts so step 2 live values are never blocked.
   var _snapKeys={};
   if(sess.shifts&&sess.shifts.length){
     sess.shifts.forEach(function(sh){
+      // Skip the current shift's snapshot — live ST.hourly is the authority for it
+      if(sh.key===_curShiftKey)return;
       var shData=sh.hourly||{};
       Object.keys(shData).forEach(function(k){
         _snapKeys[k]=true;
-        // key format: slot_ci_type e.g. "0600-0700_1_discharge"
         var parts=k.split('_');
         if(parts.length>=3){
           var ci=parseInt(parts[parts.length-2]);
@@ -746,12 +758,12 @@ function getCraneTotal(sess, craneIdx, type){
       });
     });
   }
-  // Step 2: add live ST.hourly (current shift, not yet snapshotted)
-  // SKIP keys already covered by sess.shifts[] to prevent double-counting
+  // Step 2: add live ST.hourly — for current shift this is always the authority.
+  // For past shifts, _snapKeys prevents double-counting.
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(pfx)===0){
-      var sk=k.slice(pfx.length); // slot_ci_type
-      if(_snapKeys[sk])return; // already counted from snapshot
+      var sk=k.slice(pfx.length);
+      if(_snapKeys[sk])return;
       var parts=sk.split('_');
       if(parts.length>=3){
         var ci=parseInt(parts[parts.length-2]);
