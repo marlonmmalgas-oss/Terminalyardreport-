@@ -586,7 +586,7 @@ const DEF={
   sessions:[],hourly:{},delays:{},delayRows:{},delayRowIds:{},
   settings:{logo:null,bg:null,bgHourly:null,bgFour:null,bgDelay:null,bgYard:null,term:'',reportNumColor:'#000000',fbUrl:'',fbKey:''},
   generators:[],
-  timing:{hourlyGrace:30,fourHourlyGrace:90},
+  timing:{hourlyGrace:30,fourHourlyGrace:90,shiftRolloverGrace:15},
   craneNames:{1:'CR1',2:'CR2',3:'CR3',4:'CR4'},
   sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change']},
   vesselAbbrevs:[
@@ -695,12 +695,15 @@ function getAllSlots(sess){
   // This ensures done/remain never reset mid-vessel even after 3+ days
   var liveMerged={};
   // Compute current shift key so we skip its snapshot (same logic as getCraneTotal)
-  var _as_now=new Date(),_as_h=_as_now.getHours();
+  var _as_now=new Date(),_as_h=_as_now.getHours(),_as_m=_as_now.getMinutes();
+  var _as_grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _as_totalMins=_as_h*60+_as_m;
+  var _as_isDay=_as_totalMins>=(6*60+_as_grace)&&_as_totalMins<(18*60+_as_grace);
   var _as_csd;
-  if(_as_h>=6&&_as_h<18){_as_csd=_as_now.toLocaleDateString('en-CA');}
-  else if(_as_h<6){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
+  if(_as_isDay){_as_csd=_as_now.toLocaleDateString('en-CA');}
+  else if(_as_totalMins<(6*60+_as_grace)){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
   else{_as_csd=_as_now.toLocaleDateString('en-CA');}
-  var _as_curKey=(_as_h>=6&&_as_h<18?'DAY':'NIGHT')+'_'+_as_csd;
+  var _as_curKey=(_as_isDay?'DAY':'NIGHT')+'_'+_as_csd;
   // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
   // Skip the current shift's snapshot — live ST.hourly is always the authority for it
   var _snapshotedSlotKeys={};
@@ -747,12 +750,15 @@ function getCraneTotal(sess, craneIdx, type){
   // Compute the current shift key so we never let a stale partial snapshot
   // of the CURRENT shift block the live ST.hourly values for those same slots.
   // Only PAST shift snapshots should claim _snapKeys.
-  var _now=new Date(),_nh=_now.getHours();
+  var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
+  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _totalMins=_nh*60+_nm;
+  var _isDayNow=_totalMins>=(6*60+_grace)&&_totalMins<(18*60+_grace);
   var _csd;
-  if(_nh>=6&&_nh<18){_csd=_now.toLocaleDateString('en-CA');}
-  else if(_nh<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_csd=_y.toLocaleDateString('en-CA');}
+  if(_isDayNow){_csd=_now.toLocaleDateString('en-CA');}
+  else if(_totalMins<(6*60+_grace)){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_csd=_y.toLocaleDateString('en-CA');}
   else{_csd=_now.toLocaleDateString('en-CA');}
-  var _curShiftKey=(_nh>=6&&_nh<18?'DAY':'NIGHT')+'_'+_csd;
+  var _curShiftKey=(_isDayNow?'DAY':'NIGHT')+'_'+_csd;
 
   // Step 1: sum from PAST shift snapshots only (skip current shift snapshot).
   // Build _snapKeys only from past shifts so step 2 live values are never blocked.
@@ -853,7 +859,17 @@ function getPeriodSlots(sess,slotKeys){
 
 // ═══════════ HELPERS ═══════════
 const $=id=>document.getElementById(id);
-function isDay(){const h=new Date().getHours();return h>=6&&h<18;} // strict 06-18 day shift
+function isDay(){
+  var now=new Date();
+  var h=now.getHours();
+  var m=now.getMinutes();
+  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  // Day shift: from 06:grace until 18:grace
+  var totalMins=h*60+m;
+  var dayStart=6*60+grace;   // e.g. 06:15 = 375
+  var dayEnd=18*60+grace;    // e.g. 18:15 = 1095
+  return totalMins>=dayStart&&totalMins<dayEnd;
+}
 function shiftSlots(){
   // Returns slot-key strings for the current session's shift window
   var sess=getSess();
@@ -864,8 +880,13 @@ function shiftSlots(){
 // ─── SHIFT GROUPING (Step 3+4) ───
 // Returns "DAY" or "NIGHT" for a given Date/timestamp
 function getShiftType(date){
-  const h=new Date(date).getHours();
-  return(h>=6&&h<18)?'DAY':'NIGHT';
+  var d=new Date(date);
+  var h=d.getHours(),m=d.getMinutes();
+  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var totalMins=h*60+m;
+  var dayStart=6*60+grace;
+  var dayEnd=18*60+grace;
+  return(totalMins>=dayStart&&totalMins<dayEnd)?'DAY':'NIGHT';
 }
 
 // Ensure session has a shifts array (non-destructive extension)
@@ -2340,10 +2361,16 @@ function renderPerformance(){
   // ── Compute data for current view ──
   // Actuals per slot (raw, not cumulative)
   var rawActuals=cmtActuals(sess,sl,view);
-  // Cumulative actuals
+  // Cumulative actuals — only up to and including the current slot
+  // Slots after the current one get null so the line stops at now
   var cumActuals=[];
   var runSum=0;
-  rawActuals.forEach(function(v){runSum+=v;cumActuals.push(runSum);});
+  var slotIdx=sl.indexOf(slot);
+  if(slotIdx<0)slotIdx=sl.length-1;
+  rawActuals.forEach(function(v,i){
+    if(i<=slotIdx){runSum+=v;cumActuals.push(runSum);}
+    else{cumActuals.push(null);}
+  });
 
   // Target for current view
   var tKey=view==='combined'?null:(view==='mhc1'?'cmtTarget':('cmtTarget'+view.replace('mhc','')));
@@ -2427,13 +2454,13 @@ function renderPerformance(){
       pointRadius:3,pointHoverRadius:5,pointBackgroundColor:col,
       fill:false,tension:0,order:2
     });
-    // Actual line (solid)
+    // Actual line (solid) — stops at current slot, nulls after
     datasets.push({
       label:(view==='combined'?'Combined':'MHC'+view.replace('mhc',''))+' actual',
       data:cumActuals,
       borderColor:col,backgroundColor:col+'22',
       borderWidth:2.5,pointRadius:4,pointHoverRadius:6,pointBackgroundColor:col,
-      fill:true,tension:.3,order:1
+      fill:true,tension:.3,order:1,spanGaps:false
     });
 
     // Mark break slots with vertical shading via a plugin
@@ -3507,6 +3534,11 @@ function renderAdmin(){
         <input type="number" value="${ST.timing&&ST.timing.fourHourlyGrace!=null?ST.timing.fourHourlyGrace:90}" min="1" max="180"
           oninput="if(!ST.timing)ST.timing={};ST.timing.fourHourlyGrace=parseInt(this.value)||90;sv()"/>
         <span style="font-size:10px;color:#888;margin-top:2px">e.g. 90 = switch 90min after slot ends</span>
+      </div>
+      <div class="f"><label>Shift Rollover Grace (min)</label>
+        <input type="number" value="${ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15}" min="0" max="59"
+          oninput="if(!ST.timing)ST.timing={};ST.timing.shiftRolloverGrace=parseInt(this.value)||15;sv()"/>
+        <span style="font-size:10px;color:#888;margin-top:2px">e.g. 15 = day starts at 06:15, night at 18:15</span>
       </div>
     </div>
   </div>`;
