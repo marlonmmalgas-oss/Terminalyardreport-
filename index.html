@@ -362,7 +362,7 @@ var _myLastYardSave=0;    // timestamp of last yard save — used to skip own ya
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
 var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
-var _recentSaveGens=new Set(); // last 10 gen values — catches delayed echoes on mobile
+var _recentSaveGens={}; // {gen: timestamp} — evict by age not count, so hourly keystrokes don't push out session saves
 var _hadRemoteUpdate=false; // true once we've received a non-own Firebase update
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
@@ -378,8 +378,12 @@ function sv(){
     // Embed generation counter — lets listener detect own echo without timestamp ambiguity
     _saveGen=(_saveGen+1)%999999;
     _lastSaveGen=_saveGen;
-    _recentSaveGens.add(_saveGen);
-    if(_recentSaveGens.size>20){var _first=_recentSaveGens.values().next().value;_recentSaveGens.delete(_first);}
+    // Store gen with timestamp — evict entries older than 30s so hourly keystrokes
+    // never push out a session-save gen before its echo arrives
+    var _now30=Date.now();
+    _recentSaveGens[_saveGen]=_now30;
+    // Clean up gens older than 30 seconds
+    Object.keys(_recentSaveGens).forEach(function(g){if(_now30-_recentSaveGens[g]>30000)delete _recentSaveGens[g];});
     payload._gen=_saveGen;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
@@ -449,7 +453,7 @@ function initSync(){
       }
       // Only apply remote data if it came from another device
       // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
-      var isOwnSave2=(typeof remote._gen!=='undefined')?(_recentSaveGens.has(remote._gen)):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen in _recentSaveGens):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
       // Track that we've received a real remote update (not our own echo)
       if(!isOwnSave2&&remote)_hadRemoteUpdate=true;
       // Preserve local activityLog before remote overwrite — merge after
@@ -516,7 +520,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(typeof remote._gen!=='undefined')?(_recentSaveGens.has(remote._gen)):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen in _recentSaveGens):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -1326,7 +1330,9 @@ function saveSession(){
 
   // Snapshot results and delays
   var sl_=shiftSlots();
-  if(!s._results)s._results={hourly:{},delays:{}};
+  if(!s._results||typeof s._results!=='object')s._results={hourly:{},delays:{}};
+  if(!s._results.hourly||typeof s._results.hourly!=='object')s._results.hourly={};
+  if(!s._results.delays||typeof s._results.delays!=='object')s._results.delays={};
   sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=hk(id,slot,ci,t);var sk=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[sk]=ST.hourly[k];});}});
   for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=Object.assign({},ST.delays[dk]);});}
 
