@@ -362,6 +362,7 @@ var _myLastYardSave=0;    // timestamp of last yard save — used to skip own ya
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
 var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
+var _recentSaveGens=new Set(); // last 10 gen values — catches delayed echoes on mobile
 var _hadRemoteUpdate=false; // true once we've received a non-own Firebase update
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
@@ -377,6 +378,8 @@ function sv(){
     // Embed generation counter — lets listener detect own echo without timestamp ambiguity
     _saveGen=(_saveGen+1)%999999;
     _lastSaveGen=_saveGen;
+    _recentSaveGens.add(_saveGen);
+    if(_recentSaveGens.size>20){var _first=_recentSaveGens.values().next().value;_recentSaveGens.delete(_first);}
     payload._gen=_saveGen;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
@@ -446,7 +449,7 @@ function initSync(){
       }
       // Only apply remote data if it came from another device
       // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
-      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      var isOwnSave2=(typeof remote._gen!=='undefined')?(_recentSaveGens.has(remote._gen)):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
       // Track that we've received a real remote update (not our own echo)
       if(!isOwnSave2&&remote)_hadRemoteUpdate=true;
       // Preserve local activityLog before remote overwrite — merge after
@@ -513,7 +516,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+        var isOwnSave=(typeof remote._gen!=='undefined')?(_recentSaveGens.has(remote._gen)):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -1332,11 +1335,11 @@ function saveSession(){
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   logActivity('Session Saved',s.vesselName,'Cranes: '+nc+' | Target: '+(s.target||0));
+  // Set protection BEFORE sv() so the window is active before Firebase echo arrives
+  _saveProtectUntil=Date.now()+8000;
+  _myLastSave=Date.now();
   sv();
   renderInput();
-  // Extend own-save protection for 6s so Firebase echoes can't revert locked state (esp. on mobile)
-  _saveProtectUntil=Date.now()+6000;
-  _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1349,11 +1352,11 @@ function unlockSess(){
   if(!raw)return;
   raw.locked=false;
   logActivity('Session Unlocked',(raw.vesselName||'Unknown')+' — unlocked for editing');
+  var t=Date.now();
+  _saveProtectUntil=t+8000;
+  _myLastSave=t;
   sv();
   renderInput();
-  var t=Date.now();
-  _saveProtectUntil=t+6000;
-  _myLastSave=t;
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1418,10 +1421,10 @@ function newVessel(){
   else{_nvDate=_nvNow.toLocaleDateString('en-CA');}
   ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
   logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
+  _saveProtectUntil=Date.now()+8000;
+  _myLastSave=Date.now();
   sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-  _saveProtectUntil=Date.now()+6000;
-  _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1508,40 +1511,55 @@ function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
 // Live-update Total Done, Total Remain, and row total cells without full re-render.
 // Called from oninput on current-shift hourly inputs in renderResults.
 function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
-  var sess=getSess();
-  if(!sess||String(sess.id)!==String(sessId))return;
-  // Recompute Total Done per crane from ST.hourly directly (bypasses snapshot issue)
-  var slots=[];
-  document.querySelectorAll('#'+blockId+' input.ci').forEach(function(inp){
-    // inputs are grouped: nc inputs per slot row, alternating discharge/load sections
-    // We read directly from ST.hourly using getCraneTotal which is now fixed
-  });
-  // Use getCraneTotal (fixed) for per-crane totals
+  // Sum directly from ST.hourly across ALL slots in the current shift.
+  // This bypasses getCraneTotal and snapshot logic entirely — ST.hourly is
+  // already updated by the oninput before this function is called.
   var doneRowId='res_done_'+blockId+'_'+t;
   var remRowId='res_rem_'+blockId+'_'+t;
+  // Gather all slot keys that belong to this block by reading all ST.hourly keys for this session
+  var pfx=String(sessId)+'_';
+  var perCrane={};
+  for(var i=1;i<=nc;i++)perCrane[i]=0;
+  Object.keys(ST.hourly).forEach(function(k){
+    if(k.indexOf(pfx)!==0)return;
+    var sk=k.slice(pfx.length); // slot_ci_type
+    var parts=sk.split('_');
+    if(parts.length<3)return;
+    var kt=parts[parts.length-1];
+    if(kt!==t)return;
+    var ci=parseInt(parts[parts.length-2]);
+    if(ci<1||ci>nc)return;
+    perCrane[ci]=(perCrane[ci]||0)+(ST.hourly[k]||0);
+  });
+  // Update per-crane Done cells
   var dT=0;
   for(var i=1;i<=nc;i++){
-    var done=getCraneTotal(sess,i,t);
-    var doneCell=document.getElementById(doneRowId+'_c'+i);
-    if(doneCell)doneCell.textContent=done;
-    dT+=done;
-    var split=effSplit(sess,i,t);
-    var rem=split-done;
-    var remCell=document.getElementById(remRowId+'_c'+i);
-    if(remCell){remCell.textContent=rem;remCell.style.color=rem<0?'var(--red)':'';}
+    dT+=perCrane[i];
+    var dc=document.getElementById(doneRowId+'_c'+i);
+    if(dc)dc.textContent=perCrane[i];
   }
-  var doneTot=document.getElementById(doneRowId+'_tot');
-  if(doneTot)doneTot.textContent=dT;
-  var remTot=0;
-  for(var i=1;i<=nc;i++)remTot+=effSplit(sess,i,t)-getCraneTotal(sess,i,t);
-  var remTotEl=document.getElementById(remRowId+'_tot');
-  if(remTotEl){remTotEl.textContent=remTot;remTotEl.style.color=remTot<0?'var(--red)':'';}
-  // Also update the row total for the changed slot row
+  var dtEl=document.getElementById(doneRowId+'_tot');
+  if(dtEl)dtEl.textContent=dT;
+  // Update per-crane Remain cells — need effSplit which needs sess
+  var sess=getSess();
+  if(sess){
+    var rT2=0;
+    for(var i=1;i<=nc;i++){
+      var split=effSplit(sess,i,t);
+      var rem=split-perCrane[i];
+      rT2+=rem;
+      var rc=document.getElementById(remRowId+'_c'+i);
+      if(rc){rc.textContent=rem;rc.style.color=rem<0?'var(--red)':'';}
+    }
+    var rtEl=document.getElementById(remRowId+'_tot');
+    if(rtEl){rtEl.textContent=rT2;rtEl.style.color=rT2<0?'var(--red)':'';}
+  }
+  // Update the changed slot row total
   var rowTotEl=document.getElementById('rrowtot_'+blockId+'_'+t+'_'+slotRi);
   if(rowTotEl){
-    var rT=0;
-    for(var i=1;i<=nc;i++)rT+=ST.hourly[hk(sessId,changedSlot,i,t)]||0;
-    rowTotEl.textContent=rT||'';
+    var rt=0;
+    for(var i=1;i<=nc;i++)rt+=ST.hourly[hk(sessId,changedSlot,i,t)]||0;
+    rowTotEl.textContent=rt||'';
   }
 }
 
