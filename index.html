@@ -286,7 +286,6 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-4hourly"></div>
     <div class="sc" id="sc-delays"></div>
     <div class="sc" id="sc-yard"></div>
-    <div class="sc" id="sc-performance"></div>
     <div class="sc" id="sc-history"></div>
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
@@ -319,8 +318,6 @@ var dbRef = null;
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
 var _pendingDeleteSave=0; // set to future timestamp during delSess
-var _saveGen=0;           // monotonic counter — written into payload as _gen
-var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
@@ -332,10 +329,6 @@ function sv(){
     _pendingDeleteSave=0;
     payload._ts=ts;
     _myLastSave=ts;
-    // Embed generation counter — lets listener detect own echo without timestamp ambiguity
-    _saveGen=(_saveGen+1)%999999;
-    _lastSaveGen=_saveGen;
-    payload._gen=_saveGen;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
       ['logo','bg','bgHourly','bgFour','bgDelay','bgYard'].forEach(function(k){
@@ -391,10 +384,9 @@ function initSync(){
         });
       }
       // Only apply remote data if it came from another device
-      // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
-      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      var isOwnSave2=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
       Object.keys(remote).forEach(function(k){
-        if(k!=='_ts'&&k!=='_gen'&&k!=='users'){
+        if(k!=='_ts'&&k!=='users'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
           // Skip sessions/hourly/delays if this is our own save — prevents delete reverting
           if(isOwnSave2&&(k==='sessions'||k==='activeId'||k==='hourly'||k==='delays'||k==='delayRowIds'))return;
@@ -431,7 +423,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+        var isOwnSave=(remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500);
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -765,50 +757,20 @@ function initApp(){
   const startTab=r==='admin'?'admin':r==='supervisor'?'analysis':'input';
   switchTab(startTab);
   RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();if(RT.tab==='4hourly')renderFour();},300000);
-  // Shift rollover — runs every minute, saves results+delays at 06:00/18:00
-  RT.lastShiftType=isDay()?'DAY':'NIGHT';
-  RT.lastShiftDate=new Date().toLocaleDateString('en-CA');
-  RT.shiftRollTimer=setInterval(function(){
-    var cShift=isDay()?'DAY':'NIGHT';
-    var cDate=new Date().toLocaleDateString('en-CA');
-    if(cShift===RT.lastShiftType&&cDate===RT.lastShiftDate)return;
-    var outType=RT.lastShiftType,outDate=RT.lastShiftDate;
-    RT.lastShiftType=cShift;RT.lastShiftDate=cDate;
-    if(!ST.activeId)return;
-    var raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
-    if(!raw)return;
-    if(!raw.shifts)raw.shifts=[];
-    var sKey=outType+'_'+outDate;
-    var se=raw.shifts.find(function(sh){return sh.key===sKey;});
-    if(!se){se={key:sKey,type:outType,date:outDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};raw.shifts.push(se);}
-    var nc=raw.numCranes||2;
-    var isDaySlots=outType==='DAY';
-    var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
-    slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[k]=ST.hourly[k];});}});
-    for(var ci=1;ci<=nc;ci++){var rk=ST.activeId+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=ST.activeId+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
-    se.end=new Date().toISOString();
-    var sidx=ST.sessions.findIndex(function(x){return x.id===ST.activeId;});
-    if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
-    ST.delays={};ST.delayRowIds={};
-    sv();
-    if(RT.tab==='delays')renderDelays();
-    if(RT.tab==='history')renderHistory();
-    if(RT.tab==='performance')renderPerformance();
-  },60000);
 }
 
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📈',l:'Perf.'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'history',ico:'🗂️',l:'History'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -854,7 +816,7 @@ function renderInput(){
       <div class="f"><label>Last Lift</label><input type="time" id="fll" value="${f.lastLift||''}" ${locked?'disabled':''}/></div>
     </div></div>`;
 
-  h+=`<div class="sec" id="craneBalanceSection"><div class="st" style="font-size:14px;color:#0891b2;border-bottom-color:#0891b2;letter-spacing:.3px">📋 Splits &amp; Opening Balance</div>
+  h+=`<div class="sec" id="craneBalanceSection"><div class="st">Splits &amp; Opening Balance</div>
     <p style="font-size:11px;color:#888;margin-bottom:12px">Enter the planned split per crane. Opening Balance overrides the split in totals — leave blank to use split only.</p>`;
   for(let i=1;i<=nc;i++){
     const cb=(sess?.craneBalances||{})[i]||{};
@@ -872,7 +834,7 @@ function renderInput(){
   }
   h+=`</div>`;
 
-  h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Hourly Moves — ${fs(slot)}</div>
+  h+=`<div class="sec"><div class="st">Hourly Moves — ${fs(slot)}</div>
     <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
   for(let i=1;i<=nc;i++){
     h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
@@ -980,85 +942,41 @@ function saveSession(){
   const idx=ST.sessions.findIndex(x=>x.id===id);
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
-  sv();
-  renderInput();
-  // Extend own-save protection for 3s so Firebase echoes can't revert locked state
-  _myLastSave=Date.now();
-  setTimeout(function(){_myLastSave=Date.now();},500);
-  setTimeout(function(){_myLastSave=Date.now();},1000);
-  setTimeout(function(){_myLastSave=Date.now();},2000);
-  setTimeout(function(){_myLastSave=Date.now();},3000);
+  sv();renderInput();
 }
 function unlockSess(){
+  // Must mutate the raw session in ST.sessions — getSess() returns a clone
   if(!ST.activeId)return;
   const raw=ST.sessions.find(function(x){return x.id===ST.activeId;});
-  if(!raw)return;
-  raw.locked=false;
-  sv();
-  renderInput();
-  // Block remote overwrites for 3s — prevents another device's locked:true echo restoring the lock
-  var t=Date.now();
-  _myLastSave=t;
-  setTimeout(function(){_myLastSave=Date.now();},500);
-  setTimeout(function(){_myLastSave=Date.now();},1000);
-  setTimeout(function(){_myLastSave=Date.now();},2000);
-  setTimeout(function(){_myLastSave=Date.now();},3000);
+  if(raw){raw.locked=false;sv();renderInput();}
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
 function newVessel(){
+  // Snapshot current session into ST.sessions WITHOUT a separate sv() call.
+  // Calling saveSession() here triggers sv() which sets _myLastSave=ts1.
+  // Then we clear ST.hourly and call sv() again with _myLastSave=ts2.
+  // Firebase echoes the FIRST write after ts2 is set, falling outside the
+  // 500ms own-save window — so old hourly data gets restored. Fix: one sv().
   if(ST.activeId){
     var _id=ST.activeId;
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
     if(_existing.id){
       var _nc=_existing.numCranes||2;
-      // Save current shift into s.shifts with unique key per type+date
-      if(!_existing.shifts)_existing.shifts=[];
-      var _shiftType=isDay()?'DAY':'NIGHT';
-      var _shiftDate=new Date().toLocaleDateString('en-CA');
-      var _shiftKey=_shiftType+'_'+_shiftDate;
-      var _shiftEntry=_existing.shifts.find(function(sh){return sh.key===_shiftKey;});
-      if(!_shiftEntry){
-        _shiftEntry={key:_shiftKey,type:_shiftType,date:_shiftDate,start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
-        _existing.shifts.push(_shiftEntry);
-      }
-      // Snapshot hourly results for this shift
+      if(!_existing._results)_existing._results={hourly:{},delays:{}};
       var _sl=shiftSlots();
-      _sl.forEach(function(slot){
-        for(var ci=1;ci<=_nc;ci++){
-          ['discharge','load'].forEach(function(t){
-            var k=slot+'_'+ci+'_'+t;
-            if(ST.hourly[k])_shiftEntry.hourly[k]=ST.hourly[k];
-          });
-        }
-      });
-      // Snapshot delays for this shift
-      for(var _ci=1;_ci<=_nc;_ci++){
-        var _rk=_id+'_c'+_ci;
-        (ST.delayRowIds&&ST.delayRowIds[_rk]||[0]).forEach(function(_r){
-          var _dk=_id+'_'+_ci+'_'+_r;
-          if(ST.delays[_dk])_shiftEntry.delays[_dk]=Object.assign({},ST.delays[_dk]);
-        });
-      }
-      _shiftEntry.end=new Date().toISOString();
+      _sl.forEach(function(slot){for(var ci=1;ci<=_nc;ci++){["discharge","load"].forEach(function(t){var k=slot+"_"+ci+"_"+t;if(ST.hourly[k])_existing._results.hourly[k]=ST.hourly[k];});}});
       _existing.locked=true;
       _existing.savedAt=new Date().toISOString();
       var _idx=ST.sessions.findIndex(function(x){return x.id===_id;});
       if(_idx>=0)ST.sessions[_idx]=JSON.parse(JSON.stringify(_existing));
     }
   }
-  // Clear everything — ONE sv() so Firebase only sees one write
+  // Clear everything and do ONE sv() so Firebase only sees one write
   ST.activeId=null;
   ST.hourly={};
   ST.delayRowIds={};
   ST.delays={};
   sv();
-  // Extend own-save window for 3s so Firebase echo can't revert activeId or sessions
-  try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-  _myLastSave=Date.now();
-  setTimeout(function(){_myLastSave=Date.now();},500);
-  setTimeout(function(){_myLastSave=Date.now();},1000);
-  setTimeout(function(){_myLastSave=Date.now();},2000);
-  setTimeout(function(){_myLastSave=Date.now();},3000);
   renderInput();
 }
 // newSess kept as alias for backwards compat
@@ -1115,6 +1033,21 @@ function renderResults(){
   if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
   const nc=sess.numCranes;
   const sl=shiftSlots();
+
+  // If previous completed shifts exist, show them collapsed above current shift
+  if(sess.shifts&&sess.shifts.length>0){
+    sess.shifts.forEach(function(shift,i){
+      const label=(shift.type==='DAY'?'☀️ DAY':'🌙 NIGHT')+' SHIFT ('+formatDateTime(shift.start)+')';
+      h+=`<div class="shift-block">
+        <div class="shift-header" onclick="toggleShift(${i})">${label}</div>
+        <div class="shift-body" style="display:none">
+          ${buildResultsTable(sess,shift.slots.map(function(s){return s.key;}))}
+        </div>
+      </div>`;
+    });
+  }
+
+  // Current shift — always visible, unchanged original rendering
   ['discharge','load'].forEach(function(t){
     const T=t[0].toUpperCase()+t.slice(1);
     const allData=getAllSlots(sess);
@@ -1382,108 +1315,9 @@ function getDelayRowIds(sessId,c){
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   return ST.delayRowIds[rk];
 }
-function shareDelays(){
-  const sess=getSess(),slot=currSlot();
-  if(!sess){alert('No active session.');return;}
-  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-  const nc=sess.numCranes;
-  const tn=ST.settings.term||'';
-  const todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
-  var bgStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
-
-  // Build full HTML — all rows, no skipping
-  let h=`<div id="dcap_share" style="background:#f0f2f7;font-family:Segoe UI,Arial,sans-serif">`;
-  h+=`<div class="rh" style="${bgStyle}">
-    <div class="rh1">
-      <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
-    </div>
-    <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
-      <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
-        ${sess.dockedOn?`<div style="font-size:11px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: ${formatDateTime(sess.dockedOn)}</div>`:''}
-      </div>
-      <div style="flex:0 0 auto;"><span class="rh-slot">${fs(slot)}</span></div>
-      <div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">${todayStr}</span>
-        ${sess.firstLift||sess.lastLift?`<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7">
-          ${sess.firstLift?`<div>🟢 First Lift: <strong>${sess.firstLift}</strong></div>`:''}
-          ${sess.lastLift?`<div>🔴 Last Lift: &nbsp;<strong>${sess.lastLift}</strong></div>`:''}
-        </div>`:''}
-      </div>
-    </div>
-  </div>`;
-
-  for(let c=1;c<=nc;c++){
-    const rowIds=getDelayRowIds(sess.id,c);
-    let tbody='';
-    rowIds.forEach(function(r){
-      const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
-      tbody+=`<tr style="background:${rowIds.indexOf(r)%2===0?'white':'#f5f8fc'}">
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.from||''}</td>
-        <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
-        <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
-        <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
-      </tr>`;
-    });
-    h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
-      <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
-      <table style="width:100%;border-collapse:collapse">
-        <thead><tr>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
-          <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
-        </tr></thead>
-        <tbody>${tbody}</tbody>
-      </table>
-    </div>`;
-  }
-  h+=`<div style="height:20px"></div></div>`;
-
-  // Inject at full screen width, visible so layout is correct
-  const W=Math.min(window.innerWidth,480);
-  var host=document.createElement('div');
-  host.style.cssText=`position:absolute;left:-${W+50}px;top:0;width:${W}px;background:#f0f2f7;`;
-  host.innerHTML=h;
-  document.body.appendChild(host);
-
-  // Wait for layout then capture
-  requestAnimationFrame(function(){
-    requestAnimationFrame(function(){
-      setTimeout(function(){
-        const el=host.firstElementChild;
-        const fullH=host.scrollHeight;
-        html2canvas(host,{
-          scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-          width:W,height:fullH,windowWidth:W,
-          scrollX:0,scrollY:0,allowTaint:true,logging:false
-        }).then(function(canvas){
-          document.body.removeChild(host);
-          canvas.toBlob(function(blob){
-            if(!blob)return;
-            const file=new File([blob],'Delays.png',{type:'image/png'});
-            if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-              navigator.share({files:[file],title:'Idle / Delays'});
-            } else {
-              const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-              a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-              setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-            }
-          },'image/png',0.96);
-        }).catch(function(e){
-          if(host.parentNode)document.body.removeChild(host);
-          alert('Share failed: '+e.message);
-        });
-      },300);
-    });
-  });
-}
 function renderDelays(){
   const sess=getSess(),slot=currSlot();
   let h=rhHTML('IDLE / DELAYS',slot,'dcap');
-  // Replace the share button action: delays uses shareDelays() not shareReport('dcap')
-  h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
   if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
   const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
   for(let c=1;c<=nc;c++){
@@ -1552,419 +1386,30 @@ function updateDelay(sid,c,r,field,val){
 }
 
 // ═══════════ HISTORY ═══════════
-// ═══════════ HOURLY PERFORMANCE ═══════════
-function renderPerformance(){
-  const sess=getSess();
-  const sl=shiftSlots();
-  const nc=sess?sess.numCranes:2;
-  if(!ST.perfTargets)ST.perfTargets={dlTarget:0,swhTarget:0};
-  var dlTarget=ST.perfTargets.dlTarget||0;
-  var swhTarget=ST.perfTargets.swhTarget||0;
-  var bgStyle='background:linear-gradient(rgba(31,56,100,.92),rgba(31,56,100,.92)),url('+(HARDCODED_BG||'')+') center/cover';
-  var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
-  var slot=currSlot();
-
-  var h='<div id="perfCap" style="background:#111827">';
-  // Header
-  h+='<div class="rh" style="'+bgStyle+'">';
-  h+='<div class="rh1"><div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
-  h+='<div class="rh-txt"><h2>HOURLY PERFORMANCE</h2><p>'+(ST.settings&&ST.settings.term||'')+'</p></div></div>';
-  if(sess){
-    h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
-    h+='<div style="flex:1;min-width:0;"><span class="rh-vessel">'+sess.vesselName+'</span>';
-    if(sess.dockedOn)h+='<div style="font-size:11px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: '+formatDateTime(sess.dockedOn)+'</div>';
-    h+='</div>';
-    h+='<div style="flex:0 0 auto;"><span class="rh-slot">'+fs(slot)+'</span></div>';
-    h+='<div style="flex:1;min-width:0;text-align:right;"><span class="rh-date">'+todayStr+'</span>';
-    if(sess.firstLift||sess.lastLift){
-      h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
-      if(sess.firstLift)h+='<div>🟢 First Lift: <strong>'+sess.firstLift+'</strong></div>';
-      if(sess.lastLift)h+='<div>🔴 Last Lift: &nbsp;<strong>'+sess.lastLift+'</strong></div>';
-      h+='</div>';
-    }
-    h+='</div></div>';
-  }
-  h+='</div>';
-
-  // Target inputs
-  h+='<div class="perf-targets" style="margin:10px;padding:12px 14px;border-radius:10px;background:#1e2a3a;display:flex;gap:10px;flex-wrap:wrap">';
-  h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">D/L TARGET / HR</label>';
-  h+='<input type="number" value="'+dlTarget+'" style="width:100%;background:#0d1521;color:white;border:1px solid #2c4a6e;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:700" oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.dlTarget=parseFloat(this.value)||0;sv();renderPerformance()"/></div>';
-  h+='<div style="flex:1;min-width:120px"><label style="font-size:10px;color:#90a4c8;font-weight:700;display:block;margin-bottom:4px">SWH TARGET / HR</label>';
-  h+='<input type="number" value="'+swhTarget+'" style="width:100%;background:#0d1521;color:white;border:1px solid #2c4a6e;border-radius:6px;padding:7px 10px;font-size:13px;font-weight:700" oninput="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.swhTarget=parseFloat(this.value)||0;sv();renderPerformance()"/></div>';
-  h+='</div>';
-
-  if(!sess){h+=noSess('📈','No active session.');h+='</div>';$('sc-performance').innerHTML=h;return;}
-
-  // Share button
-  h+='<div style="margin:0 10px 8px;text-align:right"><button class="rh-share" onclick="sharePerformance()">📤 Share</button></div>';
-
-  // Chart canvases
-  h+='<div style="margin:0 10px 12px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
-  h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">Discharge / Load per Crane</div>';
-  h+='<div style="position:relative;height:240px"><canvas id="chartDL"></canvas></div></div>';
-  h+='<div style="margin:0 10px 20px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
-  h+='<div style="font-size:12px;font-weight:800;color:#90a4c8;margin-bottom:10px;letter-spacing:.5px;text-transform:uppercase">SWH (All Cranes Combined)</div>';
-  h+='<div style="position:relative;height:220px"><canvas id="chartSWH"></canvas></div></div>';
-  h+='<div style="height:10px"></div></div>';
-
-  $('sc-performance').innerHTML=h;
-
-  // Build data
-  var labels=sl.map(function(s){return fs(s);});
-  var craneColors=['#4fc3f7','#ffb74d','#81c784','#ce93d8','#f48fb1'];
-  var craneSets=[];
-  for(var ci=1;ci<=nc;ci++){
-    var craneData=sl.map(function(s2){
-      return(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
-    });
-    craneSets.push({label:craneName(ci),data:craneData,color:craneColors[(ci-1)%craneColors.length]});
-  }
-  var swhData=sl.map(function(s2){
-    var t=0;for(var ci=1;ci<=nc;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);return t;
-  });
-  var targetDLArr=sl.map(function(){return dlTarget;});
-  var targetSWHArr=sl.map(function(){return swhTarget;});
-
-  var darkGrid='rgba(255,255,255,.06)';
-  var darkTick={color:'rgba(255,255,255,.5)',font:{size:9}};
-
-  // Data labels plugin — smart vertical positioning to avoid clashes, skip zeros
-  var dlabelsPlugin={
-    id:'dlabels',
-    afterDatasetsDraw:function(chart){
-      var ctx=chart.ctx;
-      var datasets=chart.data.datasets.filter(function(ds){return ds.label!=='Target';});
-      // For each x position, collect all (y_pixel, value, color) then spread them
-      var byX={};
-      datasets.forEach(function(ds,di){
-        var meta=chart.getDatasetMeta(chart.data.datasets.indexOf(ds));
-        meta.data.forEach(function(pt,idx){
-          var val=ds.data[idx];
-          if(!val)return;
-          if(!byX[idx])byX[idx]=[];
-          byX[idx].push({y:pt.y,xPx:pt.x,val:val,color:ds.borderColor});
-        });
-      });
-      // Sort by y descending (highest on chart = smallest y pixel) and spread
-      Object.keys(byX).forEach(function(xi){
-        var items=byX[xi];
-        var xPos=items[0].xPx;
-        // Sort by y pixel ascending (top of chart first)
-        items.sort(function(a,b){return a.y-b.y;});
-        // Stack labels above topmost point with 16px gap each
-        var startY=items[0].y-14;
-        items.forEach(function(item,i){
-          var labelY=startY-(items.length-1-i)*16;
-          ctx.save();
-          ctx.font='bold 10px sans-serif';
-          ctx.fillStyle=item.color;
-          ctx.textAlign='center';
-          ctx.shadowColor='rgba(0,0,0,.8)';
-          ctx.shadowBlur=4;
-          ctx.fillText(item.val,xPos,labelY);
-          ctx.restore();
-        });
-      });
-    }
-  };
-
-  // SWH label plugin — above each point, skip zeros
-  var swhLabelsPlugin={
-    id:'swhlabels',
-    afterDatasetsDraw:function(chart){
-      var ctx=chart.ctx;
-      var meta=chart.getDatasetMeta(0);
-      meta.data.forEach(function(pt,idx){
-        var val=chart.data.datasets[0].data[idx];
-        if(!val)return;
-        ctx.save();
-        ctx.font='bold 10px sans-serif';
-        ctx.fillStyle='#4fc3f7';
-        ctx.textAlign='center';
-        ctx.shadowColor='rgba(0,0,0,.8)';
-        ctx.shadowBlur=4;
-        ctx.fillText(val,pt.x,pt.y-14);
-        ctx.restore();
-      });
-    }
-  };
-
-  var commonOpts={
-    responsive:true,maintainAspectRatio:false,
-    layout:{padding:{top:55,left:8,right:50,bottom:8}},
-    plugins:{
-      legend:{
-        position:'bottom',
-        labels:{color:'rgba(255,255,255,.8)',font:{size:10},usePointStyle:true,padding:14}
-      },
-      tooltip:{backgroundColor:'#1e2a3a',titleColor:'#fff',bodyColor:'rgba(255,255,255,.8)',borderColor:'rgba(255,255,255,.1)',borderWidth:1}
-    },
-    scales:{
-      x:{grid:{color:darkGrid},ticks:Object.assign({maxRotation:45,minRotation:30},darkTick)},
-      y:{grid:{color:darkGrid},ticks:darkTick,beginAtZero:true}
-    }
-  };
-
-  // Plugin to draw red target label on right side of target line
-  var targetLabelPlugin={
-    id:'targetLabel',
-    afterDatasetsDraw:function(chart){
-      var ctx=chart.ctx;
-      chart.data.datasets.forEach(function(ds,di){
-        if(ds.label!=='Target')return;
-        var meta=chart.getDatasetMeta(di);
-        if(!meta.data.length)return;
-        var lastPt=meta.data[meta.data.length-1];
-        var val=ds.data[ds.data.length-1];
-        if(!val)return;
-        ctx.save();
-        ctx.font='bold 11px sans-serif';
-        ctx.fillStyle='#ef5350';
-        ctx.textAlign='left';
-        ctx.shadowColor='rgba(0,0,0,.8)';ctx.shadowBlur=3;
-        ctx.fillText(val,lastPt.x+5,lastPt.y+4);
-        ctx.restore();
-      });
-    }
-  };
-
-  function drawCharts(){
-    var existDL=Chart.getChart('chartDL');if(existDL)existDL.destroy();
-    var existSWH=Chart.getChart('chartSWH');if(existSWH)existSWH.destroy();
-
-    var dlDatasets=craneSets.map(function(cs,di){
-      return{label:cs.label,data:cs.data,borderColor:cs.color,backgroundColor:cs.color+'33',
-        pointBackgroundColor:cs.color,pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:false};
-    });
-    dlDatasets.push({label:'Target',data:targetDLArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0});
-
-    new Chart(document.getElementById('chartDL'),{
-      type:'line',
-      data:{labels:labels,datasets:dlDatasets},
-      options:JSON.parse(JSON.stringify(commonOpts)),
-      plugins:[dlabelsPlugin,targetLabelPlugin]
-    });
-
-    new Chart(document.getElementById('chartSWH'),{
-      type:'line',
-      data:{labels:labels,datasets:[
-        {label:'SWH',data:swhData,borderColor:'#4fc3f7',backgroundColor:'#4fc3f722',
-          pointBackgroundColor:'#4fc3f7',pointRadius:4,pointHoverRadius:6,borderWidth:2,tension:.3,fill:true},
-        {label:'Target',data:targetSWHArr,borderColor:'#ef5350',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false,tension:0}
-      ]},
-      options:JSON.parse(JSON.stringify(commonOpts)),
-      plugins:[swhLabelsPlugin,targetLabelPlugin]
-    });
-  }
-
-  if(window.Chart&&window.Chart.getChart){
-    drawCharts();
-  } else {
-    var sc=document.createElement('script');
-    sc.src='https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
-    sc.onload=function(){setTimeout(drawCharts,50);};
-    document.head.appendChild(sc);
-  }
-}
-
-function sharePerformance(){
-  if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
-  var el=document.getElementById('perfCap');
-  if(!el){alert('Please open the Performance tab first.');return;}
-  // Hide inputs, share button, and targets container before capture
-  var hidden=[];
-  el.querySelectorAll('input,button').forEach(function(e2){
-    hidden.push({e:e2,d:e2.style.display});e2.style.display='none';
-  });
-  // Hide the targets input section (contains D/L and SWH inputs)
-  var targDiv=el.querySelector('.perf-targets');
-  if(targDiv){hidden.push({e:targDiv,d:targDiv.style.display});targDiv.style.display='none';}
-  html2canvas(el,{
-    scale:2,useCORS:true,backgroundColor:'#111827',
-    width:el.offsetWidth,height:el.scrollHeight,
-    windowWidth:el.offsetWidth,
-    scrollX:0,scrollY:0,allowTaint:true,logging:false
-  }).then(function(canvas){
-    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
-    canvas.toBlob(function(blob){
-      if(!blob)return;
-      var file=new File([blob],'Performance.png',{type:'image/png'});
-      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-        navigator.share({files:[file],title:'Hourly Performance'});
-      } else {
-        var a=document.createElement('a');a.href=URL.createObjectURL(blob);
-        a.download='Performance.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-      }
-    },'image/png',0.96);
-  }).catch(function(e){
-    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
-    alert('Share failed: '+e.message);
-  });
-}
-
-// ═══════════ HISTORY ═══════════
-function histCollapse(uid){
-  var el=document.getElementById(uid);
-  var arr=document.getElementById(uid+'-arr');
-  if(!el)return;
-  var open=el.style.display==='block';
-  el.style.display=open?'none':'block';
-  if(arr)arr.textContent=open?'▶':'▼';
-}
-function buildShiftLabel(type,dateRef){
-  var d;
-  if(typeof dateRef==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(dateRef)){
-    var parts=dateRef.split('-');
-    d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,parseInt(parts[2]));
-  } else {
-    d=new Date(typeof dateRef==='number'?dateRef:(dateRef||Date.now()));
-  }
-  // Format: DD-Mon-YY
-  function fmtDate(dt){
-    return dt.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'2-digit'}).replace(/ /g,'-');
-  }
-  if(type==='DAY'){
-    // 0600 - 1800  25-Apr-26
-    return '0600 \u2013 1800  '+fmtDate(d);
-  }
-  if(type==='NIGHT'){
-    // 1800 - 0600  25/26-Apr-26  (night crosses midnight, show both days)
-    var d2=new Date(d.getTime());d2.setDate(d2.getDate()+1);
-    var mon=d.toLocaleDateString('en-ZA',{month:'short'});
-    var yr=d.toLocaleDateString('en-ZA',{year:'2-digit'});
-    var day1=String(d.getDate()).padStart(2,'0');
-    var day2=String(d2.getDate()).padStart(2,'0');
-    return '1800 \u2013 0600  '+day1+'/'+day2+'-'+mon+'-'+yr;
-  }
-  // Fallback — detect from hour
-  var isNight=d.getHours()<6||d.getHours()>=18;
-  if(isNight){
-    var d2b=new Date(d.getTime());d2b.setDate(d2b.getDate()+1);
-    var mon2=d.toLocaleDateString('en-ZA',{month:'short'});
-    var yr2=d.toLocaleDateString('en-ZA',{year:'2-digit'});
-    var day1b=String(d.getDate()).padStart(2,'0');
-    var day2b=String(d2b.getDate()).padStart(2,'0');
-    return '1800 \u2013 0600  '+day1b+'/'+day2b+'-'+mon2+'-'+yr2;
-  }
-  return '0600 \u2013 1800  '+fmtDate(d);
-}
-function buildHistoryResultsHTML(hourlyData,snc){
-  var used=ALL.filter(function(slot){for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}return false;});
-  if(!used.length)return'<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
-  var th='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 8px;font-size:11px;text-align:left">Slot</th>';
-  for(var ci=1;ci<=snc;ci++)th+='<th colspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
-  th+='<th rowspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">Total</th></tr>';
-  th+='<tr style="background:#162d52;color:rgba(255,255,255,.8)">';
-  for(var ci=1;ci<=snc;ci++)th+='<th style="padding:4px 6px;font-size:10px;border-left:2px solid rgba(255,255,255,.2)">D</th><th style="padding:4px 6px;font-size:10px">L</th>';
-  th+='</tr>';
-  var tb='';var gD=0,gL=0;var ct={};
-  for(var ci=1;ci<=snc;ci++)ct[ci]={d:0,l:0};
-  used.forEach(function(slot,idx){
-    var rt=0,cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap">'+fs(slot)+'</td>';
-    for(var ci=1;ci<=snc;ci++){
-      var dv=hourlyData[slot+'_'+ci+'_discharge']||0,lv=hourlyData[slot+'_'+ci+'_load']||0;
-      ct[ci].d+=dv;ct[ci].l+=lv;rt+=dv+lv;gD+=dv;gL+=lv;
-      cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:2px solid #dde3f0">'+(dv||'—')+'</td><td style="padding:6px 5px;font-size:11px;text-align:center">'+(lv||'—')+'</td>';
-    }
-    cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid #dde3f0">'+rt+'</td>';
-    tb+='<tr style="background:'+(idx%2===0?'white':'#f5f8fc')+'">'+cells+'</tr>';
-  });
-  var tf='<tr style="background:#1a3a5c;color:white"><td style="padding:7px 8px;font-size:11px;font-weight:800">TOTAL</td>';
-  for(var ci=1;ci<=snc;ci++)tf+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+ct[ci].d+'</td><td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+ct[ci].l+'</td>';
-  tf+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(gD+gL)+'</td></tr>';
-  return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+th+'</thead><tbody>'+tb+'</tbody><tfoot>'+tf+'</tfoot></table></div>';
-}
-function buildHistoryDelaysHTML(delayData,snc){
-  var out='';
-  for(var ci=1;ci<=snc;ci++){
-    var rows='';
-    Object.keys(delayData).forEach(function(k){
-      var p=k.split('_');if(p.length<3)return;
-      if(parseInt(p[p.length-2])!==ci)return;
-      var dd=delayData[k];if(!dd||(!dd.from&&!dd.to&&!dd.type&&!dd.desc))return;
-      rows+='<tr>'
-        +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.from||'—')+'</td>'
-        +'<td style="text-align:center;font-size:11px;font-weight:700;padding:6px 10px;white-space:nowrap">'+(dd.to||'—')+'</td>'
-        +'<td style="text-align:center;font-size:12px;font-weight:800;color:#1a3a5c;padding:6px 8px">'+dur(dd.from,dd.to)+'</td>'
-        +'<td style="font-size:11px;font-weight:700;padding:6px 8px">'+(dd.type||'')+'</td>'
-        +'<td style="font-size:11px;padding:6px 8px;color:#444">'+(dd.desc||'')+'</td></tr>';
-    });
-    if(rows){
-      out+='<div style="background:#fff176;border-radius:8px;padding:7px 12px;margin-bottom:6px;font-weight:800;font-size:13px;color:#1a3a5c">'+craneName(ci)+'</div>'
-        +'<div style="overflow-x:auto;margin-bottom:8px"><table style="width:100%;border-collapse:collapse">'
-        +'<thead><tr style="background:#1f3864;color:white"><th style="padding:7px 10px;font-size:11px">From</th><th style="padding:7px 10px;font-size:11px">To</th>'
-        +'<th style="padding:7px 8px;font-size:11px">Dur.</th><th style="padding:7px 8px;font-size:11px;text-align:left">Delay Type</th>'
-        +'<th style="padding:7px 8px;font-size:11px;text-align:left">Description</th></tr></thead>'
-        +'<tbody>'+rows+'</tbody></table></div>';
-    }
-  }
-  return out||'<div style="font-size:11px;color:#999;padding:10px 6px">No delays recorded.</div>';
-}
 function renderHistory(){
   const fv=$('histF')?$('histF').value:'';
   let h=`<div class="ph"><h2>🗂️ History</h2><p>All sessions — persists across shifts &amp; logins</p></div>
     <div class="fbar"><input id="histF" placeholder="🔍 Search vessel..." value="${fv}" oninput="renderHistory()"/></div>`;
   const list=ST.sessions.filter(s=>!fv||s.vesselName.toLowerCase().includes(fv.toLowerCase()));
   if(!list.length){h+=noSess('🗂️','No sessions recorded yet.');$('sc-history').innerHTML=h;return;}
-  list.forEach(function(s){
+  list.forEach(s=>{
+    // Use calcGlobalTotals — no view-level calculation
     const _gt=calcGlobalTotals(s);
     const td=_gt.totalDoneDisc,tl=_gt.totalDoneLoad;
     const tot=_gt.totalDone,pct=s.target?Math.round(tot/s.target*100):0,isA=s.id===ST.activeId;
-    const snc=s.numCranes||2;
-    var uid='h_'+s.id;
-    // Build shift blocks — one collapsible pair per shift
-    var blocks=[];
-    var isActiveSession=s.id===ST.activeId;
-    var curShiftType=isDay()?'DAY':'NIGHT';
-    var curShiftDate=new Date().toLocaleDateString('en-CA');
-    var curShiftKey=curShiftType+'_'+curShiftDate;
-    if(s.shifts&&s.shifts.length){
-      s.shifts.forEach(function(sh){
-        var isCurrentShift=isActiveSession&&sh.key===curShiftKey;
-        // For the active session's current shift, always use live ST.hourly/ST.delays
-        var hourlyData=isCurrentShift?ST.hourly:(sh.hourly||{});
-        var delayData=isCurrentShift?ST.delays:(sh.delays||{});
-        if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
-          blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
-        }
-      });
-    }
-    // If active session has no shift entry yet, show live data as current shift
-    if(isActiveSession&&!blocks.find(function(b){return b.isCurrent;})){
-      if(Object.keys(ST.hourly).length||Object.keys(ST.delays).length){
-        blocks.push({label:buildShiftLabel(curShiftType,curShiftDate),hourly:ST.hourly,delays:ST.delays,isCurrent:true});
-      }
-    }
-    // Fallback for old sessions with flat _results
-    if(!blocks.length&&s._results){
-      var hr=s._results.hourly||{},dl=s._results.delays||{};
-      if(Object.keys(hr).length||Object.keys(dl).length)
-        blocks.push({label:buildShiftLabel(null,s.savedAt||s.id),hourly:hr,delays:dl});
-    }
     h+=`<div class="hi" style="${isA?'border-left-color:var(--yellow)':''}">
       <div class="hi-vessel">${s.vesselName} ${isA?'<span class="pill pblue">ACTIVE</span>':''}</div>
       <div class="hi-meta">🏗️ ${s.numCranes} Cranes &nbsp;·&nbsp; 🎯 Target: ${s.target}<br>
+        📅 ${s.savedAt?formatDateTime(s.savedAt):'—'}<br>
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
-      <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>`;
-    blocks.forEach(function(block,bi){
-      var buid=uid+'_'+bi;
-      h+='<div style="margin-top:8px">'
-        +'<div onclick="histCollapse(\''+buid+'r\')" style="display:flex;align-items:center;justify-content:space-between;background:#1f3864;color:white;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">'
-        +'<span>📊 Results &mdash; '+block.label+'</span><span id="'+buid+'r-arr">▶</span></div>'
-        +'<div id="'+buid+'r" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryResultsHTML(block.hourly,snc)+'</div>'
-        +'<div style="margin-top:4px"><div onclick="histCollapse(\''+buid+'d\')" style="display:flex;align-items:center;justify-content:space-between;background:#f1c40f;color:#1a3a5c;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:800;user-select:none">'
-        +'<span>⏸️ Delays &mdash; '+block.label+'</span><span id="'+buid+'d-arr">▶</span></div>'
-        +'<div id="'+buid+'d" style="display:none;padding:10px;background:white;border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px">'+buildHistoryDelaysHTML(block.delays,snc)+'</div></div>'
-        +'</div>';
-    });
-    h+=`<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
-      ${ST.activeId===s.id?'<span class="pill pgreen" style="font-size:10px">● Active</span>':
-        `<button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>`}
-      ${(RT.user&&RT.user.role==='admin')?`<button class="btn btn-sm btn-red" data-delid="${s.id}" onclick="delSessConfirm('${s.id}')">🗑️ Delete</button>`:''}
-    </div></div>`;
+      <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+        ${ST.activeId===s.id?'<span class="pill pgreen" style="font-size:10px">● Active</span>':
+          `<button class="btn btn-sm" onclick="setActive('${s.id}')">Set Active</button>`}
+        ${(RT.user&&RT.user.role==='admin')?`<button class="btn btn-sm btn-red" data-delid="${s.id}" onclick="delSessConfirm('${s.id}')">🗑️ Delete</button>`:''}
+      </div>
+    </div>`;
   });
   h+=`<div style="padding:10px 10px 20px"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div>`;
   $('sc-history').innerHTML=h;
@@ -1974,14 +1419,7 @@ function setActive(id){
   // Unlock for editing when setting active from history
   const raw=ST.sessions.find(function(x){return x.id===id;});
   if(raw)raw.locked=false;
-  sv();
-  // Extend protection so Firebase echo can't revert activeId or locked state
-  _myLastSave=Date.now();
-  setTimeout(function(){_myLastSave=Date.now();},500);
-  setTimeout(function(){_myLastSave=Date.now();},1000);
-  setTimeout(function(){_myLastSave=Date.now();},2000);
-  setTimeout(function(){_myLastSave=Date.now();},3000);
-  renderHistory();switchTab('input');
+  sv();renderHistory();switchTab('input');
 }
 function delSess(id){
   var nid=Number(id)||id;
@@ -2264,44 +1702,23 @@ function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buil
 function calcETC(){
   var sess=getSess();if(!sess)return null;
   var now=new Date();
+  // Use global totals — no inline ST.hourly loops (Segment 8)
   var g=calcGlobalTotals(sess);
   var done=g.totalDone;
   var rem=g.remaining;
   if(rem<=0)return{done:true,remaining:0,hoursLeft:0,eta:null,rate:done,reasoning:'All units completed.'};
   if(done===0)return null;
-
-  // Calculate total delay minutes
   var dMins=0;
   if(ST.delayRowIds){for(var c=1;c<=sess.numCranes;c++){var rk=sess.id+'_c'+c;(ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[sess.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var fh=parseInt(d.from)||0,fm=parseInt((d.from.split(':')[1])||0),th=parseInt(d.to)||0,tm=parseInt((d.to.split(':')[1])||0);var diff=(th*60+tm)-(fh*60+fm);if(diff<0)diff+=1440;dMins+=diff;}});}}
-
-  // Active hours since first lift
   var aHrs=0.5;
   if(sess.firstLift){var fl=sess.firstLift.split(':'),sm=parseInt(fl[0])*60+(parseInt(fl[1])||0),nm=now.getHours()*60+now.getMinutes(),el2=nm-sm;if(el2<0)el2+=1440;aHrs=Math.max((el2-dMins)/60,0.25);}
-  var overallRate=done/aHrs;
-
-  // Recent rate: last 2 completed slots (weighted 60%) + overall (40%)
-  var sl=shiftSlots();
-  var recentMoves=0,recentSlots=0;
-  var nowSlot=currSlot();
-  var nowIdx=sl.indexOf(nowSlot);
-  if(nowIdx>1){
-    for(var ri=Math.max(0,nowIdx-2);ri<nowIdx;ri++){
-      var s2=sl[ri];var slotTotal=0;
-      for(var ci=1;ci<=sess.numCranes;ci++)slotTotal+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
-      if(slotTotal>0){recentMoves+=slotTotal;recentSlots++;}
-    }
-  }
-  var rate=overallRate;
-  if(recentSlots>0){var recentRate=recentMoves/recentSlots;rate=recentRate*0.6+overallRate*0.4;}
-  if(rate<=0)return null;
-
+  var rate=done/aHrs;if(rate<=0)return null;
   var hrs=rem/rate;
   var etaD=new Date(now.getTime()+hrs*3600000);
   var etaStr=etaD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false});
   var etaDate=etaD.toLocaleDateString('en-ZA',{day:'2-digit',month:'short'});
-  var note=dMins>0?' (excl. '+Math.round(dMins/60*10)/10+'hr delays)':'';
-  var rateNote=recentSlots>0?' [weighted recent]':'';
-  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+rateNote+note+'. Done: '+done+' in '+aHrs.toFixed(1)+'hr active. Remain: '+Math.max(0,Math.round(rem))+'.'};
+  var note=dMins>0?' (excl.'+Math.round(dMins/60*10)/10+'hr delays)':'';
+  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+note+'. Done: '+done+' in '+aHrs.toFixed(1)+'hr active. Remain: '+Math.max(0,Math.round(rem))+'.'};
 }
 
 // ═══════════ VESSEL ABBREV RESOLVER ═══════════
@@ -2788,13 +2205,11 @@ function uploadYardExcelMulti(input){
           else if(isTrans){var p3=parseVesselRef(ob),p4=parseVesselRef(ib);if(p3){vRef=ob;fE=true;}else if(p4){vRef=ib;fI=true;}else return;}
           else if(isThru){if(tst==='YARD'){vRef=ob||ib;fE=true;}else return;}
           else return;
-          var parsed=parseVesselRef(vRef);
-          // Non-standard format — include row anyway with raw ref so user can edit
-          var vessel=parsed?resolveFullVesselName(parsed.vessel):'';
-          var voyage=parsed?parsed.voyage:vRef;
+          var parsed=parseVesselRef(vRef);if(!parsed)return;
+          var vessel=resolveFullVesselName(parsed.vessel);
           var typeKey=classifyUnit2(iso,frgt,pwr);
           var dir=tst==='DEPARTED'?'departed':(fI||isImp?'import':'export');
-          rows.push({uNbr:uNbr,typeKey:typeKey,dir:dir,vessel:vessel,voyage:voyage,pod:pod});
+          rows.push({uNbr:uNbr,typeKey:typeKey,dir:dir,vessel:vessel,voyage:parsed.voyage,pod:pod});
         });
         cb(rows);
       }catch(ex){console.log('parse err:',ex.message);cb([]);}
@@ -2907,7 +2322,7 @@ async function shareReport(capId){
   });
 
   const wrapper=document.createElement('div');
-  wrapper.style.cssText='position:absolute;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;overflow:visible;';
+  wrapper.style.cssText='position:fixed;left:-9999px;top:0;width:'+PORTRAIT_W+'px;background:#f0f2f7;z-index:-1;font-family:Segoe UI,Arial,sans-serif;box-sizing:border-box;';
   wrapper.appendChild(clone);
   document.body.appendChild(wrapper);
 
@@ -2918,7 +2333,7 @@ async function shareReport(capId){
     wrapper.style.height=h+'px';
     const canvas=await html2canvas(wrapper,{
       scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,
+      width:PORTRAIT_W,height:h,windowWidth:PORTRAIT_W,windowHeight:h,
       scrollX:0,scrollY:0,allowTaint:true,logging:false
     });
     canvas.toBlob(async function(blob){
@@ -3136,155 +2551,47 @@ function renderAnalysis(){
 function generateAIAnalysis(resultId,loadingId){
   resultId=resultId||'aiResult';loadingId=loadingId||'aiLoading';
   const data=buildAnalysisData();
-  const sess=getSess();
   if(!data){$(resultId)&&($(resultId).innerHTML='<div class="ai-result">No data available yet.</div>');return;}
   $(loadingId)&&($(loadingId).style.display='flex');$(resultId)&&($(resultId).innerHTML='');
-  setTimeout(function(){
+  setTimeout(()=>{
     $(loadingId)&&($(loadingId).style.display='none');
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce(function(a,s){return a+s.pct;},0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];})[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort(function(a,b){return b[1]-a[1];})[0];
-    const sorted=[...data.sessions].sort(function(a,b){return b.pct-a.pct;});
+    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
+    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
+    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
+    const sorted=[...data.sessions].sort((a,b)=>b.pct-a.pct);
     const best=sorted[0],worst=sorted[sorted.length-1];
-
-    // Crane productivity per session
-    const craneStats=data.sessions.map(function(s){return{vessel:s.vessel,movesPerCrane:s.cranes>0?Math.round(s.total/s.cranes):0,cranes:s.cranes,total:s.total,pct:s.pct};});
-    const avgMPC=craneStats.length?Math.round(craneStats.reduce(function(a,s){return a+s.movesPerCrane;},0)/craneStats.length):0;
-
-    // Delay time analysis
-    var totalDelayMins=0,delayCount=0;
-    ST.sessions.forEach(function(s){for(var c=1;c<=s.numCranes;c++){var rk=s.id+'_c'+c;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[s.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var f=d.from.split(':'),t=d.to.split(':');var diff=(parseInt(t[0])*60+parseInt(t[1]||0))-(parseInt(f[0])*60+parseInt(f[1]||0));if(diff<0)diff+=1440;totalDelayMins+=diff;delayCount++;}});}});
-    var avgDelayMins=delayCount>0?Math.round(totalDelayMins/delayCount):0;
-
-    // ETC accuracy
-    const etc=calcETC();
-
-    // Hourly rate breakdown for active session
-    var hourlyBreakdown='';
-    if(sess){
-      var slotRates=shiftSlots().map(function(s2){
-        var t=0;for(var ci=1;ci<=sess.numCranes;ci++)t+=(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);
-        return{slot:fs(s2),total:t};
-      }).filter(function(x){return x.total>0;});
-      if(slotRates.length){
-        var maxSlot=slotRates.reduce(function(a,b){return b.total>a.total?b:a;});
-        var minSlot=slotRates.reduce(function(a,b){return b.total<a.total?b:a;});
-        var avgRate=Math.round(slotRates.reduce(function(a,b){return a+b.total;},0)/slotRates.length);
-        hourlyBreakdown='\n📈 ACTIVE SESSION HOURLY BREAKDOWN\nAvg moves/hr: '+avgRate+'\nPeak hour: '+maxSlot.slot+' ('+maxSlot.total+' moves)\nLowest hour: '+minSlot.slot+' ('+minSlot.total+' moves)\n';
-        if(maxSlot.total>avgRate*1.5)hourlyBreakdown+='⚡ Strong peak — ensure crane operators are rotating to sustain this rate.\n';
-        if(minSlot.total<avgRate*0.5)hourlyBreakdown+='⚠️ Low hour detected — check for unreported delays during '+minSlot.slot+'.\n';
-      }
-    }
-
-    var analysis='📊 TERMINAL PERFORMANCE ANALYSIS\n';
-    analysis+='─────────────────────────────────\n';
-    analysis+='Sessions Analysed: '+data.sessions.length+'\n';
-    analysis+='Overall Target Achievement: '+avgPct+'%  '+(avgPct>=90?'🟢 Excellent':avgPct>=70?'🟡 On Track':'🔴 Needs Attention')+'\n';
-    analysis+='Avg Moves per Crane: '+avgMPC+'\n';
-    if(best)analysis+='🏆 Best Session: '+best.vessel+' — '+best.pct+'% ('+best.total+' moves, '+best.cranes+' cranes)\n';
-    if(worst&&data.sessions.length>1)analysis+='📉 Lowest: '+worst.vessel+' — '+worst.pct+'% ('+worst.total+' moves)\n';
-
-    analysis+='\n⏱️ DELAY INTELLIGENCE\n';
-    analysis+='─────────────────────────────────\n';
-    analysis+='Total Delay Events: '+delayCount+'\n';
-    if(avgDelayMins>0)analysis+='Avg Delay Duration: '+avgDelayMins+' min\n';
-    if(topDelay)analysis+='Most Common: '+topDelay[0]+' ('+topDelay[1]+'x)\n';
-    if(peakHour)analysis+='Peak Delay Hour: '+peakHour[0]+':00 ('+peakHour[1]+' events)\n';
-
-    var delayEntries=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];});
-    if(delayEntries.length>1){
-      analysis+='\nDelay Breakdown:\n';
-      delayEntries.slice(0,5).forEach(function(e){analysis+='  • '+e[0]+': '+e[1]+'x\n';});
-    }
-
-    if(etc&&!etc.done&&etc.eta){
-      analysis+='\n⏳ ETC (CURRENT SESSION)\n';
-      analysis+='─────────────────────────────────\n';
-      analysis+='ETA: '+etc.eta+(etc.hoursLeft>12?' ('+etc.etaDate+')':'')+'\n';
-      analysis+='Remaining: '+etc.remaining+' units\n';
-      analysis+='Current Rate: '+etc.rate+' moves/hr\n';
-      if(parseFloat(etc.rate)<avgMPC*0.8)analysis+='⚠️ Rate is below terminal average — investigate unreported delays.\n';
-      if(parseFloat(etc.rate)>avgMPC*1.2)analysis+='✅ Above average rate — maintain current pace.\n';
-    }
-
-    if(hourlyBreakdown)analysis+=hourlyBreakdown;
-
-    analysis+='\n💡 KEY OBSERVATIONS\n';
-    analysis+='─────────────────────────────────\n';
-    if(avgPct<70)analysis+='• Target achievement critically low. Review crane allocation strategy and pre-shift planning protocols.\n';
-    else if(avgPct<85)analysis+='• Performance within acceptable range. Focus on reducing '+( topDelay?topDelay[0]:'operational')+' delays.\n';
-    else analysis+='• Strong overall performance. Document current procedures as standard SOPs for all shifts.\n';
-    if(delayCount>data.sessions.length*3)analysis+='• High delay frequency ('+(Math.round(delayCount/data.sessions.length*10)/10)+' avg/session). Pre-shift equipment checks recommended.\n';
-    if(data.sessions.length>=3){var variance=Math.max(...sorted.map(function(s){return s.pct;}))-Math.min(...sorted.map(function(s){return s.pct;}));if(variance>30)analysis+='• High performance variance ('+variance+'%) between sessions — consistency improvement needed.\n';}
-
-    $(resultId)&&($(resultId).innerHTML='<div class="ai-result" style="white-space:pre-wrap;font-family:monospace;font-size:11px;line-height:1.7">'+analysis+'</div>');
+    let analysis=`📊 TERMINAL PERFORMANCE ANALYSIS\n\nSessions Analysed: ${data.sessions.length}\nAverage Target Achievement: ${avgPct}%\n`;
+    if(best)analysis+=`Best Session: ${best.vessel} — ${best.pct}% of target\n`;
+    if(worst&&data.sessions.length>1)analysis+=`Needs Attention: ${worst.vessel} — ${worst.pct}% of target\n`;
+    if(topDelay)analysis+=`\n⚠️ Most Common Delay: ${topDelay[0]} (${topDelay[1]}x)\n`;
+    if(peakHour)analysis+=`🕐 Peak Delay Hour: ${peakHour[0]}:00 — ${peakHour[1]} event${peakHour[1]>1?'s':''}\n`;
+    const slotTotals={};
+    data.sessions.flatMap(s=>s.slotData).forEach(({slot,d,l})=>{slotTotals[slot]=(slotTotals[slot]||0)+d+l;});
+    const topSlot=Object.entries(slotTotals).sort((a,b)=>b[1]-a[1])[0];
+    const lowSlot=Object.entries(slotTotals).filter(([,v])=>v>0).sort((a,b)=>a[1]-b[1])[0];
+    if(topSlot)analysis+=`\n🏆 Most Productive: ${fs(topSlot[0])} (${topSlot[1]} moves)\n`;
+    if(lowSlot&&lowSlot[0]!==topSlot?.[0])analysis+=`📉 Lowest: ${fs(lowSlot[0])} (${lowSlot[1]} moves)\n`;
+    $(resultId)&&($(resultId).innerHTML=`<div class="ai-result">${analysis}</div>`);
   },1800);
 }
-
 function generateSuggestions(resultId,loadingId){
   resultId=resultId||'aiSugg';loadingId=loadingId||'suggLoading';
   const data=buildAnalysisData();
-  const sess=getSess();
   if(!data){$(resultId)&&($(resultId).innerHTML='<div class="ai-insight">No data yet.</div>');return;}
   $(loadingId)&&($(loadingId).style.display='flex');$(resultId)&&($(resultId).innerHTML='');
-  setTimeout(function(){
+  setTimeout(()=>{
     $(loadingId)&&($(loadingId).style.display='none');
-    const avgPct=data.sessions.length?Math.round(data.sessions.reduce(function(a,s){return a+s.pct;},0)/data.sessions.length):0;
-    const topDelay=Object.entries(data.delayPatterns).sort(function(a,b){return b[1]-a[1];})[0];
-    const peakHour=Object.entries(data.hourlyPerformance).sort(function(a,b){return b[1]-a[1];})[0];
-    const etc=calcETC();
-    var suggestions=[];
-
-    // Target performance
-    if(avgPct<70)suggestions.push({ico:'🚨',txt:'Critical: '+avgPct+'% average achievement. Immediate review of crane allocation and shift planning required. Consider splitting load more evenly across cranes.'});
-    else if(avgPct<85)suggestions.push({ico:'📈',txt:'Performance at '+avgPct+'%. Closing the gap: focus on reducing idle time between gang changes and during meal breaks.'});
-    else if(avgPct<95)suggestions.push({ico:'✅',txt:'Good performance at '+avgPct+'%. Fine-tune by pre-positioning equipment before each slot starts to reduce ramp-up time.'});
-    else suggestions.push({ico:'🏆',txt:'Excellent '+avgPct+'% achievement. Capture current workflows as SOPs and use as benchmark for all shifts.'});
-
-    // Delay-specific recommendations
-    if(topDelay){
-      var delayRec={
-        'Weather Delay':'Weather delays cannot be avoided but minimize impact by having contingency tasks ready (restow, paperwork, equipment checks).',
-        'Equipment Delay':'Implement a mandatory pre-shift equipment inspection checklist. Log all defects before shift starts.',
-        'Operational Delay':'Review gang communication protocols. Most operational delays are preventable with better pre-planning.',
-        'FPT Delay':'Coordinate with FPT supervisor at shift start. Ensure forklift positions are pre-assigned before first lift.',
-        'Non productive':'Structured break schedule with staggered timing prevents all cranes stopping simultaneously.'
-      };
-      var rec=delayRec[topDelay[0]]||('Address '+topDelay[0]+' — occurring '+topDelay[1]+'x across sessions.');
-      suggestions.push({ico:'⚠️',txt:'Top delay: '+topDelay[0]+' ('+topDelay[1]+'x). '+rec});
-    }
-
-    // Peak delay hour
-    if(peakHour){
-      var h=parseInt(peakHour[0]);
-      var shiftContext=h>=6&&h<9?'start-of-shift ramp-up':h>=10&&h<12?'mid-morning — possible break overlap':h>=12&&h<14?'lunch period':h>=14&&h<16?'afternoon fatigue window':'end-of-shift pressure period';
-      suggestions.push({ico:'🕐',txt:'Most delays cluster at '+peakHour[0]+':00 ('+shiftContext+'). Add supervisor presence during this window. '+peakHour[1]+' events recorded.'});
-    }
-
-    // ETC-specific suggestion
-    if(etc&&!etc.done&&etc.eta){
-      var rate=parseFloat(etc.rate);
-      var avgRate=data.sessions.length?data.sessions.reduce(function(a,s){return a+(s.total/(s.cranes||2));},0)/data.sessions.length:0;
-      if(rate<avgRate*0.8)suggestions.push({ico:'⏳',txt:'Current rate ('+etc.rate+' moves/hr) is below terminal average. ETA: '+etc.eta+'. Investigate unreported delays — check if all cranes are active.'});
-      else suggestions.push({ico:'⏱️',txt:'On track for '+etc.eta+' completion at '+etc.rate+' moves/hr. Maintain current pace — '+etc.remaining+' units remaining.'});
-    }
-
-    // Multi-crane balance
-    if(sess&&sess.numCranes>1){
-      var craneLoads=[];
-      for(var ci=1;ci<=sess.numCranes;ci++){
-        var cTotal=shiftSlots().reduce(function(a,s2){return a+(ST.hourly[s2+'_'+ci+'_discharge']||0)+(ST.hourly[s2+'_'+ci+'_load']||0);},0);
-        craneLoads.push({crane:craneName(ci),total:cTotal});
-      }
-      var maxLoad=Math.max.apply(null,craneLoads.map(function(x){return x.total;}));
-      var minLoad=Math.min.apply(null,craneLoads.map(function(x){return x.total;}));
-      if(maxLoad>0&&minLoad<maxLoad*0.6)suggestions.push({ico:'⚖️',txt:'Crane imbalance detected. '+craneLoads.reduce(function(a,x){return a+(x.total===maxLoad?x.crane:'');},'')+ ' has significantly more moves. Rebalance splits at next shift change.'});
-    }
-
-    suggestions.push({ico:'📋',txt:'Log delays in real-time, not end-of-shift. Real-time logging improves ETC accuracy by up to 40% and gives management live visibility.'});
-    suggestions.push({ico:'🔄',txt:'Use History collapsibles to compare shift performance. Identify which shift type (Day/Night) consistently underperforms and investigate root cause.'});
-
-    $(resultId)&&($(resultId).innerHTML=suggestions.map(function(x){return'<div class="ai-insight"><strong>'+x.ico+'</strong> '+x.txt+'</div>';}).join(''));
+    const avgPct=data.sessions.length?Math.round(data.sessions.reduce((a,s)=>a+s.pct,0)/data.sessions.length):0;
+    const topDelay=Object.entries(data.delayPatterns).sort((a,b)=>b[1]-a[1])[0];
+    const peakHour=Object.entries(data.hourlyPerformance).sort((a,b)=>b[1]-a[1])[0];
+    let s=[];
+    if(avgPct<70)s.push({ico:'🎯',txt:`Target achievement at ${avgPct}%. Review crane allocation and pre-shift planning.`});
+    else if(avgPct<90)s.push({ico:'📈',txt:`Performance at ${avgPct}%. Closing the gap requires reducing idle time during changeovers.`});
+    else s.push({ico:'🏆',txt:`Excellent! ${avgPct}% target achievement. Document current workflows as SOPs.`});
+    if(topDelay)s.push({ico:'⚠️',txt:`${topDelay[0]} is most recurring (${topDelay[1]}x). Add a pre-shift equipment check to address this.`});
+    if(peakHour)s.push({ico:'🕐',txt:`Most delays at ${peakHour[0]}:00. Add supervisor presence during this hour.`});
+    s.push({ico:'📋',txt:'Log delays in real-time, not end of shift. Accuracy improves handover and management visibility.'});
+    $(resultId)&&($(resultId).innerHTML=s.map(x=>`<div class="ai-insight"><strong>${x.ico}</strong> ${x.txt}</div>`).join(''));
   },1400);
 }
 
