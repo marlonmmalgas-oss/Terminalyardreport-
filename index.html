@@ -429,9 +429,7 @@ function initSync(){
     var db=firebase.database();
     dbRef=db.ref(DB_PATH);
     window._yardRef=db.ref('agl-terminal/yard');
-    // ── Yard listener registered ONCE here (not inside dbRef.on) ──
-    // Previously nested inside dbRef.on which caused: (1) duplicate listeners on every
-    // main-node update, (2) yard never loading if main-node callback was skipped/delayed.
+    // Yard listener registered ONCE here (not inside dbRef.on)
     window._yardRef.on('value',function(ySnap){
       var isOwnYard=(Date.now()-_myLastYardSave)<1500;
       if(isOwnYard)return;
@@ -457,7 +455,7 @@ function initSync(){
         try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
         if(RT.user&&RT.tab==='yard'){
           var _openForm=document.querySelector('[id^="_avName_"],[id="_myrInput"]');
-          if(!_openForm){try{renderYard();}catch(e){}}
+          if(!_openForm){try{renderYard();}catch(e){console.log('renderYard err:',e);}}
         }
       }
     });
@@ -1167,7 +1165,7 @@ function tabs(){
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();
+  try{({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();}catch(e){console.log('switchTab render err:',t,e);}
 }
 
 // ═══════════ LOGOS ═══════════
