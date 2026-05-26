@@ -429,6 +429,38 @@ function initSync(){
     var db=firebase.database();
     dbRef=db.ref(DB_PATH);
     window._yardRef=db.ref('agl-terminal/yard');
+    // ── Yard listener registered ONCE here (not inside dbRef.on) ──
+    // Previously nested inside dbRef.on which caused: (1) duplicate listeners on every
+    // main-node update, (2) yard never loading if main-node callback was skipped/delayed.
+    window._yardRef.on('value',function(ySnap){
+      var isOwnYard=(Date.now()-_myLastYardSave)<1500;
+      if(isOwnYard)return;
+      var remoteYard=ySnap.val();
+      if(!remoteYard)return;
+      var yardArr=Array.isArray(remoteYard)?remoteYard:Object.values(remoteYard);
+      if(yardArr&&yardArr.length>0){
+        yardArr.forEach(function(r){
+          if(r.vessels&&!Array.isArray(r.vessels))r.vessels=Object.values(r.vessels);
+          if(r.customTypes&&!Array.isArray(r.customTypes))r.customTypes=Object.values(r.customTypes);
+          if(r.customCols&&!Array.isArray(r.customCols))r.customCols=Object.values(r.customCols);
+        });
+        yardArr.forEach(function(r){
+          if(r.vessels)r.vessels.forEach(function(v){
+            if(v.data){
+              Object.keys(v.data).forEach(function(k){
+                if(k.indexOf('__S__')>=0){var rk=k.replace(/__S__/g,'/');v.data[rk]=v.data[k];delete v.data[k];}
+              });
+            }
+          });
+        });
+        ST.yardReports=yardArr;
+        try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+        if(RT.user&&RT.tab==='yard'){
+          var _openForm=document.querySelector('[id^="_avName_"],[id="_myrInput"]');
+          if(!_openForm){try{renderYard();}catch(e){}}
+        }
+      }
+    });
     dbRef.on('value',function(snap){
       var remote=snap.val();
       // Step 1: always preserve local users before doing anything
@@ -526,43 +558,6 @@ function initSync(){
         }
       }
     });
-    // Also listen to yardReports separately
-    if(window._yardRef){
-      window._yardRef.on('value',function(ySnap){
-        // Skip own-save echo: yard has no _gen; use dedicated yard save timestamp
-        var isOwnYard=(Date.now()-_myLastYardSave)<1500;
-        if(isOwnYard)return;
-        var remoteYard=ySnap.val();
-        if(!remoteYard)return;
-        // Firebase converts JS arrays to keyed objects — restore to array
-        var yardArr=Array.isArray(remoteYard)?remoteYard:Object.values(remoteYard);
-        // Bug fix: length>0 not length>=0 (>=0 is always true, wipes data on empty)
-        if(yardArr&&yardArr.length>0){
-          // Restore nested arrays Firebase also converts to keyed objects
-          yardArr.forEach(function(r){
-            if(r.vessels&&!Array.isArray(r.vessels))r.vessels=Object.values(r.vessels);
-            if(r.customTypes&&!Array.isArray(r.customTypes))r.customTypes=Object.values(r.customTypes);
-            if(r.customCols&&!Array.isArray(r.customCols))r.customCols=Object.values(r.customCols);
-          });
-          // Restore sanitized keys: __S__ back to /
-          yardArr.forEach(function(r){
-            if(r.vessels)r.vessels.forEach(function(v){
-              if(v.data){
-                Object.keys(v.data).forEach(function(k){
-                  if(k.indexOf('__S__')>=0){var rk=k.replace(/__S__/g,'/');v.data[rk]=v.data[k];delete v.data[k];}
-                });
-              }
-            });
-          });
-          ST.yardReports=yardArr;
-          try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-          if(RT.user&&RT.tab==='yard'){
-            var _openForm=document.querySelector('[id^="_avName_"],[id="_myrInput"]');
-            if(!_openForm){try{renderYard();}catch(e){}}
-          }
-        }
-      });
-    }
     console.log('Firebase sync active:',DB_PATH);
   }catch(e){console.log('Firebase error:',e.message);}
 }
@@ -4017,7 +4012,7 @@ function renderYardReport(report){
   let grandEx=0,grandIm=0,grandDep=0;
   vessels.forEach((v,vi)=>{
     types.forEach((t,ti)=>{
-      const data=(v.data&&v.data[t])||{export:0,import:0,departed:0};
+      const data=v.data[t]||{export:0,import:0,departed:0};
       grandEx+=data.export||0;grandIm+=data.import||0;grandDep+=data.departed||0;
       const isFirst=ti===0;
       const isLast=ti===types.length-1;
@@ -4044,7 +4039,7 @@ function renderYardReport(report){
     });
     // Vessel total row
     let vEx=0,vIm=0,vDep=0;
-    types.forEach(t=>{const d=(v.data&&v.data[t])||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
+    types.forEach(t=>{const d=v.data[t]||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
     let vCustom=(report.customCols||[]).map(c=>{let s=0;types.forEach(t=>{const d=v.data&&v.data[t]?v.data[t]:{};s+=d[c.key]||0;});return s;});
     h+=`<tr style="background:var(--yellow)">
       <td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>
