@@ -362,6 +362,7 @@ var _myLastYardSave=0;    // timestamp of last yard save — used to skip own ya
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
 var _lastSaveGen=-1;      // gen of last sv() call — compared to echo._gen
+var _recentSaveGens={}; // {gen: timestamp} — evict by age not count, so hourly keystrokes don't push out session saves
 var _hadRemoteUpdate=false; // true once we've received a non-own Firebase update
 function sv(){
   // Save EVERYTHING to localStorage (images stay here permanently)
@@ -377,6 +378,12 @@ function sv(){
     // Embed generation counter — lets listener detect own echo without timestamp ambiguity
     _saveGen=(_saveGen+1)%999999;
     _lastSaveGen=_saveGen;
+    // Store gen with timestamp — evict entries older than 30s so hourly keystrokes
+    // never push out a session-save gen before its echo arrives
+    var _now30=Date.now();
+    _recentSaveGens[_saveGen]=_now30;
+    // Clean up gens older than 30 seconds
+    Object.keys(_recentSaveGens).forEach(function(g){if(_now30-_recentSaveGens[g]>30000)delete _recentSaveGens[g];});
     payload._gen=_saveGen;
     // Strip base64 images - each device loads its own from localStorage
     if(payload.settings){
@@ -446,7 +453,7 @@ function initSync(){
       }
       // Only apply remote data if it came from another device
       // Use generation counter (_gen) for reliable own-echo detection — timestamp window is unreliable
-      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+      var isOwnSave2=(typeof remote._gen!=='undefined')?(remote._gen in _recentSaveGens):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
       // Track that we've received a real remote update (not our own echo)
       if(!isOwnSave2&&remote)_hadRemoteUpdate=true;
       // Preserve local activityLog before remote overwrite — merge after
@@ -513,7 +520,7 @@ function initSync(){
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
-        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen===_lastSaveGen):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
+        var isOwnSave=(typeof remote._gen!=='undefined')?(remote._gen in _recentSaveGens):((remote._ts||0)>=(_myLastSave-500)&&(remote._ts||0)<=(_myLastSave+500));
         if(!isOwnSave){
           try{switchTab(RT.tab);}catch(e){}
         }
@@ -579,7 +586,7 @@ const DEF={
   sessions:[],hourly:{},delays:{},delayRows:{},delayRowIds:{},
   settings:{logo:null,bg:null,bgHourly:null,bgFour:null,bgDelay:null,bgYard:null,term:'',reportNumColor:'#000000',fbUrl:'',fbKey:''},
   generators:[],
-  timing:{hourlyGrace:30,fourHourlyGrace:90},
+  timing:{hourlyGrace:30,fourHourlyGrace:90,shiftRolloverGrace:15},
   craneNames:{1:'CR1',2:'CR2',3:'CR3',4:'CR4'},
   sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change']},
   vesselAbbrevs:[
@@ -688,12 +695,15 @@ function getAllSlots(sess){
   // This ensures done/remain never reset mid-vessel even after 3+ days
   var liveMerged={};
   // Compute current shift key so we skip its snapshot (same logic as getCraneTotal)
-  var _as_now=new Date(),_as_h=_as_now.getHours();
+  var _as_now=new Date(),_as_h=_as_now.getHours(),_as_m=_as_now.getMinutes();
+  var _as_grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _as_totalMins=_as_h*60+_as_m;
+  var _as_isDay=_as_totalMins>=(6*60+_as_grace)&&_as_totalMins<(18*60+_as_grace);
   var _as_csd;
-  if(_as_h>=6&&_as_h<18){_as_csd=_as_now.toLocaleDateString('en-CA');}
-  else if(_as_h<6){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
+  if(_as_isDay){_as_csd=_as_now.toLocaleDateString('en-CA');}
+  else if(_as_totalMins<(6*60+_as_grace)){var _as_y=new Date(_as_now);_as_y.setDate(_as_y.getDate()-1);_as_csd=_as_y.toLocaleDateString('en-CA');}
   else{_as_csd=_as_now.toLocaleDateString('en-CA');}
-  var _as_curKey=(_as_h>=6&&_as_h<18?'DAY':'NIGHT')+'_'+_as_csd;
+  var _as_curKey=(_as_isDay?'DAY':'NIGHT')+'_'+_as_csd;
   // Step 1: accumulate from stored shifts (snapshotted at each 06:00/18:00)
   // Skip the current shift's snapshot — live ST.hourly is always the authority for it
   var _snapshotedSlotKeys={};
@@ -740,12 +750,15 @@ function getCraneTotal(sess, craneIdx, type){
   // Compute the current shift key so we never let a stale partial snapshot
   // of the CURRENT shift block the live ST.hourly values for those same slots.
   // Only PAST shift snapshots should claim _snapKeys.
-  var _now=new Date(),_nh=_now.getHours();
+  var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
+  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _totalMins=_nh*60+_nm;
+  var _isDayNow=_totalMins>=(6*60+_grace)&&_totalMins<(18*60+_grace);
   var _csd;
-  if(_nh>=6&&_nh<18){_csd=_now.toLocaleDateString('en-CA');}
-  else if(_nh<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_csd=_y.toLocaleDateString('en-CA');}
+  if(_isDayNow){_csd=_now.toLocaleDateString('en-CA');}
+  else if(_totalMins<(6*60+_grace)){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_csd=_y.toLocaleDateString('en-CA');}
   else{_csd=_now.toLocaleDateString('en-CA');}
-  var _curShiftKey=(_nh>=6&&_nh<18?'DAY':'NIGHT')+'_'+_csd;
+  var _curShiftKey=(_isDayNow?'DAY':'NIGHT')+'_'+_csd;
 
   // Step 1: sum from PAST shift snapshots only (skip current shift snapshot).
   // Build _snapKeys only from past shifts so step 2 live values are never blocked.
@@ -846,7 +859,17 @@ function getPeriodSlots(sess,slotKeys){
 
 // ═══════════ HELPERS ═══════════
 const $=id=>document.getElementById(id);
-function isDay(){const h=new Date().getHours();return h>=6&&h<18;} // strict 06-18 day shift
+function isDay(){
+  var now=new Date();
+  var h=now.getHours();
+  var m=now.getMinutes();
+  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  // Day shift: from 06:grace until 18:grace
+  var totalMins=h*60+m;
+  var dayStart=6*60+grace;   // e.g. 06:15 = 375
+  var dayEnd=18*60+grace;    // e.g. 18:15 = 1095
+  return totalMins>=dayStart&&totalMins<dayEnd;
+}
 function shiftSlots(){
   // Returns slot-key strings for the current session's shift window
   var sess=getSess();
@@ -857,8 +880,13 @@ function shiftSlots(){
 // ─── SHIFT GROUPING (Step 3+4) ───
 // Returns "DAY" or "NIGHT" for a given Date/timestamp
 function getShiftType(date){
-  const h=new Date(date).getHours();
-  return(h>=6&&h<18)?'DAY':'NIGHT';
+  var d=new Date(date);
+  var h=d.getHours(),m=d.getMinutes();
+  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var totalMins=h*60+m;
+  var dayStart=6*60+grace;
+  var dayEnd=18*60+grace;
+  return(totalMins>=dayStart&&totalMins<dayEnd)?'DAY':'NIGHT';
 }
 
 // Ensure session has a shifts array (non-destructive extension)
@@ -1323,7 +1351,9 @@ function saveSession(){
 
   // Snapshot results and delays
   var sl_=shiftSlots();
-  if(!s._results)s._results={hourly:{},delays:{}};
+  if(!s._results||typeof s._results!=='object')s._results={hourly:{},delays:{}};
+  if(!s._results.hourly||typeof s._results.hourly!=='object')s._results.hourly={};
+  if(!s._results.delays||typeof s._results.delays!=='object')s._results.delays={};
   sl_.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=hk(id,slot,ci,t);var sk=slot+'_'+ci+'_'+t;if(ST.hourly[k])s._results.hourly[sk]=ST.hourly[k];});}});
   for(var ci=1;ci<=nc;ci++){var rk=id+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=id+'_'+ci+'_'+r;if(ST.delays[dk])s._results.delays[dk]=Object.assign({},ST.delays[dk]);});}
 
@@ -1332,11 +1362,11 @@ function saveSession(){
   if(idx>=0) ST.sessions[idx]=JSON.parse(JSON.stringify(s));
   else ST.sessions.unshift(JSON.parse(JSON.stringify(s)));
   logActivity('Session Saved',s.vesselName,'Cranes: '+nc+' | Target: '+(s.target||0));
+  // Set protection BEFORE sv() so the window is active before Firebase echo arrives
+  _saveProtectUntil=Date.now()+8000;
+  _myLastSave=Date.now();
   sv();
   renderInput();
-  // Extend own-save protection for 6s so Firebase echoes can't revert locked state (esp. on mobile)
-  _saveProtectUntil=Date.now()+6000;
-  _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1349,11 +1379,11 @@ function unlockSess(){
   if(!raw)return;
   raw.locked=false;
   logActivity('Session Unlocked',(raw.vesselName||'Unknown')+' — unlocked for editing');
+  var t=Date.now();
+  _saveProtectUntil=t+8000;
+  _myLastSave=t;
   sv();
   renderInput();
-  var t=Date.now();
-  _saveProtectUntil=t+6000;
-  _myLastSave=t;
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1418,10 +1448,10 @@ function newVessel(){
   else{_nvDate=_nvNow.toLocaleDateString('en-CA');}
   ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
   logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
+  _saveProtectUntil=Date.now()+8000;
+  _myLastSave=Date.now();
   sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
-  _saveProtectUntil=Date.now()+6000;
-  _myLastSave=Date.now();
   setTimeout(function(){_myLastSave=Date.now();},500);
   setTimeout(function(){_myLastSave=Date.now();},1000);
   setTimeout(function(){_myLastSave=Date.now();},2000);
@@ -1508,40 +1538,55 @@ function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
 // Live-update Total Done, Total Remain, and row total cells without full re-render.
 // Called from oninput on current-shift hourly inputs in renderResults.
 function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
-  var sess=getSess();
-  if(!sess||String(sess.id)!==String(sessId))return;
-  // Recompute Total Done per crane from ST.hourly directly (bypasses snapshot issue)
-  var slots=[];
-  document.querySelectorAll('#'+blockId+' input.ci').forEach(function(inp){
-    // inputs are grouped: nc inputs per slot row, alternating discharge/load sections
-    // We read directly from ST.hourly using getCraneTotal which is now fixed
-  });
-  // Use getCraneTotal (fixed) for per-crane totals
+  // Sum directly from ST.hourly across ALL slots in the current shift.
+  // This bypasses getCraneTotal and snapshot logic entirely — ST.hourly is
+  // already updated by the oninput before this function is called.
   var doneRowId='res_done_'+blockId+'_'+t;
   var remRowId='res_rem_'+blockId+'_'+t;
+  // Gather all slot keys that belong to this block by reading all ST.hourly keys for this session
+  var pfx=String(sessId)+'_';
+  var perCrane={};
+  for(var i=1;i<=nc;i++)perCrane[i]=0;
+  Object.keys(ST.hourly).forEach(function(k){
+    if(k.indexOf(pfx)!==0)return;
+    var sk=k.slice(pfx.length); // slot_ci_type
+    var parts=sk.split('_');
+    if(parts.length<3)return;
+    var kt=parts[parts.length-1];
+    if(kt!==t)return;
+    var ci=parseInt(parts[parts.length-2]);
+    if(ci<1||ci>nc)return;
+    perCrane[ci]=(perCrane[ci]||0)+(ST.hourly[k]||0);
+  });
+  // Update per-crane Done cells
   var dT=0;
   for(var i=1;i<=nc;i++){
-    var done=getCraneTotal(sess,i,t);
-    var doneCell=document.getElementById(doneRowId+'_c'+i);
-    if(doneCell)doneCell.textContent=done;
-    dT+=done;
-    var split=effSplit(sess,i,t);
-    var rem=split-done;
-    var remCell=document.getElementById(remRowId+'_c'+i);
-    if(remCell){remCell.textContent=rem;remCell.style.color=rem<0?'var(--red)':'';}
+    dT+=perCrane[i];
+    var dc=document.getElementById(doneRowId+'_c'+i);
+    if(dc)dc.textContent=perCrane[i];
   }
-  var doneTot=document.getElementById(doneRowId+'_tot');
-  if(doneTot)doneTot.textContent=dT;
-  var remTot=0;
-  for(var i=1;i<=nc;i++)remTot+=effSplit(sess,i,t)-getCraneTotal(sess,i,t);
-  var remTotEl=document.getElementById(remRowId+'_tot');
-  if(remTotEl){remTotEl.textContent=remTot;remTotEl.style.color=remTot<0?'var(--red)':'';}
-  // Also update the row total for the changed slot row
+  var dtEl=document.getElementById(doneRowId+'_tot');
+  if(dtEl)dtEl.textContent=dT;
+  // Update per-crane Remain cells — need effSplit which needs sess
+  var sess=getSess();
+  if(sess){
+    var rT2=0;
+    for(var i=1;i<=nc;i++){
+      var split=effSplit(sess,i,t);
+      var rem=split-perCrane[i];
+      rT2+=rem;
+      var rc=document.getElementById(remRowId+'_c'+i);
+      if(rc){rc.textContent=rem;rc.style.color=rem<0?'var(--red)':'';}
+    }
+    var rtEl=document.getElementById(remRowId+'_tot');
+    if(rtEl){rtEl.textContent=rT2;rtEl.style.color=rT2<0?'var(--red)':'';}
+  }
+  // Update the changed slot row total
   var rowTotEl=document.getElementById('rrowtot_'+blockId+'_'+t+'_'+slotRi);
   if(rowTotEl){
-    var rT=0;
-    for(var i=1;i<=nc;i++)rT+=ST.hourly[hk(sessId,changedSlot,i,t)]||0;
-    rowTotEl.textContent=rT||'';
+    var rt=0;
+    for(var i=1;i<=nc;i++)rt+=ST.hourly[hk(sessId,changedSlot,i,t)]||0;
+    rowTotEl.textContent=rt||'';
   }
 }
 
@@ -2316,10 +2361,16 @@ function renderPerformance(){
   // ── Compute data for current view ──
   // Actuals per slot (raw, not cumulative)
   var rawActuals=cmtActuals(sess,sl,view);
-  // Cumulative actuals
+  // Cumulative actuals — only up to and including the current slot
+  // Slots after the current one get null so the line stops at now
   var cumActuals=[];
   var runSum=0;
-  rawActuals.forEach(function(v){runSum+=v;cumActuals.push(runSum);});
+  var slotIdx=sl.indexOf(slot);
+  if(slotIdx<0)slotIdx=sl.length-1;
+  rawActuals.forEach(function(v,i){
+    if(i<=slotIdx){runSum+=v;cumActuals.push(runSum);}
+    else{cumActuals.push(null);}
+  });
 
   // Target for current view
   var tKey=view==='combined'?null:(view==='mhc1'?'cmtTarget':('cmtTarget'+view.replace('mhc','')));
@@ -2403,13 +2454,13 @@ function renderPerformance(){
       pointRadius:3,pointHoverRadius:5,pointBackgroundColor:col,
       fill:false,tension:0,order:2
     });
-    // Actual line (solid)
+    // Actual line (solid) — stops at current slot, nulls after
     datasets.push({
       label:(view==='combined'?'Combined':'MHC'+view.replace('mhc',''))+' actual',
       data:cumActuals,
       borderColor:col,backgroundColor:col+'22',
       borderWidth:2.5,pointRadius:4,pointHoverRadius:6,pointBackgroundColor:col,
-      fill:true,tension:.3,order:1
+      fill:true,tension:.3,order:1,spanGaps:false
     });
 
     // Mark break slots with vertical shading via a plugin
@@ -3484,6 +3535,11 @@ function renderAdmin(){
           oninput="if(!ST.timing)ST.timing={};ST.timing.fourHourlyGrace=parseInt(this.value)||90;sv()"/>
         <span style="font-size:10px;color:#888;margin-top:2px">e.g. 90 = switch 90min after slot ends</span>
       </div>
+      <div class="f"><label>Shift Rollover Grace (min)</label>
+        <input type="number" value="${ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15}" min="0" max="59"
+          oninput="if(!ST.timing)ST.timing={};ST.timing.shiftRolloverGrace=parseInt(this.value)||15;sv()"/>
+        <span style="font-size:10px;color:#888;margin-top:2px">e.g. 15 = day starts at 06:15, night at 18:15</span>
+      </div>
     </div>
   </div>`;
 
@@ -3961,7 +4017,7 @@ function renderYardReport(report){
   let grandEx=0,grandIm=0,grandDep=0;
   vessels.forEach((v,vi)=>{
     types.forEach((t,ti)=>{
-      const data=v.data[t]||{export:0,import:0,departed:0};
+      const data=(v.data&&v.data[t])||{export:0,import:0,departed:0};
       grandEx+=data.export||0;grandIm+=data.import||0;grandDep+=data.departed||0;
       const isFirst=ti===0;
       const isLast=ti===types.length-1;
@@ -3988,7 +4044,7 @@ function renderYardReport(report){
     });
     // Vessel total row
     let vEx=0,vIm=0,vDep=0;
-    types.forEach(t=>{const d=v.data[t]||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
+    types.forEach(t=>{const d=(v.data&&v.data[t])||{};vEx+=d.export||0;vIm+=d.import||0;vDep+=d.departed||0;});
     let vCustom=(report.customCols||[]).map(c=>{let s=0;types.forEach(t=>{const d=v.data&&v.data[t]?v.data[t]:{};s+=d[c.key]||0;});return s;});
     h+=`<tr style="background:var(--yellow)">
       <td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>
