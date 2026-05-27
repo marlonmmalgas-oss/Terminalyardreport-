@@ -5489,7 +5489,7 @@ function renderEmergency(){
   h+='<div class="chcard" style="margin:8px 10px">';
   h+='<div class="cht">Total Done 12hrs vs Target</div>';
   h+='<div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" id="emg_bfill" style="width:'+mp+'%"><span id="emg_bspan" style="font-size:11px;font-weight:800">'+t12T+'</span></div></div></div>';
-  h+='<div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:'+tp+'%"><span style="font-size:11px;font-weight:800">'+tgt+'  <input type="number" value="'+tgt+'" style="width:55px;font-size:11px;font-weight:800;background:transparent;border:none;border-bottom:1px dashed rgba(0,0,0,.3);color:inherit;text-align:center" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.target=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/></span></div></div></div>';
+  h+='<div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:'+tp+'%"><span style="font-size:11px;font-weight:800"><input type="number" value="'+tgt+'" style="width:55px;font-size:11px;font-weight:800;background:transparent;border:none;border-bottom:1px dashed rgba(0,0,0,.3);color:inherit;text-align:center" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.target=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/></span></div></div></div>';
   h+='</div><div style="height:14px"></div></div>';
 
   $('sc-emergency').innerHTML=h;
