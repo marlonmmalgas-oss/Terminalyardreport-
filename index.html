@@ -5411,7 +5411,7 @@ function renderEmergency(){
   h+='</div></div></div></div>';
 
   // ── Controls (cranes, copy, reset) ──
-  h+='<div style="display:flex;gap:8px;padding:8px 10px;flex-wrap:wrap;align-items:center;background:#f0f2f7;border-bottom:1px solid #dde3f0">';
+  h+='<div class="no-share" style="display:flex;gap:8px;padding:8px 10px;flex-wrap:wrap;align-items:center;background:#f0f2f7;border-bottom:1px solid #dde3f0">';
   h+='<label style="font-size:11px;font-weight:700;color:#1F3864">Cranes:</label>';
   h+='<select style="border:1px solid #dde3f0;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;background:white;color:#1F3864" onchange="if(!ST.emergency)ST.emergency={};ST.emergency.numCranes=parseInt(this.value);ST.emergency._prefilled=false;_emgSv();renderEmergency()">';
   for(var n=1;n<=4;n++)h+='<option value="'+n+'"'+(nc===n?' selected':'')+'>'+n+'</option>';
@@ -5594,16 +5594,47 @@ function _emgReset(){
 function shareEmergency(){
   var el=document.getElementById('emgCap');
   if(!el){alert('Open Emergency tab first.');return;}
-  var hidden=[];
-  el.querySelectorAll('input,button,select').forEach(function(e2){
-    hidden.push({e:e2,d:e2.style.display});e2.style.display='none';
+
+  // Clone the element for capture
+  var clone=el.cloneNode(true);
+  clone.style.cssText='position:fixed;left:-9999px;top:0;width:'+el.offsetWidth+'px;overflow:visible;background:#f0f2f7;';
+
+  // Stamp live input values onto cloned inputs before replacing
+  var liveInputs=el.querySelectorAll('input');
+  var cloneInputs=clone.querySelectorAll('input');
+  liveInputs.forEach(function(inp,i){if(cloneInputs[i])cloneInputs[i].value=inp.value;});
+
+  // Remove no-share elements (controls strip, buttons)
+  clone.querySelectorAll('.no-share,.rh-share,button,select').forEach(function(e2){e2.remove();});
+
+  // Replace all inputs with plain text spans showing their value
+  clone.querySelectorAll('input').forEach(function(inp){
+    var span=document.createElement('span');
+    var val=inp.value||inp.placeholder||'';
+    span.textContent=val==='-'||val===''?'—':val;
+    span.style.cssText='display:inline-block;min-width:'+inp.offsetWidth+'px;text-align:center;font-size:'+getComputedStyle(inp).fontSize+';font-weight:'+getComputedStyle(inp).fontWeight+';color:'+getComputedStyle(inp).color+';';
+    inp.parentNode.replaceChild(span,inp);
   });
-  html2canvas(el,{
+
+  // Replace contenteditable spans — they already show text, just remove the dashed border
+  clone.querySelectorAll('[contenteditable]').forEach(function(e2){
+    e2.removeAttribute('contenteditable');
+    e2.style.borderBottom='none';
+  });
+
+  document.body.appendChild(clone);
+
+  // Measure full height after clone is in DOM
+  var captureH=clone.scrollHeight;
+  var captureW=el.offsetWidth;
+
+  html2canvas(clone,{
     scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-    width:el.offsetWidth,height:el.scrollHeight,
-    windowWidth:el.offsetWidth,scrollX:0,scrollY:0,allowTaint:true,logging:false
+    width:captureW,height:captureH,
+    windowWidth:captureW,scrollX:0,scrollY:0,
+    allowTaint:true,logging:false
   }).then(function(canvas){
-    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
+    document.body.removeChild(clone);
     canvas.toBlob(function(blob){
       if(!blob)return;
       var file=new File([blob],'EmergencyReport.png',{type:'image/png'});
@@ -5615,9 +5646,9 @@ function shareEmergency(){
         setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
       }
     },'image/png',0.96);
-  }).catch(function(e){
-    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
-    alert('Share failed: '+e.message);
+  }).catch(function(err){
+    if(document.body.contains(clone))document.body.removeChild(clone);
+    alert('Share failed: '+err.message);
   });
 }
 </script>
