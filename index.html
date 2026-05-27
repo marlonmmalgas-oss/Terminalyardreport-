@@ -329,6 +329,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
     <div class="sc" id="sc-activitylog"></div>
+    <div class="sc" id="sc-emergency"></div>
   </div>
   <nav class="bnav" id="bnav"></nav>
 </div>
@@ -478,6 +479,32 @@ function initSync(){
         }
         if(!Array.isArray(ST[k]))ST[k]=[];
       });
+      // Restore nested arrays inside yardReports that Firebase also converts to objects
+      if(Array.isArray(ST.yardReports)){
+        ST.yardReports.forEach(function(report){
+          if(!report)return;
+          // vessels array
+          if(report.vessels&&!Array.isArray(report.vessels)&&typeof report.vessels==='object'){
+            report.vessels=Object.values(report.vessels);
+          }
+          if(!Array.isArray(report.vessels))report.vessels=[];
+          // data object inside each vessel (Firebase converts {'GP/DRY':{...}} fine but
+          // if the vessel itself was array-converted, restore each vessel's data)
+          report.vessels.forEach(function(v){
+            if(!v)return;
+            if(!v.data||typeof v.data!=='object')v.data={};
+            // customTypes array
+          });
+          // customTypes
+          if(report.customTypes&&!Array.isArray(report.customTypes)&&typeof report.customTypes==='object'){
+            report.customTypes=Object.values(report.customTypes);
+          }
+          // customCols
+          if(report.customCols&&!Array.isArray(report.customCols)&&typeof report.customCols==='object'){
+            report.customCols=Object.values(report.customCols);
+          }
+        });
+      }
       // Merge remote activityLog with local (so cross-device logs are combined)
       var _remoteLog=Array.isArray(remote.activityLog)?remote.activityLog:(remote.activityLog&&typeof remote.activityLog==='object'?Object.values(remote.activityLog):[]);
       var _mergedLog=_localLog.concat(_remoteLog.filter(function(re){return!_localLog.find(function(le){return le.ts===re.ts&&le.user===re.user&&le.action===re.action;});}));
@@ -541,6 +568,8 @@ function initSync(){
           // Restore nested arrays Firebase also converts to keyed objects
           yardArr.forEach(function(r){
             if(r.vessels&&!Array.isArray(r.vessels))r.vessels=Object.values(r.vessels);
+            if(!Array.isArray(r.vessels))r.vessels=[];
+            r.vessels.forEach(function(v){if(v&&(!v.data||typeof v.data!=='object'))v.data={};});
             if(r.customTypes&&!Array.isArray(r.customTypes))r.customTypes=Object.values(r.customTypes);
             if(r.customCols&&!Array.isArray(r.customCols))r.customCols=Object.values(r.customCols);
           });
@@ -586,6 +615,17 @@ const DEF={
   sessions:[],hourly:{},delays:{},delayRows:{},delayRowIds:{},
   settings:{logo:null,bg:null,bgHourly:null,bgFour:null,bgDelay:null,bgYard:null,term:'',reportNumColor:'#000000',fbUrl:'',fbKey:''},
   generators:[],
+  emergency:{
+    heading:'EMERGENCY HOURLY REPORT',
+    subheading:'PORT OPERATIONS',
+    vesselName:'',dockedOn:'',firstLift:'',lastLift:'',
+    craneLabels:['MHC1','MHC2','MHC3','MHC4'],
+    timeSlots:['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800'],
+    rows:{},numCranes:2,
+    dischargeLabel:'DISCHARGE',loadLabel:'LOAD',
+    plannedLabel:'Planned',obLabel:'Opening Bal.',doneLabel:'Total Done',remainLabel:'Total Remain',
+    planned:{},ob:{}
+  },
   timing:{hourlyGrace:30,fourHourlyGrace:90,shiftRolloverGrace:15},
   craneNames:{1:'CR1',2:'CR2',3:'CR3',4:'CR4'},
   sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change']},
@@ -1164,15 +1204,15 @@ function initApp(){
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'},{id:'emergency',ico:'🚨',l:'Emergency'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'emergency',ico:'🚨',l:'Emergency'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'},{id:'emergency',ico:'🚨',l:'Emergency'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'emergency',ico:'🚨',l:'Emergency'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog,emergency:renderEmergency})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -1593,11 +1633,19 @@ function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
 function renderResults(){
   var sess=getSess();
   var curShiftType=isDay()?'DAY':'NIGHT';
-  var _now=new Date(),_h=_now.getHours();
+  // Use isDay() (which respects shiftRolloverGrace) for the date too
+  var _now=new Date(),_h=_now.getHours(),_hm=_now.getMinutes();
+  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _totalMins=_h*60+_hm;
+  var _dayStart=6*60+_grace, _dayEnd=18*60+_grace;
   var _curShiftStartDate;
-  if(_h>=6&&_h<18){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
-  else if(_h<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
-  else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  if(_totalMins>=_dayStart&&_totalMins<_dayEnd){
+    _curShiftStartDate=_now.toLocaleDateString('en-CA');
+  } else if(_totalMins<_dayStart){
+    var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');
+  } else {
+    _curShiftStartDate=_now.toLocaleDateString('en-CA');
+  }
   var curShiftKey=curShiftType+'_'+_curShiftStartDate;
 
   let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${curShiftType} SHIFT</span></div></div>`;
@@ -1609,7 +1657,23 @@ function renderResults(){
   var shiftBlocks=[];
 
   if(sess.shifts&&sess.shifts.length){
+    // Deduplicate by key — keep the LAST entry per key (most data)
+    var _seenKeys={};
+    var _dedupedShifts=[];
     sess.shifts.forEach(function(sh){
+      if(!sh||!sh.key)return;
+      _seenKeys[sh.key]=sh; // later entries overwrite earlier ones
+    });
+    // Preserve original order (last occurrence wins but maintain display order)
+    var _usedKeys={};
+    sess.shifts.forEach(function(sh){
+      if(!sh||!sh.key)return;
+      if(_usedKeys[sh.key])return; // already added this key
+      _dedupedShifts.push(_seenKeys[sh.key]); // push the winning (last) entry
+      _usedKeys[sh.key]=true;
+    });
+
+    _dedupedShifts.forEach(function(sh){
       var isCurrent=sh.key===curShiftKey;
       var shSlots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
       shiftBlocks.push({
@@ -4069,6 +4133,7 @@ function renderYardReport(report){
   // ── Summary totals (matches template bottom section) ──
   let totalGP=0,totalReef=0,totalMty=0,totalInYard=0;
   vessels.forEach(v=>{
+    if(!v||!v.data)return;
     totalGP+=(v.data['GP/DRY']?.export||0)+(v.data['GP/DRY']?.import||0);
     totalReef+=(v.data['REEFER']?.export||0)+(v.data['REEFER']?.import||0);
     totalMty+=(v.data['EMPTY']?.export||0)+(v.data['EMPTY']?.import||0);
@@ -5222,6 +5287,339 @@ function removeYardCol(reportId,ci){
   sv();renderYard();
 }
 
+// ═══════════ EMERGENCY REPORT ═══════════
+function _emgSv(){if(!ST.emergency)ST.emergency={};sv();}
+function _emgInit(){
+  if(!ST.emergency)ST.emergency={};
+  var e=ST.emergency;
+  if(!e.title)e.title='HOURLY REPORT';
+  if(!e.rows)e.rows={};           // key: ci+'_'+type+'_'+slot  → number
+  if(!e.splits)e.splits={};       // key: ci+'_'+type           → number
+  if(!e.ob)e.ob={};               // key: ci+'_'+type           → number
+  if(!e.target)e.target=0;
+  if(e.numCranes===undefined)e.numCranes=2;
+  if(!e.slots)e.slots=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800'];
+  if(!e.craneNames)e.craneNames={};
+  // Pre-fill vessel info from active session once
+  if(!e._prefilled){
+    var sess=getSess();
+    if(sess){
+      if(!e.vesselName)e.vesselName=sess.vesselName||'';
+      if(!e.dockedOn)e.dockedOn=sess.dockedOn||'';
+      if(!e.firstLift)e.firstLift=sess.firstLift||'';
+      if(!e.lastLift)e.lastLift=sess.lastLift||'';
+      // Copy splits from session craneBalances
+      var nc=parseInt(e.numCranes)||2;
+      for(var i=1;i<=nc;i++){
+        var cb=sess.craneBalances&&sess.craneBalances[i]||{};
+        if(e.splits[i+'_discharge']===undefined)e.splits[i+'_discharge']=cb.dischargeSplit||0;
+        if(e.splits[i+'_load']===undefined)e.splits[i+'_load']=cb.loadSplit||0;
+        if(e.ob[i+'_discharge']===undefined&&cb.dischargeOB!=null&&cb.dischargeOB!=='')e.ob[i+'_discharge']=parseFloat(cb.dischargeOB)||0;
+        if(e.ob[i+'_load']===undefined&&cb.loadOB!=null&&cb.loadOB!=='')e.ob[i+'_load']=parseFloat(cb.loadOB)||0;
+      }
+      if(!e.target)e.target=sess.target||0;
+      e._prefilled=true;
+    }
+  }
+  return e;
+}
+function _emgCraneName(ci){
+  var e=ST.emergency||{};
+  return(e.craneNames&&e.craneNames[ci])||('MHC'+ci);
+}
+function _emgEffSplit(ci,type){
+  var e=ST.emergency||{};
+  var ob=e.ob&&e.ob[ci+'_'+type];
+  if(ob!=null&&ob!==''&&!isNaN(ob))return parseFloat(ob);
+  return parseFloat((e.splits&&e.splits[ci+'_'+type])||0);
+}
+function _emgDone(ci,type){
+  var e=ST.emergency||{};
+  var tot=0;
+  (e.slots||[]).forEach(function(s,si){
+    tot+=parseFloat((e.rows&&e.rows[ci+'_'+type+'_'+si])||0);
+  });
+  return tot;
+}
+function _emgUpdateLive(ci,type,si){
+  var e=_emgInit();
+  var nc=parseInt(e.numCranes)||2;
+  // Update row total
+  var rt=0;
+  for(var i=1;i<=nc;i++)rt+=parseFloat(e.rows[i+'_'+type+'_'+si]||0);
+  var rtEl=document.getElementById('emg_rt_'+type+'_'+si);
+  if(rtEl)rtEl.textContent=rt||'';
+  // Update crane done/remain
+  var done=_emgDone(ci,type);
+  var split=_emgEffSplit(ci,type);
+  var rem=split-done;
+  var dcEl=document.getElementById('emg_done_'+type+'_'+ci);
+  if(dcEl)dcEl.textContent=done;
+  var rcEl=document.getElementById('emg_rem_'+type+'_'+ci);
+  if(rcEl){rcEl.textContent=rem;rcEl.style.color=rem<0?'var(--red)':'';}
+  // Update column totals
+  var dTot=0,rTot=0;
+  for(var i=1;i<=nc;i++){
+    var d=_emgDone(i,type);
+    var s2=_emgEffSplit(i,type);
+    dTot+=d;rTot+=s2-d;
+  }
+  var dtEl=document.getElementById('emg_done_'+type+'_tot');if(dtEl)dtEl.textContent=dTot;
+  var rtEl2=document.getElementById('emg_rem_'+type+'_tot');if(rtEl2){rtEl2.textContent=rTot;rtEl2.style.color=rTot<0?'var(--red)':'';}
+  // Update summary bar
+  var totalDone=0;
+  var nc2=parseInt(e.numCranes)||2;
+  ['discharge','load'].forEach(function(tp){for(var i=1;i<=nc2;i++)totalDone+=_emgDone(i,tp);});
+  var tgt=parseInt(e.target)||0;
+  var mx=Math.max(totalDone,tgt,1);
+  var mp=Math.max(totalDone/mx*100,totalDone>0?5:0);
+  var tp2=Math.max(tgt/mx*100,tgt>0?5:0);
+  var bf=document.getElementById('emg_bfill');var bsp=document.getElementById('emg_bspan');
+  if(bf){bf.style.width=mp+'%';if(bsp)bsp.textContent=totalDone;}
+}
+function renderEmergency(){
+  var e=_emgInit();
+  var nc=parseInt(e.numCranes)||2;
+  var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
+  var bgStyle='style="background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+(HARDCODED_BG||'')+') center/cover"';
+  var slot=e.slotLabel||fs(currSlot());
+
+  // ── Header — identical to rhHTML ──
+  var h='<div id="emgCap">';
+  h+='<div class="rh" '+bgStyle+'>';
+  h+='<div class="rh1">';
+  h+='<div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
+  h+='<div class="rh-txt">';
+  h+='<h2 contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text;display:inline-block;min-width:40px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.title=this.textContent.trim();_emgSv()">'+(e.title||'HOURLY REPORT')+'</h2>';
+  h+='<p>'+(ST.settings&&ST.settings.term||'Terminal')+'</p>';
+  h+='</div>';
+  h+='<button class="rh-share" onclick="shareEmergency()">📤 Share</button>';
+  h+='</div>';
+  h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
+  h+='<div style="flex:1;min-width:0;">';
+  h+='<span class="rh-vessel" contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text;display:inline-block;min-width:30px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.vesselName=this.textContent.trim();_emgSv()">'+(e.vesselName||'Vessel')+'</span>';
+  h+='<div style="font-size:12px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: <span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.dockedOn=this.textContent.trim();_emgSv()">'+(e.dockedOn||'—')+'</span></div>';
+  h+='</div>';
+  h+='<div style="flex:0 0 auto;text-align:center;">';
+  h+='<span class="rh-slot" contenteditable="true" style="outline:none;cursor:text;border-bottom:1px dashed rgba(255,255,255,.4)" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.slotLabel=this.textContent.trim();_emgSv()">'+slot+'</span>';
+  h+='</div>';
+  h+='<div style="flex:1;min-width:0;text-align:right;">';
+  h+='<span class="rh-date">'+todayStr+'</span>';
+  h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
+  h+='<div>🟢 First Lift: <strong contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.firstLift=this.textContent.trim();_emgSv()">'+(e.firstLift||'—')+'</strong></div>';
+  h+='<div>🔴 Last Lift: &nbsp;<strong contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.lastLift=this.textContent.trim();_emgSv()">'+(e.lastLift||'—')+'</strong></div>';
+  h+='</div></div></div></div>';
+
+  // ── Controls (cranes, copy, reset) ──
+  h+='<div style="display:flex;gap:8px;padding:8px 10px;flex-wrap:wrap;align-items:center;background:#f0f2f7;border-bottom:1px solid #dde3f0">';
+  h+='<label style="font-size:11px;font-weight:700;color:#1F3864">Cranes:</label>';
+  h+='<select style="border:1px solid #dde3f0;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;background:white;color:#1F3864" onchange="if(!ST.emergency)ST.emergency={};ST.emergency.numCranes=parseInt(this.value);ST.emergency._prefilled=false;_emgSv();renderEmergency()">';
+  for(var n=1;n<=4;n++)h+='<option value="'+n+'"'+(nc===n?' selected':'')+'>'+n+'</option>';
+  h+='</select>';
+  h+='<button onclick="_emgCopyFromActive()" style="padding:5px 12px;border-radius:6px;background:#1F3864;color:white;font-size:11px;font-weight:700;border:none;cursor:pointer;">📋 Copy from Hourly Report</button>';
+  h+='<button onclick="_emgReset()" style="padding:5px 10px;border-radius:6px;background:#fee2e2;color:#991b1b;font-size:11px;font-weight:700;border:1px solid #fca5a5;cursor:pointer;">🔄 Reset</button>';
+  h+='</div>';
+
+  // ── Crane table — identical structure to craneTableHTML, all cells editable ──
+  var rows='';
+  for(var ci=1;ci<=nc;ci++){
+    var sd=parseFloat((e.splits&&e.splits[ci+'_discharge'])||0);
+    var sl2=parseFloat((e.splits&&e.splits[ci+'_load'])||0);
+    var ed2=_emgEffSplit(ci,'discharge');
+    var el2=_emgEffSplit(ci,'load');
+    var hd=parseFloat((e.rows&&e.rows[ci+'_discharge'])||0);
+    var hl=parseFloat((e.rows&&e.rows[ci+'_load'])||0);
+    var rd=parseFloat((e.remaining&&e.remaining[ci+'_discharge'])!=null?e.remaining[ci+'_discharge']:ed2-hd);
+    var rl=parseFloat((e.remaining&&e.remaining[ci+'_load'])!=null?e.remaining[ci+'_load']:el2-hl);
+    var cname=_emgCraneName(ci);
+    rows+='<tr class="'+(ci%2===0?'e':'o')+'">';
+    // Crane name editable
+    rows+='<td class="crane-cell"><span contenteditable="true" style="outline:none;border-bottom:1px dashed #aaa;cursor:text;font-weight:800;display:inline-block;min-width:30px" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.craneNames)ST.emergency.craneNames={};ST.emergency.craneNames['+ci+']=this.textContent.trim();_emgSv()">'+cname+'</span></td>';
+    // Splits editable
+    rows+='<td><input type="number" value="'+sd+'" placeholder="-" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.splits)ST.emergency.splits={};ST.emergency.splits[\''+ci+'_discharge\']=parseFloat(this.value)||0;_emgSv()"/></td>';
+    rows+='<td><input type="number" value="'+sl2+'" placeholder="-" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.splits)ST.emergency.splits={};ST.emergency.splits[\''+ci+'_load\']=parseFloat(this.value)||0;_emgSv()"/></td>';
+    // Hourly moves editable (highlighted)
+    rows+='<td class="hl"><input type="number" value="'+(hd||'')+'" placeholder="—" class="ci" style="background:#e8f4fb" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.rows)ST.emergency.rows={};ST.emergency.rows[\''+ci+'_discharge\']=parseFloat(this.value)||0;_emgSv()"/></td>';
+    rows+='<td class="hl"><input type="number" value="'+(hl||'')+'" placeholder="—" class="ci" style="background:#e8f4fb" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.rows)ST.emergency.rows={};ST.emergency.rows[\''+ci+'_load\']=parseFloat(this.value)||0;_emgSv()"/></td>';
+    // Remaining editable
+    rows+='<td'+(rd<0?' class="neg"':'')+'><input type="number" value="'+rd+'" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.remaining)ST.emergency.remaining={};ST.emergency.remaining[\''+ci+'_discharge\']=parseFloat(this.value);_emgSv()"/></td>';
+    rows+='<td'+(rl<0?' class="neg"':'')+'><input type="number" value="'+rl+'" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.remaining)ST.emergency.remaining={};ST.emergency.remaining[\''+ci+'_load\']=parseFloat(this.value);_emgSv()"/></td>';
+    rows+='</tr>';
+  }
+  h+='<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt"><thead>';
+  h+='<tr>';
+  h+='<th class="grp crane-col" rowspan="2">Crane</th>';
+  h+='<th class="grp" colspan="2"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.splitsLabel=this.textContent.trim();_emgSv()">'+(e.splitsLabel||'Splits')+'</span></th>';
+  h+='<th class="grp" colspan="2" style="background:#1a4a7a"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.hourlyLabel=this.textContent.trim();_emgSv()">'+(e.hourlyLabel||'Hourly Moves')+'</span></th>';
+  h+='<th class="grp" colspan="2"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.remainingLabel=this.textContent.trim();_emgSv()">'+(e.remainingLabel||'Remaining')+'</span></th>';
+  h+='</tr><tr>';
+  h+='<th class="sub">Disch.</th><th class="sub">Load</th>';
+  h+='<th class="sub sub-hl">Disch.</th><th class="sub sub-hl">Load</th>';
+  h+='<th class="sub">Disch.</th><th class="sub">Load</th>';
+  h+='</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+
+  // ── Summary — identical to summaryHTML, all cells editable ──
+  var tRemD=parseFloat(e.summary&&e.summary.remD!=null?e.summary.remD:0);
+  var tRemL=parseFloat(e.summary&&e.summary.remL!=null?e.summary.remL:0);
+  var tRemT=parseFloat(e.summary&&e.summary.remT!=null?e.summary.remT:tRemD+tRemL);
+  var tDoneD=parseFloat(e.summary&&e.summary.doneD!=null?e.summary.doneD:0);
+  var tDoneL=parseFloat(e.summary&&e.summary.doneL!=null?e.summary.doneL:0);
+  var tDoneT=parseFloat(e.summary&&e.summary.doneT!=null?e.summary.doneT:tDoneD+tDoneL);
+  var t12D=parseFloat(e.summary&&e.summary.done12D!=null?e.summary.done12D:0);
+  var t12L=parseFloat(e.summary&&e.summary.done12L!=null?e.summary.done12L:0);
+  var t12T=parseFloat(e.summary&&e.summary.done12T!=null?e.summary.done12T:t12D+t12L);
+  var tgt=parseFloat(e.target)||0;
+  var mx=Math.max(t12T,tgt,1);
+  var mp=Math.max(t12T/mx*100,t12T>0?5:0);
+  var tp=Math.max(tgt/mx*100,tgt>0?5:0);
+
+  function numIn(key,val,extra){
+    return '<input type="number" value="'+(val||0)+'" class="ci" style="width:60px;text-align:center;'+(extra||'')+'" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.summary)ST.emergency.summary={};ST.emergency.summary[\''+key+'\']=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/>';
+  }
+
+  h+='<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt"><thead>';
+  h+='<tr><th class="grp" style="text-align:left;padding-left:9px">Summary</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr>';
+  h+='</thead><tbody>';
+  h+='<tr class="ry"><td style="font-weight:800;padding-left:9px">Total Remaining</td><td>'+numIn('remD',tRemD)+'</td><td>'+numIn('remL',tRemL)+'</td><td style="font-weight:900;'+(tRemT<0?'color:var(--red)':'')+'">'+numIn('remT',tRemT,'font-weight:900;')+'</td></tr>';
+  h+='<tr class="o"><td style="padding-left:9px">Total Done</td><td>'+numIn('doneD',tDoneD)+'</td><td>'+numIn('doneL',tDoneL)+'</td><td class="bold">'+numIn('doneT',tDoneT)+'</td></tr>';
+  h+='<tr class="e"><td style="padding-left:9px">Total Done 12hrs</td><td>'+numIn('done12D',t12D)+'</td><td>'+numIn('done12L',t12L)+'</td><td class="bold">'+numIn('done12T',t12T)+'</td></tr>';
+  h+='</tbody></table></div></div>';
+
+  // Bar chart — uses Total Done 12hrs vs Target (exactly as summaryHTML)
+  h+='<div class="chcard" style="margin:8px 10px">';
+  h+='<div class="cht">Total Done 12hrs vs Target</div>';
+  h+='<div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" id="emg_bfill" style="width:'+mp+'%"><span id="emg_bspan" style="font-size:11px;font-weight:800">'+t12T+'</span></div></div></div>';
+  h+='<div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:'+tp+'%"><span style="font-size:11px;font-weight:800">'+tgt+'  <input type="number" value="'+tgt+'" style="width:55px;font-size:11px;font-weight:800;background:transparent;border:none;border-bottom:1px dashed rgba(0,0,0,.3);color:inherit;text-align:center" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.target=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/></span></div></div></div>';
+  h+='</div><div style="height:14px"></div></div>';
+
+  $('sc-emergency').innerHTML=h;
+}
+
+function _emgUpdateBar(){
+  var e=ST.emergency||{};
+  var t12T=parseFloat(e.summary&&e.summary.done12T||0);
+  var tgt=parseFloat(e.target)||0;
+  var mx=Math.max(t12T,tgt,1);
+  var mp=Math.max(t12T/mx*100,t12T>0?5:0);
+  var bf=document.getElementById('emg_bfill');
+  var bs=document.getElementById('emg_bspan');
+  if(bf)bf.style.width=mp+'%';
+  if(bs)bs.textContent=t12T;
+}
+function _emgCopyFromActive(){
+  var sess=getSess();
+  if(!sess){alert('No active session to copy from.');return;}
+  if(!ST.emergency)ST.emergency={};
+  var e=ST.emergency;
+  // Vessel info
+  e.vesselName=sess.vesselName||'';
+  e.dockedOn=sess.dockedOn||'';
+  e.firstLift=sess.firstLift||'';
+  e.lastLift=sess.lastLift||'';
+  e.numCranes=sess.numCranes||2;
+  e.target=sess.target||0;
+  e.slotLabel=fs(currSlot());
+  e._prefilled=true;
+  var nc=parseInt(e.numCranes)||2;
+  // Crane names
+  if(!e.craneNames)e.craneNames={};
+  for(var i=1;i<=nc;i++)e.craneNames[i]=craneName(i);
+  // Splits
+  if(!e.splits)e.splits={};
+  for(var i=1;i<=nc;i++){
+    var cb=sess.craneBalances&&sess.craneBalances[i]||{};
+    e.splits[i+'_discharge']=cb.dischargeSplit||0;
+    e.splits[i+'_load']=cb.loadSplit||0;
+  }
+  // OB
+  if(!e.ob)e.ob={};
+  for(var i=1;i<=nc;i++){
+    var cb=sess.craneBalances&&sess.craneBalances[i]||{};
+    if(cb.dischargeOB!=null&&cb.dischargeOB!=='')e.ob[i+'_discharge']=parseFloat(cb.dischargeOB)||0;
+    if(cb.loadOB!=null&&cb.loadOB!=='')e.ob[i+'_load']=parseFloat(cb.loadOB)||0;
+  }
+  // Current slot hourly moves
+  if(!e.rows)e.rows={};
+  var slot=currSlot();
+  for(var i=1;i<=nc;i++){
+    e.rows[i+'_discharge']=ST.hourly[hk(sess.id,slot,i,'discharge')]||0;
+    e.rows[i+'_load']=ST.hourly[hk(sess.id,slot,i,'load')]||0;
+  }
+  // Remaining
+  if(!e.remaining)e.remaining={};
+  for(var i=1;i<=nc;i++){
+    e.remaining[i+'_discharge']=effSplit(sess,i,'discharge')-getCraneTotal(sess,i,'discharge');
+    e.remaining[i+'_load']=effSplit(sess,i,'load')-getCraneTotal(sess,i,'load');
+  }
+  // Summary — copy from calcGlobalTotals
+  var g=calcGlobalTotals(sess);
+  e.summary={
+    remD:Math.round(g.baseTotalDisc-g.totalDoneDisc),
+    remL:Math.round(g.baseTotalLoad-g.totalDoneLoad),
+    remT:Math.round(g.remaining),
+    doneD:Math.round(g.totalDoneDisc),
+    doneL:Math.round(g.totalDoneLoad),
+    doneT:Math.round(g.totalDone),
+    done12D:Math.round(g.total12Disc),
+    done12L:Math.round(g.total12Load),
+    done12T:Math.round(g.total12)
+  };
+  _emgSv();renderEmergency();
+}
+function _emgAddSlot(){
+  var e=_emgInit();
+  if(!e.slots)e.slots=[];
+  e.slots.push('0000-0100');
+  _emgSv();renderEmergency();
+}
+function _emgDelSlot(si){
+  var e=_emgInit();
+  e.slots.splice(si,1);
+  // Shift row keys down
+  var newRows={};
+  Object.keys(e.rows||{}).forEach(function(k){
+    var parts=k.split('_');
+    var idx=parseInt(parts[parts.length-1]);
+    if(idx===si)return;
+    if(idx>si){parts[parts.length-1]=String(idx-1);newRows[parts.join('_')]=e.rows[k];}
+    else newRows[k]=e.rows[k];
+  });
+  e.rows=newRows;
+  _emgSv();renderEmergency();
+}
+function _emgReset(){
+  if(!confirm('Reset Emergency Report? All data will be cleared.'))return;
+  ST.emergency={};_emgSv();renderEmergency();
+}
+function shareEmergency(){
+  var el=document.getElementById('emgCap');
+  if(!el){alert('Open Emergency tab first.');return;}
+  var hidden=[];
+  el.querySelectorAll('input,button,select').forEach(function(e2){
+    hidden.push({e:e2,d:e2.style.display});e2.style.display='none';
+  });
+  html2canvas(el,{
+    scale:2,useCORS:true,backgroundColor:'#f0f2f7',
+    width:el.offsetWidth,height:el.scrollHeight,
+    windowWidth:el.offsetWidth,scrollX:0,scrollY:0,allowTaint:true,logging:false
+  }).then(function(canvas){
+    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
+    canvas.toBlob(function(blob){
+      if(!blob)return;
+      var file=new File([blob],'EmergencyReport.png',{type:'image/png'});
+      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
+        navigator.share({files:[file],title:'Emergency Report'});
+      } else {
+        var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+        a.download='EmergencyReport.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
+      }
+    },'image/png',0.96);
+  }).catch(function(e){
+    hidden.forEach(function(h2){h2.e.style.display=h2.d;});
+    alert('Share failed: '+e.message);
+  });
+}
 </script>
 </body>
 </html>
