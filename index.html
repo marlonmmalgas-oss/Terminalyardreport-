@@ -2497,6 +2497,81 @@ function renderPerformance(){
   h+='<div style="margin:0 10px 16px;padding:14px;border-radius:12px;background:#0d1521;box-shadow:0 2px 12px rgba(0,0,0,.4)">';
   h+='<div style="font-size:11px;font-weight:800;color:#90a4c8;margin-bottom:8px;letter-spacing:.5px;text-transform:uppercase">Cumulative Moves</div>';
   h+='<div style="position:relative;height:260px"><canvas id="chartCMT"></canvas></div></div>';
+
+  // ── Production Stats ──
+  // Total crane hours: each crane works 12hrs minus time before first lift
+  // If firstLift is set and after shift start, subtract that gap per crane
+  var shiftStartHour=isDay()?6:18;
+  var _flMins=0; // minutes lost before first lift
+  if(sess&&sess.firstLift){
+    var _flParts=sess.firstLift.split(':');
+    var _flH=parseInt(_flParts[0])||0;
+    var _flM=parseInt(_flParts[1])||0;
+    var _flTotal=_flH*60+_flM;
+    var _ssTotal=shiftStartHour*60;
+    // For night shift crossing midnight, adjust
+    if(!isDay()&&_flH<12) _flTotal+=24*60;
+    if(!isDay()) _ssTotal=(shiftStartHour-24<0?shiftStartHour:shiftStartHour)*60;
+    _flMins=Math.max(0,_flTotal-_ssTotal);
+  }
+  var totalCraneHrs=nc*12 - (_flMins/60)*nc; // subtract pre-firstlift gap per crane
+  totalCraneHrs=Math.round(totalCraneHrs*100)/100;
+  var totalCraneMins=Math.round(totalCraneHrs*60);
+
+  // Total moves for the shift (all cranes, combined)
+  var totalMoves=0;
+  rawActuals.forEach(function(v){totalMoves+=v||0;});
+
+  // Deductable delays: sum all delay durations across all cranes in minutes
+  var deductMins=0;
+  if(sess){
+    for(var _dc=1;_dc<=nc;_dc++){
+      var _rowIds=getDelayRowIds(sess.id,_dc);
+      _rowIds.forEach(function(r){
+        var _dk=sess.id+'_'+_dc+'_'+r;
+        var _dd=ST.delays[_dk]||{};
+        if(_dd.from&&_dd.to){
+          var _fp=_dd.from.split(':');var _tp2=_dd.to.split(':');
+          var _fm=parseInt(_fp[0]||0)*60+(parseInt(_fp[1]||0));
+          var _tm=parseInt(_tp2[0]||0)*60+(parseInt(_tp2[1]||0));
+          if(_tm<_fm)_tm+=24*60; // crosses midnight
+          deductMins+=Math.max(0,_tm-_fm);
+        }
+      });
+    }
+  }
+
+  // Net crane hrs = (total crane mins - deductable delay mins) / 60
+  var netCraneMins=Math.max(0,totalCraneMins-deductMins);
+  var netCraneHrs=Math.round(netCraneMins/60*100)/100;
+
+  // Gross TPH = total moves / total crane hrs
+  var grossTPH=totalCraneHrs>0?Math.round(totalMoves/totalCraneHrs*10)/10:0;
+  // Net TPH = total moves / net crane hrs
+  var netTPH=netCraneHrs>0?Math.round(totalMoves/netCraneHrs*10)/10:0;
+
+  var stats=[
+    {lbl:'TOTAL CRANE HRS',    val:totalCraneHrs,   unit:'hrs'},
+    {lbl:'GROSS TPH',          val:grossTPH,         unit:'moves/hr'},
+    {lbl:'TOTAL CRANE MIN',    val:totalCraneMins,   unit:'min'},
+    {lbl:'DEDUCTABLE DELAYS',  val:deductMins,       unit:'min'},
+    {lbl:'NET CRANE HRS',      val:netCraneHrs,      unit:'hrs'},
+    {lbl:'NET TPH',            val:netTPH,           unit:'moves/hr'},
+  ];
+
+  h+='<div style="margin:0 10px 16px;border-radius:12px;overflow:hidden;border:1px solid #1e2a3a">';
+  h+='<div style="background:#1e2a3a;padding:10px 14px;font-size:11px;font-weight:800;color:#90a4c8;letter-spacing:.8px;text-transform:uppercase">Production Stats</div>';
+  stats.forEach(function(s,i){
+    var bg=i%2===0?'#0d1521':'#111827';
+    var isTPH=s.lbl.indexOf('TPH')>=0;
+    var valCol=isTPH?'#4fc3f7':'white';
+    h+='<div style="background:'+bg+';display:flex;align-items:center;justify-content:space-between;padding:11px 14px;border-top:1px solid #1e2a3a">';
+    h+='<span style="font-size:11px;font-weight:700;color:#90a4c8;letter-spacing:.3px">'+s.lbl+'</span>';
+    h+='<span style="font-size:18px;font-weight:900;color:'+valCol+'">'+s.val+'<span style="font-size:10px;font-weight:600;color:#4a5a72;margin-left:4px">'+s.unit+'</span></span>';
+    h+='</div>';
+  });
+  h+='</div>';
+
   h+='<div style="height:14px"></div></div>';
 
   $('sc-performance').innerHTML=h;
