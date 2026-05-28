@@ -1176,7 +1176,38 @@ function initApp(){
         var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
         slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[sk]=ST.hourly[k];});}});
         for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
-        se.end=new Date().toISOString();
+        // Snapshot CMT data for Excel export (not shown in history display)
+        try{
+          var _cmtActuals={};
+          slotKeys.forEach(function(slot){
+            var tot=0;
+            for(var ci=1;ci<=nc;ci++){tot+=(ST.hourly[hk(aid,slot,ci,'discharge')]||0)+(ST.hourly[hk(aid,slot,ci,'load')]||0);}
+            _cmtActuals[slot]=tot;
+          });
+          var _tPerHr=(ST.perfTargets&&ST.perfTargets['cmtTarget'])||0;
+          var _fl=raw.firstLift||'';
+          var _cmtTargets={};
+          slotKeys.forEach(function(slot){_cmtTargets[slot]=cmtSlotTarget(_tPerHr,slot,_fl);});
+          var _totMoves=Object.values(_cmtActuals).reduce(function(a,b){return a+b;},0);
+          var _deductMins=0;
+          for(var ci=1;ci<=nc;ci++){
+            (ST.delayRowIds&&ST.delayRowIds[aid+'_c'+ci]||[0]).forEach(function(r){
+              var _dd=ST.delays[aid+'_'+ci+'_'+r]||{};
+              if(_dd.from&&_dd.to){
+                var _fp=_dd.from.split(':'),_tp=_dd.to.split(':');
+                var _fm=parseInt(_fp[0]||0)*60+parseInt(_fp[1]||0);
+                var _tm=parseInt(_tp[0]||0)*60+parseInt(_tp[1]||0);
+                if(_tm<_fm)_tm+=1440;
+                _deductMins+=Math.max(0,_tm-_fm);
+              }
+            });
+          }
+          var _totalCraneHrs=nc*12;
+          var _grossTPH=_totalCraneHrs>0?Math.round(_totMoves/_totalCraneHrs*10)/10:0;
+          var _netCraneHrs=Math.max(0,(_totalCraneHrs*60-_deductMins))/60;
+          var _netTPH=_netCraneHrs>0?Math.round(_totMoves/_netCraneHrs*10)/10:0;
+          se.cmt={actuals:_cmtActuals,targets:_cmtTargets,totalMoves:_totMoves,totalCraneHrs:_totalCraneHrs,grossTPH:_grossTPH,deductMins:_deductMins,netCraneHrs:Math.round(_netCraneHrs*100)/100,netTPH:_netTPH};
+        }catch(e2){}        se.end=new Date().toISOString();
         var sidx=ST.sessions.findIndex(function(x){return x.id===aid;});
         if(sidx>=0)ST.sessions[sidx]=JSON.parse(JSON.stringify(raw));
       }
@@ -2585,7 +2616,7 @@ function renderPerformance(){
 
     var datasets=[];
 
-    // Target line (dashed, with dots)
+    // Target line (dashed, with dots) — extends full shift
     datasets.push({
       label:(view==='combined'?'Combined':'MHC'+view.replace('mhc',''))+' target',
       data:cumTargetsCurrent,
@@ -2825,12 +2856,15 @@ function renderHistory(){
     var blocks=[];
     var isActiveSession=s.id===ST.activeId||s.id===ST.activeId2;
     var curShiftType=isDay()?'DAY':'NIGHT';
-    // Use shift-start date: night shift after midnight belongs to the previous calendar day
+    // Use isDay() (grace-aware) for shift start date — matches renderResults and getCraneTotal
     var _now=new Date();
-    var _h=_now.getHours();
+    var _nh=_now.getHours(),_nm=_now.getMinutes();
+    var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+    var _totalMins=_nh*60+_nm;
+    var _dayStart=6*60+_grace,_dayEnd=18*60+_grace;
     var _curShiftStartDate;
-    if(_h>=6&&_h<18){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
-    else if(_h<6){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
+    if(_totalMins>=_dayStart&&_totalMins<_dayEnd){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+    else if(_totalMins<_dayStart){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
     else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
     var curShiftDate=_curShiftStartDate;
     var curShiftKey=curShiftType+'_'+curShiftDate;
@@ -3414,9 +3448,73 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
     XLSX.utils.book_append_sheet(wb,wda,'Delay Time Analysis');
   }
 
+  // ── CMT Sheet — per-slot actuals vs targets + KPIs per shift ──
+  var wcmt={'!cols':[{wch:22},{wch:14},{wch:14},{wch:14},{wch:14}],'!rows':[]};
+  var cr=0;
+  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'CMT — CRANE MOVES TRACKER',ST_h1());wcmt['!rows'].push({hpt:26});cr++;
+  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'Per-shift slot actuals vs targets & production KPIs',ST_meta());wcmt['!rows'].push({hpt:16});cr++;
+  var hasCmt=false;
+  itemsWrapped.forEach(function(wrapped){
+    var item=wrapped.data;
+    var sh=item.sh;
+    if(!sh||!sh.cmt)return;
+    hasCmt=true;
+    var cmt=sh.cmt;
+    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:6});cr++;
+    // Shift heading
+    mg(wcmt,cr,0,cr,4);
+    sc(wcmt,cr,0,buildShiftLabel(sh.type,sh.date||''),ST_h2(sh.type==='NIGHT'));
+    wcmt['!rows'].push({hpt:20});cr++;
+    // Column headers
+    sc(wcmt,cr,0,'Slot',ST_col_hdr_l());
+    sc(wcmt,cr,1,'Actual',ST_col_hdr());
+    sc(wcmt,cr,2,'Target',ST_col_hdr());
+    sc(wcmt,cr,3,'Deviation',ST_col_hdr());
+    sc(wcmt,cr,4,'Cumulative',ST_col_hdr());
+    wcmt['!rows'].push({hpt:16});cr++;
+    // Slot rows
+    var slots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
+    var cumAct=0;
+    slots.forEach(function(slot,si){
+      var act=cmt.actuals&&cmt.actuals[slot]||0;
+      var tgt=cmt.targets&&cmt.targets[slot]||0;
+      var dev=act-tgt;
+      cumAct+=act;
+      var bg=si%2===0?ST_o():ST_e();
+      sc(wcmt,cr,0,slot.replace('-',' – '),ST_oL());
+      scn2(wcmt,cr,1,act,bg);
+      scn2(wcmt,cr,2,tgt,bg);
+      var devSt=Object.assign({},bg,{font:{name:'Arial',sz:10,bold:true,color:{rgb:dev>=0?'1A5C35':'C0392B'}},alignment:{horizontal:'center',vertical:'center'}});
+      sc(wcmt,cr,3,(dev>=0?'+':'')+dev,devSt);
+      scn2(wcmt,cr,4,cumAct,Object.assign({},bg,{font:{name:'Arial',sz:10,bold:true}}));
+      wcmt['!rows'].push({hpt:14});cr++;
+    });
+    // KPI rows
+    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:4});cr++;
+    var kpis=[
+      ['Total Moves',cmt.totalMoves,''],
+      ['Total Crane Hrs',cmt.totalCraneHrs,'hrs'],
+      ['Gross TPH',cmt.grossTPH,'moves/hr'],
+      ['Deductable Delays',cmt.deductMins,'min'],
+      ['Net Crane Hrs',cmt.netCraneHrs,'hrs'],
+      ['Net TPH',cmt.netTPH,'moves/hr'],
+    ];
+    kpis.forEach(function(kpi,ki){
+      var kbg=ki%2===0?ST_o():ST_e();
+      sc(wcmt,cr,0,kpi[0],Object.assign({},ST_oL(),{font:{name:'Arial',sz:10,bold:true}}));
+      sc(wcmt,cr,1,String(kpi[1])+(kpi[2]?' '+kpi[2]:''),Object.assign({},kbg,{font:{name:'Arial',sz:10,bold:true,color:{rgb:'0E7490'}}}));
+      wcmt['!rows'].push({hpt:15});cr++;
+    });
+  });
+  if(hasCmt){
+    wcmt['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:cr,c:4}});
+    XLSX.utils.book_append_sheet(wb,wcmt,'CMT Data');
+  }
+
   // ── Reorder: Delay Time Analysis first, then shift sheets ──
   var finalOrder=[];
   if(wb.SheetNames.indexOf('Delay Time Analysis')>=0)finalOrder.push('Delay Time Analysis');
+  if(wb.SheetNames.indexOf('CMT Data')>=0)finalOrder.push('CMT Data');
   wb.SheetNames.forEach(function(n){if(finalOrder.indexOf(n)<0)finalOrder.push(n);});
   wb.SheetNames=finalOrder;
 
