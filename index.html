@@ -1175,7 +1175,8 @@ function initApp(){
         var isDaySlots=outType==='DAY';
         var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
         slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[sk]=ST.hourly[k];});}});
-        for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;if(ST.delays[dk])se.delays[dk]=Object.assign({},ST.delays[dk]);});}
+        for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;var _dd=ST.delays[dk];if(!_dd)return;// Only snapshot delays whose 'from' time falls within the outgoing shift window
+if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShift=isDaySlots?(_dfh>=6&&_dfh<18):(_dfh>=18||_dfh<6);if(!_inShift)return;}se.delays[dk]=Object.assign({},_dd);});}
         // Snapshot CMT data for Excel export (not shown in history display)
         try{
           var _cmtActuals={};
@@ -2322,33 +2323,29 @@ function cmtIsBreakSlot(slotStr){
 // Slots BEFORE firstLift return 0. Tea break slots get 30 min worth.
 function cmtSlotTarget(fullHrTarget, slotStr, firstLiftTime){
   if(!fullHrTarget) return 0;
-  var minsPerUnit = 60 / fullHrTarget;
 
-  // Convert slot start to minutes-since-midnight
+  // Convert slot start/end to minutes-since-midnight
   var slotStartH=parseInt(slotStr.substring(0,2));
   var slotStartM=parseInt(slotStr.substring(2,4)||0);
   var slotStartMins=slotStartH*60+slotStartM;
   var slotEndMins=slotStartMins+60;
 
-  // If firstLift is set: slots entirely before firstLift = 0; partial = proportional
+  // If firstLift is set: only zero out slots ENTIRELY before firstLift.
+  // The slot containing firstLift and all after get the full hourly target.
+  // This means target is always fullHrTarget × hours worked (not proportional).
   if(firstLiftTime){
     var flParts=firstLiftTime.split(':');
     var flH=parseInt(flParts[0]),flM=parseInt(flParts[1]||0);
     var flMins=flH*60+flM;
-    if(flMins>=slotEndMins) return 0;        // slot entirely before first lift
-    if(flMins>slotStartMins){                // first lift is within this slot
-      var minsWorked=slotEndMins-flMins;
-      // But also account for break within this slot (unlikely but safe)
-      if(cmtIsBreakSlot(slotStr)) minsWorked=Math.min(minsWorked,30);
-      minsWorked=Math.min(minsWorked,60);
-      var raw=minsWorked/minsPerUnit;
-      return raw%1>=0.5?Math.ceil(raw):Math.floor(raw);
-    }
+    // Night shift: if firstLift is after midnight (e.g. 01:00) adjust for crossing midnight
+    if(!isDay()&&flH<12) flMins+=24*60;
+    if(flMins>=slotEndMins) return 0; // slot entirely before first lift → 0
+    // slot contains firstLift OR is after it → full target
   }
 
-  // Check if this is a break slot (30 min working)
+  // Break slot gets 30 min worth (half target)
   if(cmtIsBreakSlot(slotStr)){
-    return Math.floor(30 / minsPerUnit);
+    return Math.floor(30 / (60/fullHrTarget));
   }
 
   return fullHrTarget;
@@ -2477,10 +2474,12 @@ function renderPerformance(){
   }
 
   // Compute cumulative targets per crane (needed for combined too)
+  // If cmtTarget is not set or 0, derive from session target: target / 12hrs / nc
+  var _derivedTgtPerHr=(sess&&sess.target&&nc)?(sess.target/12/nc):0;
   var cumTargetsByCrane={};
   for(var _cj=1;_cj<=nc;_cj++){
     var _tKeyJ=(_cj===1)?'cmtTarget':('cmtTarget'+_cj);
-    var _tHrJ=ST.perfTargets[_tKeyJ]||0;
+    var _tHrJ=ST.perfTargets[_tKeyJ]||_derivedTgtPerHr;
     var _cum2=0;
     cumTargetsByCrane[_cj]=sl.map(function(s){_cum2+=cmtSlotTarget(_tHrJ,s,firstLift);return _cum2;});
   }
@@ -2530,22 +2529,20 @@ function renderPerformance(){
   h+='<div style="position:relative;height:260px"><canvas id="chartCMT"></canvas></div></div>';
 
   // ── Production Stats ──
-  // Total crane hours: each crane works 12hrs minus time before first lift
-  // If firstLift is set and after shift start, subtract that gap per crane
+  // statsNc: number of cranes for stats — 1 if viewing a single crane, nc if combined
+  var statsNc=(view==='combined')?nc:1;
   var shiftStartHour=isDay()?6:18;
-  var _flMins=0; // minutes lost before first lift
+  var _flMins=0;
   if(sess&&sess.firstLift){
     var _flParts=sess.firstLift.split(':');
     var _flH=parseInt(_flParts[0])||0;
     var _flM=parseInt(_flParts[1])||0;
     var _flTotal=_flH*60+_flM;
     var _ssTotal=shiftStartHour*60;
-    // For night shift crossing midnight, adjust
     if(!isDay()&&_flH<12) _flTotal+=24*60;
-    if(!isDay()) _ssTotal=(shiftStartHour-24<0?shiftStartHour:shiftStartHour)*60;
     _flMins=Math.max(0,_flTotal-_ssTotal);
   }
-  var totalCraneHrs=nc*12 - (_flMins/60)*nc; // subtract pre-firstlift gap per crane
+  var totalCraneHrs=statsNc*12 - (_flMins/60)*statsNc;
   totalCraneHrs=Math.round(totalCraneHrs*100)/100;
   var totalCraneMins=Math.round(totalCraneHrs*60);
 
@@ -2553,10 +2550,12 @@ function renderPerformance(){
   var totalMoves=0;
   rawActuals.forEach(function(v){totalMoves+=v||0;});
 
-  // Deductable delays: sum all delay durations across all cranes in minutes
+  // Deductable delays: only count delays for the viewed crane(s)
   var deductMins=0;
   if(sess){
-    for(var _dc=1;_dc<=nc;_dc++){
+    var _startCi=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
+    var _endCi=view==='combined'?nc:_startCi;
+    for(var _dc=_startCi;_dc<=_endCi;_dc++){
       var _rowIds=getDelayRowIds(sess.id,_dc);
       _rowIds.forEach(function(r){
         var _dk=sess.id+'_'+_dc+'_'+r;
@@ -2565,7 +2564,7 @@ function renderPerformance(){
           var _fp=_dd.from.split(':');var _tp2=_dd.to.split(':');
           var _fm=parseInt(_fp[0]||0)*60+(parseInt(_fp[1]||0));
           var _tm=parseInt(_tp2[0]||0)*60+(parseInt(_tp2[1]||0));
-          if(_tm<_fm)_tm+=24*60; // crosses midnight
+          if(_tm<_fm)_tm+=24*60;
           deductMins+=Math.max(0,_tm-_fm);
         }
       });
@@ -3449,10 +3448,10 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
   }
 
   // ── CMT Sheet — per-slot actuals vs targets + KPIs per shift ──
-  var wcmt={'!cols':[{wch:22},{wch:14},{wch:14},{wch:14},{wch:14}],'!rows':[]};
+  var wcmt={'!cols':[{wch:14},{wch:10},{wch:10},{wch:12},{wch:10},{wch:36}],'!rows':[]};
   var cr=0;
-  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'CMT — CRANE MOVES TRACKER',ST_h1());wcmt['!rows'].push({hpt:26});cr++;
-  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'Per-shift slot actuals vs targets & production KPIs',ST_meta());wcmt['!rows'].push({hpt:16});cr++;
+  mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'CMT — CRANE MOVES TRACKER',ST_h1());wcmt['!rows'].push({hpt:26});cr++;
+  mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'Per-shift: slot actuals vs targets, deviation & production KPIs',ST_meta());wcmt['!rows'].push({hpt:16});cr++;
   var hasCmt=false;
   itemsWrapped.forEach(function(wrapped){
     var item=wrapped.data;
@@ -3460,9 +3459,8 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
     if(!sh||!sh.cmt)return;
     hasCmt=true;
     var cmt=sh.cmt;
-    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:6});cr++;
-    // Shift heading
-    mg(wcmt,cr,0,cr,4);
+    mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:6});cr++;
+    mg(wcmt,cr,0,cr,5);
     sc(wcmt,cr,0,buildShiftLabel(sh.type,sh.date||''),ST_h2(sh.type==='NIGHT'));
     wcmt['!rows'].push({hpt:20});cr++;
     // Column headers
@@ -3470,27 +3468,42 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
     sc(wcmt,cr,1,'Actual',ST_col_hdr());
     sc(wcmt,cr,2,'Target',ST_col_hdr());
     sc(wcmt,cr,3,'Deviation',ST_col_hdr());
-    sc(wcmt,cr,4,'Cumulative',ST_col_hdr());
+    sc(wcmt,cr,4,'Cumul.',ST_col_hdr());
+    sc(wcmt,cr,5,'Visual (actual ░ / target ─)',ST_col_hdr_l());
     wcmt['!rows'].push({hpt:16});cr++;
-    // Slot rows
     var slots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
     var cumAct=0;
+    var maxAct=Math.max.apply(null,slots.map(function(s){return cmt.actuals&&cmt.actuals[s]||0;}));
+    var maxVal=Math.max(maxAct,(cmt.targets&&Object.values(cmt.targets).reduce(function(a,b){return Math.max(a,b||0);},0))||1,1);
     slots.forEach(function(slot,si){
       var act=cmt.actuals&&cmt.actuals[slot]||0;
       var tgt=cmt.targets&&cmt.targets[slot]||0;
       var dev=act-tgt;
       cumAct+=act;
-      var bg=si%2===0?ST_o():ST_e();
-      sc(wcmt,cr,0,slot.replace('-',' – '),ST_oL());
-      scn2(wcmt,cr,1,act,bg);
-      scn2(wcmt,cr,2,tgt,bg);
-      var devSt=Object.assign({},bg,{font:{name:'Arial',sz:10,bold:true,color:{rgb:dev>=0?'1A5C35':'C0392B'}},alignment:{horizontal:'center',vertical:'center'}});
-      sc(wcmt,cr,3,(dev>=0?'+':'')+dev,devSt);
-      scn2(wcmt,cr,4,cumAct,Object.assign({},bg,{font:{name:'Arial',sz:10,bold:true}}));
+      var rs=si%2===0?ST_o():ST_e();
+      sc(wcmt,cr,0,slot.replace('-',' – '),si%2===0?ST_oL():ST_eL());
+      scn2(wcmt,cr,1,act,rs);
+      scn2(wcmt,cr,2,tgt,rs);
+      var devCol=dev>0?'1A5C35':dev<0?'C0392B':'555555';
+      sc(wcmt,cr,3,(dev>0?'+':'')+dev,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true,color:{rgb:devCol}},alignment:{horizontal:'center',vertical:'center'}}));
+      scn2(wcmt,cr,4,cumAct,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true}}));
+      // Visual bar: actual as filled blocks, target marker
+      var BAR=20;
+      var actBars=maxVal>0?Math.round(act/maxVal*BAR):0;
+      var tgtBars=maxVal>0?Math.round(tgt/maxVal*BAR):0;
+      var bar='';
+      for(var b=0;b<BAR;b++){
+        if(b<actBars)bar+='█';
+        else if(b===tgtBars)bar+='│';
+        else bar+='░';
+      }
+      bar+='  A:'+act+' T:'+tgt;
+      var barCol=dev>=0?'1A5C35':'C0392B';
+      sc(wcmt,cr,5,bar,Object.assign({},rs,{font:{name:'Courier New',sz:8,bold:true,color:{rgb:barCol}},alignment:{horizontal:'left',vertical:'center'}}));
       wcmt['!rows'].push({hpt:14});cr++;
     });
-    // KPI rows
-    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:4});cr++;
+    // KPI separator
+    mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:4});cr++;
     var kpis=[
       ['Total Moves',cmt.totalMoves,''],
       ['Total Crane Hrs',cmt.totalCraneHrs,'hrs'],
@@ -3501,13 +3514,15 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
     ];
     kpis.forEach(function(kpi,ki){
       var kbg=ki%2===0?ST_o():ST_e();
-      sc(wcmt,cr,0,kpi[0],Object.assign({},ST_oL(),{font:{name:'Arial',sz:10,bold:true}}));
-      sc(wcmt,cr,1,String(kpi[1])+(kpi[2]?' '+kpi[2]:''),Object.assign({},kbg,{font:{name:'Arial',sz:10,bold:true,color:{rgb:'0E7490'}}}));
-      wcmt['!rows'].push({hpt:15});cr++;
+      sc(wcmt,cr,0,kpi[0],Object.assign({},ki%2===0?ST_oL():ST_eL(),{font:{name:'Arial',sz:10,bold:true}}));
+      var kval=String(kpi[1])+(kpi[2]?' '+kpi[2]:'');
+      mg(wcmt,cr,1,cr,5);
+      sc(wcmt,cr,1,kval,Object.assign({},kbg,{font:{name:'Arial',sz:11,bold:true,color:{rgb:'0E7490'}},alignment:{horizontal:'left',vertical:'center',indent:1}}));
+      wcmt['!rows'].push({hpt:16});cr++;
     });
   });
   if(hasCmt){
-    wcmt['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:cr,c:4}});
+    wcmt['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:cr,c:5}});
     XLSX.utils.book_append_sheet(wb,wcmt,'CMT Data');
   }
 
