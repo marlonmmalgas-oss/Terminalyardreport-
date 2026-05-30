@@ -1732,12 +1732,12 @@ function renderResults(){
     });
   }
 
-  // Sort: current first, then past shifts newest-first
+  // Sort: oldest past shifts first, current shift last at bottom
   shiftBlocks.sort(function(a,b){
-    if(a.isCurrent&&!b.isCurrent)return -1;
-    if(!a.isCurrent&&b.isCurrent)return 1;
-    // Both past: sort by key descending (newer date = higher string = first)
-    return b.key>a.key?1:-1;
+    if(a.isCurrent&&!b.isCurrent)return 1;
+    if(!a.isCurrent&&b.isCurrent)return -1;
+    // Both past: sort by key ascending (older date = lower string = first/top)
+    return a.key>b.key?1:-1;
   });
 
   // Render each shift block as a collapsible
@@ -2447,7 +2447,7 @@ function renderPerformance(){
 
   // ── Per-crane First/Last Lift inputs ──
   if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};
-  h+='<div style="margin:0 10px 8px;padding:12px 14px;border-radius:10px;background:#1e2a3a">';
+  h+='<div class="cmt-crane-lifts" style="margin:0 10px 8px;padding:12px 14px;border-radius:10px;background:#1e2a3a">';
   h+='<div style="font-size:10px;color:#90a4c8;font-weight:700;margin-bottom:8px;letter-spacing:.5px">CRANE FIRST / LAST LIFT <span style="color:#4a5a72;font-weight:400;font-size:9px">— adjusts crane hrs in production stats</span></div>';
   h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
   for(var _li=1;_li<=nc;_li++){
@@ -2773,7 +2773,7 @@ function sharePerformance(){
   var el=document.getElementById('perfCap');
   if(!el){alert('Please open the CMT tab first.');return;}
   var hidden=[];
-  el.querySelectorAll('input,button,.perf-targets').forEach(function(e2){
+  el.querySelectorAll('input,button,.perf-targets,.cmt-crane-lifts').forEach(function(e2){
     hidden.push({e:e2,d:e2.style.display});e2.style.display='none';
   });
   html2canvas(el,{
@@ -3010,11 +3010,11 @@ function renderHistory(){
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>`;
-    // Sort: current shift first, past shifts newest-first below it
+    // Sort: oldest past shifts first, current shift last at bottom
     blocks.sort(function(a,b){
-      if(a.isCurrent&&!b.isCurrent)return -1;
-      if(!a.isCurrent&&b.isCurrent)return 1;
-      return (b.label||'')>(a.label||'')?1:-1;
+      if(a.isCurrent&&!b.isCurrent)return 1;
+      if(!a.isCurrent&&b.isCurrent)return -1;
+      return (a.label||'')<(b.label||'')?-1:1;
     });
     blocks.forEach(function(block,bi){
       var buid=uid+'_'+bi;
