@@ -848,9 +848,11 @@ function getShiftSlots(sess){
   // Snap to standard 06:00/18:00 shift boundaries
   var startHour=start.getHours();
   var isDayShiftAtStart=startHour>=6&&startHour<18;
-  // Current shift boundary based on now
+  // Use same grace period as isDay() so slots never mismatch at rollover boundary
+  var _gsGrace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _gsTotalMins=now.getHours()*60+now.getMinutes();
+  var isDayShiftNow=_gsTotalMins>=(6*60+_gsGrace)&&_gsTotalMins<(18*60+_gsGrace);
   var nowHour=now.getHours();
-  var isDayShiftNow=nowHour>=6&&nowHour<18;
   // Shift window is always 06-18 (day) or 18-06 (night) — snap to these boundaries
   var shiftStart=new Date(now);
   shiftStart.setMinutes(0,0,0);
@@ -858,7 +860,7 @@ function getShiftSlots(sess){
     shiftStart.setHours(6,0,0,0);
   } else {
     // Night shift: started at 18:00 today, or 18:00 yesterday if after midnight
-    if(nowHour<6){
+    if(nowHour<6||(nowHour===6&&!isDayShiftNow)){
       shiftStart.setDate(shiftStart.getDate()-1);
     }
     shiftStart.setHours(18,0,0,0);
@@ -2410,7 +2412,9 @@ function renderPerformance(){
   if(ST.perfTargets.cmtTarget2===undefined)ST.perfTargets.cmtTarget2=ST.perfTargets.dlTarget||0;
 
   var view=ST.perfTargets.cmtView||'combined';
-  var firstLift=sess?sess.firstLift:'';
+  // firstLift from session is ONLY used for display — NOT for target line.
+  // Target line uses per-crane craneLifts.fl_N so each crane's target is independent.
+  var craneLifts=ST.perfTargets.craneLifts||{};
 
   var bgStyle='background:linear-gradient(rgba(13,21,33,.9),rgba(13,21,33,.9)),url('+(HARDCODED_BG||'')+') center/cover';
   var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
@@ -2518,8 +2522,10 @@ function renderPerformance(){
   for(var _cj=1;_cj<=nc;_cj++){
     var _tKeyJ=(_cj===1)?'cmtTarget':('cmtTarget'+_cj);
     var _tHrJ=ST.perfTargets[_tKeyJ]||_derivedTgtPerHr;
+    // Use this crane's own first lift (not session first lift) for target calculation
+    var _craneFlRaw=craneLifts['fl_'+_cj]||'';
     var _cum2=0;
-    cumTargetsByCrane[_cj]=sl.map(function(s){_cum2+=cmtSlotTarget(_tHrJ,s,firstLift);return _cum2;});
+    cumTargetsByCrane[_cj]=sl.map(function(s){_cum2+=cmtSlotTarget(_tHrJ,s,_craneFlRaw);return _cum2;});
   }
 
   // Combined cumulative = sum of all cranes
@@ -2528,6 +2534,27 @@ function renderPerformance(){
     for(var _cj2=1;_cj2<=nc;_cj2++) tot+=(cumTargetsByCrane[_cj2]||[])[i]||0;
     return tot;
   });
+
+  // Cap target line at remaining moves: if sess.target is set and total actuals (all cranes)
+  // are already known, the target can never exceed target - already_done_before_this_shift.
+  // More importantly: once cumulative target would exceed sess.target, flatten it.
+  if(sess&&sess.target){
+    var _sessTarget=parseInt(sess.target)||0;
+    // Total actual moves across ALL cranes for this shift (raw sum)
+    var _totalActualAllCranes=0;
+    rawActuals.forEach(function(v){_totalActualAllCranes+=v||0;});
+    // Remaining = target - what's already been done
+    // For future slots, the actuals haven't happened yet — cap the TARGET line at sess.target
+    // so it never projects beyond what's needed
+    cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_sessTarget);});
+    // Per-crane cap: proportional — each crane's target capped at sessTarget/nc
+    var _craneTargetCap=Math.ceil(_sessTarget/nc);
+    for(var _cj3=1;_cj3<=nc;_cj3++){
+      if(cumTargetsByCrane[_cj3]){
+        cumTargetsByCrane[_cj3]=cumTargetsByCrane[_cj3].map(function(v){return Math.min(v,_craneTargetCap);});
+      }
+    }
+  }
 
   // Single-crane cumulative for non-combined
   var craneIdx=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
@@ -2572,14 +2599,12 @@ function renderPerformance(){
   var shiftStartHour=isDay()?6:18;
   var shiftEndHour=isDay()?18:6; // next day for night
 
-  // Per-crane crane hours using craneLifts if set, else session firstLift/lastLift
-  var craneLifts=ST.perfTargets.craneLifts||{};
+  // Per-crane crane hours using craneLifts (already declared above)
   function _craneHrs(ci){
     // First lift: per-crane if set, else session firstLift, else shift start
     var _flRaw=craneLifts['fl_'+ci]||sess.firstLift||'';
     var _llRaw=craneLifts['ll_'+ci]||sess.lastLift||'';
     var shiftStartMins=shiftStartHour*60;
-    var shiftEndMins=isDay()?18*60:6*60; // 18:00 or 06:00
 
     var startMins=shiftStartMins;
     if(_flRaw){
@@ -2601,7 +2626,31 @@ function renderPerformance(){
       endMins=Math.min(endMins,_ltotal);
     }
 
-    var hrsWorked=Math.max(0,(endMins-startMins)/60);
+    // Fix 3: If there are delays that explain the gap between shift start and first lift,
+    // add those delay minutes BACK to crane hours (the crane was on the clock but delayed).
+    // Those delays will then be counted as deductable in production stats.
+    var _earlyDelayMins=0;
+    if(startMins>shiftStartMins&&sess){
+      var _rowIds=getDelayRowIds(sess.id,ci);
+      _rowIds.forEach(function(r){
+        var _dk=sess.id+'_'+ci+'_'+r;
+        var _dd=ST.delays[_dk]||{};
+        if(_dd.from&&_dd.to){
+          var _dfp=_dd.from.split(':');var _dtp=_dd.to.split(':');
+          var _dfm=parseInt(_dfp[0]||0)*60+(parseInt(_dfp[1]||0));
+          var _dtm=parseInt(_dtp[0]||0)*60+(parseInt(_dtp[1]||0));
+          if(!isDay()&&_dfm<12*60)_dfm+=24*60;
+          if(!isDay()&&_dtm<12*60)_dtm+=24*60;
+          if(_dtm<_dfm)_dtm+=24*60;
+          // Only count delay minutes that fall within the gap [shiftStart, startMins]
+          var _overlapStart=Math.max(_dfm,shiftStartMins);
+          var _overlapEnd=Math.min(_dtm,startMins);
+          if(_overlapEnd>_overlapStart)_earlyDelayMins+=(_overlapEnd-_overlapStart);
+        }
+      });
+    }
+
+    var hrsWorked=Math.max(0,(endMins-startMins+_earlyDelayMins)/60);
     return Math.round(hrsWorked*100)/100;
   }
 
