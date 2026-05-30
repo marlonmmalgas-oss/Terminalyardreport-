@@ -2537,18 +2537,11 @@ function renderPerformance(){
     return tot;
   });
 
-  // Cap target line at remaining moves: the target line should never project beyond what's left.
-  // Use calcGlobalTotals to get true remaining across all shifts.
+  // Cap target line at sess.target so it never projects beyond the vessel order total
   if(sess&&sess.target){
-    var _gTotals=calcGlobalTotals(sess);
-    var _remaining=Math.max(0,_gTotals.remaining);
-    // Also cap at sess.target for fresh sessions where nothing is done yet
     var _sessTarget=parseInt(sess.target)||0;
-    // The combined target ceiling is the lower of: full target, or remaining moves
-    var _combinedCap=(_gTotals.totalDone>0)?_remaining:_sessTarget;
-    cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_combinedCap);});
-    // Per-crane cap: proportional
-    var _craneTargetCap=Math.ceil(_combinedCap/nc);
+    cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_sessTarget);});
+    var _craneTargetCap=Math.ceil(_sessTarget/nc);
     for(var _cj3=1;_cj3<=nc;_cj3++){
       if(cumTargetsByCrane[_cj3]){
         cumTargetsByCrane[_cj3]=cumTargetsByCrane[_cj3].map(function(v){return Math.min(v,_craneTargetCap);});
