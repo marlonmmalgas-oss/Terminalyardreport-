@@ -2537,17 +2537,7 @@ function renderPerformance(){
     return tot;
   });
 
-  // Cap target line at sess.target so it never projects beyond the vessel order total
-  if(sess&&sess.target){
-    var _sessTarget=parseInt(sess.target)||0;
-    cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_sessTarget);});
-    var _craneTargetCap=Math.ceil(_sessTarget/nc);
-    for(var _cj3=1;_cj3<=nc;_cj3++){
-      if(cumTargetsByCrane[_cj3]){
-        cumTargetsByCrane[_cj3]=cumTargetsByCrane[_cj3].map(function(v){return Math.min(v,_craneTargetCap);});
-      }
-    }
-  }
+  // No cap — target line is a rate-based projection for this shift, not a vessel order countdown
 
   // Single-crane cumulative for non-combined
   var craneIdx=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
@@ -4082,25 +4072,66 @@ function calcETC(){
   if(ST.delayRowIds){for(var c=1;c<=nc;c++){var rk=sess.id+'_c'+c;var craneDMin=0;(ST.delayRowIds[rk]||[0]).forEach(function(r){var d=ST.delays[sess.id+'_'+c+'_'+r];if(d&&d.from&&d.to){var fh=parseInt(d.from)||0,fm=parseInt((d.from.split(':')[1])||0),th=parseInt(d.to)||0,tm=parseInt((d.to.split(':')[1])||0);var diff=(th*60+tm)-(fh*60+fm);if(diff<0)diff+=1440;craneDMin+=diff;}});if(craneDMin>maxCraneDelay)maxCraneDelay=craneDMin;}}
   var dMins=maxCraneDelay;
 
-  // Active hours since first lift (wall-clock, minus parallel delay time)
-  var aHrs=0.5;
-  if(sess.firstLift){var fl=sess.firstLift.split(':'),sm=parseInt(fl[0])*60+(parseInt(fl[1])||0),nm=now.getHours()*60+now.getMinutes(),el2=nm-sm;if(el2<0)el2+=1440;aHrs=Math.max((el2-dMins)/60,0.25);}
-  var overallRate=done/aHrs;
-
-  // Recent rate: moves per completed slot (last 2 slots, weighted 60%) + overall (40%)
-  var sl=shiftSlots();
-  var recentMoves=0,recentSlots=0;
-  var nowSlot=currSlot();
-  var nowIdx=sl.indexOf(nowSlot);
-  if(nowIdx>0){
-    for(var ri=Math.max(0,nowIdx-2);ri<nowIdx;ri++){
-      var s2=sl[ri];var slotTotal=0;
-      for(var ci=1;ci<=nc;ci++)slotTotal+=(ST.hourly[hk(sess.id,s2,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,s2,ci,'load')]||0);
-      if(slotTotal>0){recentMoves+=slotTotal;recentSlots++;}
+  // Active hours: use firstLift if set, else earliest CMT crane firstLift, else shift start time
+  var aHrs=1;
+  var _shiftStartMins=isDay()?6*60:18*60;
+  var _nowMins=now.getHours()*60+now.getMinutes();
+  // Determine best firstLift source: session > CMT crane fl_1 > shift start
+  var _flSource=sess.firstLift||'';
+  if(!_flSource&&ST.perfTargets&&ST.perfTargets.craneLifts){
+    // Use earliest crane first lift
+    var _earliest=null;
+    for(var _fc=1;_fc<=nc;_fc++){
+      var _fcv=ST.perfTargets.craneLifts['fl_'+_fc]||'';
+      if(_fcv){
+        var _fcp=_fcv.split(':'),_fch=parseInt(_fcp[0]||0),_fcm=parseInt(_fcp[1]||0);
+        var _fcMins=_fch*60+_fcm;
+        if(!isDay()&&_fch<12)_fcMins+=24*60;
+        if(_earliest===null||_fcMins<_earliest){_earliest=_fcMins;_flSource=_fcv;}
+      }
     }
   }
-  var rate=overallRate;
-  if(recentSlots>0){var recentRate=recentMoves/recentSlots;rate=recentRate*0.6+overallRate*0.4;}
+  if(_flSource){
+    var _flp=_flSource.split(':'),_flh=parseInt(_flp[0]||0),_flm=parseInt(_flp[1]||0);
+    var _flMins=_flh*60+_flm;
+    if(!isDay()&&_flh<12)_flMins+=24*60;
+    var _nowMins2=_nowMins<6*60?_nowMins+24*60:_nowMins; // handle after-midnight
+    var el2=_nowMins2-_flMins;
+    if(el2<0)el2+=24*60;
+    aHrs=Math.max((el2-dMins)/60,0.25);
+  } else {
+    // No firstLift at all — use elapsed time since shift start
+    var _elapsedMins=_nowMins-_shiftStartMins;
+    if(_elapsedMins<0)_elapsedMins+=24*60;
+    aHrs=Math.max((_elapsedMins-dMins)/60,0.25);
+  }
+  var overallRate=done/aHrs;
+
+  // Rate calculation: each hourly slot represents exactly 1 hour of work.
+  // Moves entered in a slot are the full-hour figure regardless of when in the hour they're entered.
+  // So rate = total moves in completed past slots / number of those slots (moves per hour).
+  // We ignore the current in-progress slot and wall-clock elapsed time entirely.
+  var sl=shiftSlots();
+  var nowSlot=currSlot();
+  var nowIdx=sl.indexOf(nowSlot);
+
+  var completedMoves=0,completedSlots=0;
+  for(var ri=0;ri<nowIdx;ri++){
+    var s2=sl[ri];var slotTotal=0;
+    for(var ci=1;ci<=nc;ci++)slotTotal+=(ST.hourly[hk(sess.id,s2,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,s2,ci,'load')]||0);
+    if(slotTotal>0){completedMoves+=slotTotal;completedSlots++;}
+  }
+
+  var rate=0;
+  if(completedSlots>0){
+    // Rate = moves per completed hour slot
+    rate=completedMoves/completedSlots;
+  } else {
+    // No completed slots yet — use the current slot's entered moves as the rate estimate
+    var curSlotTotal=0;
+    for(var ci2=1;ci2<=nc;ci2++)curSlotTotal+=(ST.hourly[hk(sess.id,nowSlot,ci2,'discharge')]||0)+(ST.hourly[hk(sess.id,nowSlot,ci2,'load')]||0);
+    rate=curSlotTotal>0?curSlotTotal:0;
+  }
   if(rate<=0)return null;
 
   var hrs=rem/rate;
@@ -4108,8 +4139,8 @@ function calcETC(){
   var etaStr=etaD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false});
   var etaDate=etaD.toLocaleDateString('en-ZA',{day:'2-digit',month:'short'});
   var note=dMins>0?' (excl. '+Math.round(dMins/60*10)/10+'hr delays)':'';
-  var rateNote=recentSlots>0?' [weighted recent]':'';
-  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+rateNote+note+'. Done: '+done+' in '+aHrs.toFixed(1)+'hr active. Remain: '+Math.max(0,Math.round(rem))+'.'};
+  var rateNote=completedSlots>0?' [avg over '+completedSlots+' completed hr'+(completedSlots>1?'s':'')+']':' [current slot]';
+  return{done:false,remaining:Math.max(0,Math.round(rem)),hoursLeft:hrs,eta:etaStr,etaDate:etaDate,rate:rate.toFixed(1),reasoning:'Rate: '+rate.toFixed(1)+' moves/hr'+rateNote+note+'. Remain: '+Math.max(0,Math.round(rem))+'.'};
 }
 
 // ═══════════ VESSEL ABBREV RESOLVER ═══════════
