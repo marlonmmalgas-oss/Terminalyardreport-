@@ -1732,6 +1732,14 @@ function renderResults(){
     });
   }
 
+  // Sort: current first, then past shifts newest-first
+  shiftBlocks.sort(function(a,b){
+    if(a.isCurrent&&!b.isCurrent)return -1;
+    if(!a.isCurrent&&b.isCurrent)return 1;
+    // Both past: sort by key descending (newer date = higher string = first)
+    return b.key>a.key?1:-1;
+  });
+
   // Render each shift block as a collapsible
   shiftBlocks.forEach(function(block,bi){
     var blockId='res_block_'+bi;
@@ -2437,6 +2445,26 @@ function renderPerformance(){
 
   if(!sess){h+=noSess('🏗️','No active session.');h+='</div>';$('sc-performance').innerHTML=h;return;}
 
+  // ── Per-crane First/Last Lift inputs ──
+  if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};
+  h+='<div style="margin:0 10px 8px;padding:12px 14px;border-radius:10px;background:#1e2a3a">';
+  h+='<div style="font-size:10px;color:#90a4c8;font-weight:700;margin-bottom:8px;letter-spacing:.5px">CRANE FIRST / LAST LIFT <span style="color:#4a5a72;font-weight:400;font-size:9px">— adjusts crane hrs in production stats</span></div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap">';
+  for(var _li=1;_li<=nc;_li++){
+    var _clr2=CMT_COLOURS[_li]||CMT_COLOURS[CMT_COLOURS.length-1];
+    var _flVal=(ST.perfTargets.craneLifts&&ST.perfTargets.craneLifts['fl_'+_li])||'';
+    var _llVal=(ST.perfTargets.craneLifts&&ST.perfTargets.craneLifts['ll_'+_li])||'';
+    h+='<div style="flex:1;min-width:120px;background:#0d1521;border-radius:8px;padding:8px 10px">';
+    h+='<div style="font-size:10px;color:'+_clr2+';font-weight:800;margin-bottom:6px">MHC'+_li+'</div>';
+    h+='<div style="display:flex;gap:6px">';
+    h+='<div style="flex:1"><label style="font-size:9px;color:#4fc3f7;font-weight:700;display:block;margin-bottom:3px">🟢 First</label>';
+    h+='<input type="time" value="'+_flVal+'" style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'fl_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
+    h+='<div style="flex:1"><label style="font-size:9px;color:#ef5350;font-weight:700;display:block;margin-bottom:3px">🔴 Last</label>';
+    h+='<input type="time" value="'+_llVal+'" style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'ll_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
+    h+='</div></div>';
+  }
+  h+='</div></div>';
+
   // ── View buttons (Combined + one per crane) ──
   h+='<div style="margin:0 10px 8px;display:flex;gap:7px;align-items:center;flex-wrap:wrap">';
   var _views=['combined'];
@@ -2532,17 +2560,48 @@ function renderPerformance(){
   // statsNc: number of cranes for stats — 1 if viewing a single crane, nc if combined
   var statsNc=(view==='combined')?nc:1;
   var shiftStartHour=isDay()?6:18;
-  var _flMins=0;
-  if(sess&&sess.firstLift){
-    var _flParts=sess.firstLift.split(':');
-    var _flH=parseInt(_flParts[0])||0;
-    var _flM=parseInt(_flParts[1])||0;
-    var _flTotal=_flH*60+_flM;
-    var _ssTotal=shiftStartHour*60;
-    if(!isDay()&&_flH<12) _flTotal+=24*60;
-    _flMins=Math.max(0,_flTotal-_ssTotal);
+  var shiftEndHour=isDay()?18:6; // next day for night
+
+  // Per-crane crane hours using craneLifts if set, else session firstLift/lastLift
+  var craneLifts=ST.perfTargets.craneLifts||{};
+  function _craneHrs(ci){
+    // First lift: per-crane if set, else session firstLift, else shift start
+    var _flRaw=craneLifts['fl_'+ci]||sess.firstLift||'';
+    var _llRaw=craneLifts['ll_'+ci]||sess.lastLift||'';
+    var shiftStartMins=shiftStartHour*60;
+    var shiftEndMins=isDay()?18*60:6*60; // 18:00 or 06:00
+
+    var startMins=shiftStartMins;
+    if(_flRaw){
+      var _fp=_flRaw.split(':');
+      var _fh=parseInt(_fp[0])||0,_fm2=parseInt(_fp[1])||0;
+      var _ftotal=_fh*60+_fm2;
+      if(!isDay()&&_fh<12)_ftotal+=24*60;
+      // Only reduce if first lift is after shift start
+      startMins=Math.max(shiftStartMins,_ftotal);
+    }
+
+    var endMins=isDay()?18*60:(6*60+24*60); // shift end in same timeline
+    if(_llRaw){
+      var _lp=_llRaw.split(':');
+      var _lh=parseInt(_lp[0])||0,_lm2=parseInt(_lp[1])||0;
+      var _ltotal=_lh*60+_lm2;
+      if(!isDay()&&_lh<12)_ltotal+=24*60;
+      // Only reduce if last lift is before shift end
+      endMins=Math.min(endMins,_ltotal);
+    }
+
+    var hrsWorked=Math.max(0,(endMins-startMins)/60);
+    return Math.round(hrsWorked*100)/100;
   }
-  var totalCraneHrs=statsNc*12 - (_flMins/60)*statsNc;
+
+  var totalCraneHrs=0;
+  if(view==='combined'){
+    for(var _ci2=1;_ci2<=nc;_ci2++)totalCraneHrs+=_craneHrs(_ci2);
+  } else {
+    var _viewCi=parseInt(view.replace('mhc',''))||1;
+    totalCraneHrs=_craneHrs(_viewCi);
+  }
   totalCraneHrs=Math.round(totalCraneHrs*100)/100;
   var totalCraneMins=Math.round(totalCraneHrs*60);
 
@@ -2951,6 +3010,12 @@ function renderHistory(){
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>`;
+    // Sort: current shift first, past shifts newest-first below it
+    blocks.sort(function(a,b){
+      if(a.isCurrent&&!b.isCurrent)return -1;
+      if(!a.isCurrent&&b.isCurrent)return 1;
+      return (b.label||'')>(a.label||'')?1:-1;
+    });
     blocks.forEach(function(block,bi){
       var buid=uid+'_'+bi;
       h+='<div style="margin-top:8px">'
@@ -3448,10 +3513,10 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
   }
 
   // ── CMT Sheet — per-slot actuals vs targets + KPIs per shift ──
-  var wcmt={'!cols':[{wch:14},{wch:10},{wch:10},{wch:12},{wch:10},{wch:36}],'!rows':[]};
+  var wcmt={'!cols':[{wch:14},{wch:10},{wch:10},{wch:12},{wch:12}],'!rows':[]};
   var cr=0;
-  mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'CMT — CRANE MOVES TRACKER',ST_h1());wcmt['!rows'].push({hpt:26});cr++;
-  mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'Per-shift: slot actuals vs targets, deviation & production KPIs',ST_meta());wcmt['!rows'].push({hpt:16});cr++;
+  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'CMT — CRANE MOVES TRACKER',ST_h1());wcmt['!rows'].push({hpt:26});cr++;
+  mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'Per-shift: slot actuals vs targets, deviation & production KPIs',ST_meta());wcmt['!rows'].push({hpt:16});cr++;
   var hasCmt=false;
   itemsWrapped.forEach(function(wrapped){
     var item=wrapped.data;
@@ -3459,22 +3524,18 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
     if(!sh||!sh.cmt)return;
     hasCmt=true;
     var cmt=sh.cmt;
-    mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:6});cr++;
-    mg(wcmt,cr,0,cr,5);
+    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:6});cr++;
+    mg(wcmt,cr,0,cr,4);
     sc(wcmt,cr,0,buildShiftLabel(sh.type,sh.date||''),ST_h2(sh.type==='NIGHT'));
     wcmt['!rows'].push({hpt:20});cr++;
-    // Column headers
     sc(wcmt,cr,0,'Slot',ST_col_hdr_l());
     sc(wcmt,cr,1,'Actual',ST_col_hdr());
     sc(wcmt,cr,2,'Target',ST_col_hdr());
     sc(wcmt,cr,3,'Deviation',ST_col_hdr());
-    sc(wcmt,cr,4,'Cumul.',ST_col_hdr());
-    sc(wcmt,cr,5,'Visual (actual ░ / target ─)',ST_col_hdr_l());
+    sc(wcmt,cr,4,'Cumulative',ST_col_hdr());
     wcmt['!rows'].push({hpt:16});cr++;
     var slots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
     var cumAct=0;
-    var maxAct=Math.max.apply(null,slots.map(function(s){return cmt.actuals&&cmt.actuals[s]||0;}));
-    var maxVal=Math.max(maxAct,(cmt.targets&&Object.values(cmt.targets).reduce(function(a,b){return Math.max(a,b||0);},0))||1,1);
     slots.forEach(function(slot,si){
       var act=cmt.actuals&&cmt.actuals[slot]||0;
       var tgt=cmt.targets&&cmt.targets[slot]||0;
@@ -3487,23 +3548,9 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
       var devCol=dev>0?'1A5C35':dev<0?'C0392B':'555555';
       sc(wcmt,cr,3,(dev>0?'+':'')+dev,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true,color:{rgb:devCol}},alignment:{horizontal:'center',vertical:'center'}}));
       scn2(wcmt,cr,4,cumAct,Object.assign({},rs,{font:{name:'Arial',sz:10,bold:true}}));
-      // Visual bar: actual as filled blocks, target marker
-      var BAR=20;
-      var actBars=maxVal>0?Math.round(act/maxVal*BAR):0;
-      var tgtBars=maxVal>0?Math.round(tgt/maxVal*BAR):0;
-      var bar='';
-      for(var b=0;b<BAR;b++){
-        if(b<actBars)bar+='█';
-        else if(b===tgtBars)bar+='│';
-        else bar+='░';
-      }
-      bar+='  A:'+act+' T:'+tgt;
-      var barCol=dev>=0?'1A5C35':'C0392B';
-      sc(wcmt,cr,5,bar,Object.assign({},rs,{font:{name:'Courier New',sz:8,bold:true,color:{rgb:barCol}},alignment:{horizontal:'left',vertical:'center'}}));
       wcmt['!rows'].push({hpt:14});cr++;
     });
-    // KPI separator
-    mg(wcmt,cr,0,cr,5);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:4});cr++;
+    mg(wcmt,cr,0,cr,4);sc(wcmt,cr,0,'',ST_spacer());wcmt['!rows'].push({hpt:4});cr++;
     var kpis=[
       ['Total Moves',cmt.totalMoves,''],
       ['Total Crane Hrs',cmt.totalCraneHrs,'hrs'],
@@ -3516,13 +3563,13 @@ function _doExportShifts(selectedIdxs,shiftOpts,capturedShifts){
       var kbg=ki%2===0?ST_o():ST_e();
       sc(wcmt,cr,0,kpi[0],Object.assign({},ki%2===0?ST_oL():ST_eL(),{font:{name:'Arial',sz:10,bold:true}}));
       var kval=String(kpi[1])+(kpi[2]?' '+kpi[2]:'');
-      mg(wcmt,cr,1,cr,5);
+      mg(wcmt,cr,1,cr,4);
       sc(wcmt,cr,1,kval,Object.assign({},kbg,{font:{name:'Arial',sz:11,bold:true,color:{rgb:'0E7490'}},alignment:{horizontal:'left',vertical:'center',indent:1}}));
       wcmt['!rows'].push({hpt:16});cr++;
     });
   });
   if(hasCmt){
-    wcmt['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:cr,c:5}});
+    wcmt['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:cr,c:4}});
     XLSX.utils.book_append_sheet(wb,wcmt,'CMT Data');
   }
 
