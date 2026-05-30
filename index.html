@@ -1732,12 +1732,22 @@ function renderResults(){
     });
   }
 
-  // Sort: oldest past shifts first, current shift last at bottom
+  // Sort: true chronological order — DAY starts 06:00, NIGHT starts 18:00 on its date
+  // Current is always last (bottom)
+  function shiftStartTs(key){
+    // key format: "DAY_2026-05-27" or "NIGHT_2026-05-27"
+    var parts=key.split('_');
+    var type=parts[0];
+    var dateParts=(parts[1]||'').split('-');
+    if(dateParts.length<3)return 0;
+    var yr=parseInt(dateParts[0]),mo=parseInt(dateParts[1])-1,dy=parseInt(dateParts[2]);
+    var hr=type==='DAY'?6:18;
+    return new Date(yr,mo,dy,hr,0,0).getTime();
+  }
   shiftBlocks.sort(function(a,b){
     if(a.isCurrent&&!b.isCurrent)return 1;
     if(!a.isCurrent&&b.isCurrent)return -1;
-    // Both past: sort by key ascending (older date = lower string = first/top)
-    return a.key>b.key?1:-1;
+    return shiftStartTs(a.key)-shiftStartTs(b.key);
   });
 
   // Render each shift block as a collapsible
@@ -2968,7 +2978,7 @@ function renderHistory(){
           delayData=sh.delays||{};
         }
         if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
-          blocks.push({label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
+          blocks.push({key:sh.key||'',label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
         }
       });
     }
@@ -2995,7 +3005,7 @@ function renderHistory(){
         if(inShift)_liveDelays[dk]=dd;
       });
       if(Object.keys(_liveHourly).length||Object.keys(_liveDelays).length){
-        blocks.push({label:buildShiftLabel(curShiftType,curShiftDate),hourly:_liveHourly,delays:_liveDelays,isCurrent:true});
+        blocks.push({key:curShiftKey,label:buildShiftLabel(curShiftType,curShiftDate),hourly:_liveHourly,delays:_liveDelays,isCurrent:true});
       }
     }
     // Fallback for old sessions with flat _results
@@ -3010,11 +3020,21 @@ function renderHistory(){
         ⏰ First: ${s.firstLift||'—'} &nbsp;·&nbsp; Last: ${s.lastLift||'—'}
       </div>
       <div class="hi-moves">📦 Total: ${tot} (${pct}%) &nbsp;·&nbsp; D: ${td} / L: ${tl}</div>`;
-    // Sort: oldest past shifts first, current shift last at bottom
+    // Sort: true chronological order — DAY starts 06:00, NIGHT starts 18:00 on its date
+    // Current is always last (bottom)
+    function histShiftTs(key){
+      var parts=(key||'').split('_');
+      var type=parts[0];
+      var dateParts=(parts[1]||'').split('-');
+      if(dateParts.length<3)return 0;
+      var yr=parseInt(dateParts[0]),mo=parseInt(dateParts[1])-1,dy=parseInt(dateParts[2]);
+      var hr=type==='DAY'?6:18;
+      return new Date(yr,mo,dy,hr,0,0).getTime();
+    }
     blocks.sort(function(a,b){
       if(a.isCurrent&&!b.isCurrent)return 1;
       if(!a.isCurrent&&b.isCurrent)return -1;
-      return (a.label||'')<(b.label||'')?-1:1;
+      return histShiftTs(a.key)-histShiftTs(b.key);
     });
     blocks.forEach(function(block,bi){
       var buid=uid+'_'+bi;
