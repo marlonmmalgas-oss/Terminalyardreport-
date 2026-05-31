@@ -966,7 +966,9 @@ function currSlot(){
     const sh=parseInt(sl[i].substring(0,2));
     if(h===sh){return m<grace?(i>0?sl[i-1]:sl[sl.length-1]):sl[i];}
   }
-  return sl[0];
+  // Hour not found in current shift slots (e.g. hour 6 on a night shift ending at 06:00)
+  // Return the last slot of the shift — do NOT return sl[0] which would show the first slot
+  return sl[sl.length-1]||sl[0];
 }
 function curr4Slot(){
   const mins=new Date().getHours()*60+new Date().getMinutes();
@@ -1513,6 +1515,8 @@ function newVessel(){
   ST.hourly={};
   ST.delayRowIds={};
   ST.delays={};
+  // Clear per-shift CMT crane lifts — they belong to the shift, not the vessel
+  if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
   // Stamp current shift key so missed-rollover detection works
   var _nvShiftType=isDay()?'DAY':'NIGHT';
   var _nvNow=new Date(),_nvH=_nvNow.getHours();
