@@ -2350,9 +2350,15 @@ function cmtSlotTarget(fullHrTarget, slotStr, firstLiftTime){
   var slotStartMins=slotStartH*60+slotStartM;
   var slotEndMins=slotStartMins+60;
 
+  // Night shift: slots after midnight (0000–0600) need +24*60 so they sit
+  // on the correct timeline after 18:00 (e.g. 0000 → 1440, not 0)
+  if(!isDay()&&slotStartH<12){
+    slotStartMins+=24*60;
+    slotEndMins+=24*60;
+  }
+
   // If firstLift is set: only zero out slots ENTIRELY before firstLift.
   // The slot containing firstLift and all after get the full hourly target.
-  // This means target is always fullHrTarget × hours worked (not proportional).
   if(firstLiftTime){
     var flParts=firstLiftTime.split(':');
     var flH=parseInt(flParts[0]),flM=parseInt(flParts[1]||0);
