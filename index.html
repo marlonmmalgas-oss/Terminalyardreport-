@@ -2406,6 +2406,15 @@ function cmtColour(view){
 function renderPerformance(){
   var sess=getSess();
   var sl=shiftSlots();
+
+  // fullShiftSlots: all 12 slots of the shift for the TARGET line projection.
+  // sl (shiftSlots) only returns slots up to current hour — target must show all 12hrs.
+  var fullShiftSlots=(function(){
+    var _daySlots=ALL.slice(0,12);  // 06:00–18:00
+    var _nightSlots=ALL.slice(12);  // 18:00–06:00
+    return isDay()?_daySlots:_nightSlots;
+  })();
+
   if(!ST.perfTargets)ST.perfTargets={dlTarget:0,swhTarget:0,cmtTarget:0,cmtTarget2:0,cmtView:'combined'};
   if(ST.perfTargets.cmtView===undefined)ST.perfTargets.cmtView='combined';
   if(ST.perfTargets.cmtTarget===undefined)ST.perfTargets.cmtTarget=ST.perfTargets.dlTarget||0;
@@ -2505,6 +2514,8 @@ function renderPerformance(){
     if(i<=slotIdx){runSum+=v;cumActuals.push(runSum);}
     else{cumActuals.push(null);}
   });
+  // Pad cumActuals to fullShiftSlots length (future slots get null)
+  while(cumActuals.length<fullShiftSlots.length)cumActuals.push(null);
 
   // Target for current view
   var tKey=view==='combined'?null:(view==='mhc1'?'cmtTarget':('cmtTarget'+view.replace('mhc','')));
@@ -2515,29 +2526,24 @@ function renderPerformance(){
     tPerHrView=ST.perfTargets[tKey]||0;
   }
 
-  // Compute cumulative targets per crane (needed for combined too)
-  // If cmtTarget is not set or 0, derive from session target: target / 12hrs / nc
+  // Compute cumulative targets per crane using fullShiftSlots (all 12hrs, not just slots-to-now)
   var _derivedTgtPerHr=(sess&&sess.target&&nc)?(sess.target/12/nc):0;
   var cumTargetsByCrane={};
   for(var _cj=1;_cj<=nc;_cj++){
-    var _tKeyJ=(_cj===1)?'cmtTarget':('cmtTarget'+_cj);
-    var _tHrJ=ST.perfTargets[_tKeyJ]||_derivedTgtPerHr;
-    // Use this crane's own first lift (not session first lift) for target calculation
-    // Use an IIFE to capture _cj, _tHrJ and _craneFlRaw by value, not by reference
     cumTargetsByCrane[_cj]=(function(tHr,flRaw){
       var _cum2=0;
-      return sl.map(function(s){_cum2+=cmtSlotTarget(tHr,s,flRaw);return _cum2;});
+      return fullShiftSlots.map(function(s){_cum2+=cmtSlotTarget(tHr,s,flRaw);return _cum2;});
     })(ST.perfTargets[(_cj===1)?'cmtTarget':('cmtTarget'+_cj)]||_derivedTgtPerHr, craneLifts['fl_'+_cj]||'');
   }
 
-  // Combined cumulative = sum of all cranes
-  var cumTargetsCombined=sl.map(function(s,i){
+  // Combined cumulative = sum of all cranes across fullShiftSlots
+  var cumTargetsCombined=fullShiftSlots.map(function(s,i){
     var tot=0;
     for(var _cj2=1;_cj2<=nc;_cj2++) tot+=(cumTargetsByCrane[_cj2]||[])[i]||0;
     return tot;
   });
 
-  // No cap — target line is a rate-based projection for this shift, not a vessel order countdown
+  // No cap — target line is a rate projection for the full shift
 
   // Single-crane cumulative for non-combined
   var craneIdx=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
@@ -2546,12 +2552,14 @@ function renderPerformance(){
   // Summary stats — current slot index
   var slotIdx=sl.indexOf(slot);
   if(slotIdx<0)slotIdx=sl.length-1;
-  var currentTarget=cumTargetsCurrent[slotIdx]||0;
+  var fullSlotIdx=fullShiftSlots.indexOf(slot);
+  if(fullSlotIdx<0)fullSlotIdx=Math.min(slotIdx,fullShiftSlots.length-1);
+  var currentTarget=cumTargetsCurrent[fullSlotIdx]||0;
   var currentActual=cumActuals[slotIdx]||0;
   var deviation=currentActual-currentTarget;
 
-  // Labels: slot hour labels like "06:00"
-  var labels=sl.map(function(s){
+  // Labels: all 12 shift slots so target line stretches the full shift
+  var labels=fullShiftSlots.map(function(s){
     var p=s.split('-')[0];
     return p.substring(0,2)+':'+p.substring(2,4)||p;
   });
@@ -2740,10 +2748,10 @@ function renderPerformance(){
         var ctx=chart.ctx;
         var xScale=chart.scales.x;
         var yScale=chart.scales.y;
-        sl.forEach(function(s,i){
+        fullShiftSlots.forEach(function(s,i){
           if(cmtIsBreakSlot(s)){
             var x0=xScale.getPixelForValue(i);
-            var x1=i+1<sl.length?xScale.getPixelForValue(i+1):x0+20;
+            var x1=i+1<fullShiftSlots.length?xScale.getPixelForValue(i+1):x0+20;
             ctx.save();
             ctx.fillStyle='rgba(255,235,59,.06)';
             ctx.fillRect(x0-((x1-x0)/2),yScale.top,x1-x0,yScale.bottom-yScale.top);
