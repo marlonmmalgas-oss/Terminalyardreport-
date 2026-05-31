@@ -848,11 +848,11 @@ function getShiftSlots(sess){
   // Snap to standard 06:00/18:00 shift boundaries
   var startHour=start.getHours();
   var isDayShiftAtStart=startHour>=6&&startHour<18;
-  // Use same grace period as isDay() so slots never mismatch at rollover boundary
-  var _gsGrace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
-  var _gsTotalMins=now.getHours()*60+now.getMinutes();
-  var isDayShiftNow=_gsTotalMins>=(6*60+_gsGrace)&&_gsTotalMins<(18*60+_gsGrace);
+  // Use exact 06:00/18:00 boundaries — no grace period here.
+  // Grace only affects which SLOT is displayed (currSlot), not which SHIFT we're in.
   var nowHour=now.getHours();
+  var nowMins=now.getHours()*60+now.getMinutes();
+  var isDayShiftNow=nowMins>=6*60&&nowMins<18*60;
   // Shift window is always 06-18 (day) or 18-06 (night) — snap to these boundaries
   var shiftStart=new Date(now);
   shiftStart.setMinutes(0,0,0);
@@ -860,7 +860,7 @@ function getShiftSlots(sess){
     shiftStart.setHours(6,0,0,0);
   } else {
     // Night shift: started at 18:00 today, or 18:00 yesterday if after midnight
-    if(nowHour<6||(nowHour===6&&!isDayShiftNow)){
+    if(nowHour<6){
       shiftStart.setDate(shiftStart.getDate()-1);
     }
     shiftStart.setHours(18,0,0,0);
@@ -903,14 +903,10 @@ function getPeriodSlots(sess,slotKeys){
 const $=id=>document.getElementById(id);
 function isDay(){
   var now=new Date();
-  var h=now.getHours();
-  var m=now.getMinutes();
-  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
-  // Day shift: from 06:grace until 18:grace
-  var totalMins=h*60+m;
-  var dayStart=6*60+grace;   // e.g. 06:15 = 375
-  var dayEnd=18*60+grace;    // e.g. 18:15 = 1095
-  return totalMins>=dayStart&&totalMins<dayEnd;
+  var totalMins=now.getHours()*60+now.getMinutes();
+  // Exact 06:00/18:00 boundaries — no grace period
+  // Grace only affects currSlot() display, not which shift we're actually in
+  return totalMins>=6*60&&totalMins<18*60;
 }
 function shiftSlots(){
   // Returns slot-key strings for the current session's shift window
@@ -964,10 +960,15 @@ function currSlot(){
   const grace=ST.timing?.hourlyGrace??30;
   for(let i=0;i<sl.length;i++){
     const sh=parseInt(sl[i].substring(0,2));
-    if(h===sh){return m<grace?(i>0?sl[i-1]:sl[sl.length-1]):sl[i];}
+    if(h===sh){
+      // Within grace window: show previous slot — but if this IS the first slot (i=0),
+      // don't wrap backwards to the last slot of the shift (that would show 1700-1800 at 06:15)
+      if(m<grace&&i>0) return sl[i-1];
+      return sl[i];
+    }
   }
   // Hour not found in current shift slots (e.g. hour 6 on a night shift ending at 06:00)
-  // Return the last slot of the shift — do NOT return sl[0] which would show the first slot
+  // Return the last slot of the shift
   return sl[sl.length-1]||sl[0];
 }
 function curr4Slot(){
