@@ -1146,6 +1146,8 @@ function initApp(){
       });
     });
     ST.delays={};ST.delayRowIds={};
+    // Reset per-crane first/last lifts (they belong to the shift, not the vessel)
+    if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
     ST.hourlyShiftKey=_curShiftKey;
     // Always save — the shift snapshot we just built MUST reach Firebase.
     // We delay 3 s so the Firebase listener can merge remote state first,
@@ -1188,7 +1190,13 @@ if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShif
             for(var ci=1;ci<=nc;ci++){tot+=(ST.hourly[hk(aid,slot,ci,'discharge')]||0)+(ST.hourly[hk(aid,slot,ci,'load')]||0);}
             _cmtActuals[slot]=tot;
           });
-          var _tPerHr=(ST.perfTargets&&ST.perfTargets['cmtTarget'])||0;
+          // Combined target per hour = sum of all crane targets
+          var _tPerHr=0;
+          for(var _tci=1;_tci<=nc;_tci++){
+            var _tKey='cmtTarget'+((_tci===1)?'':''+_tci);
+            _tPerHr+=(ST.perfTargets&&ST.perfTargets[_tKey])||0;
+          }
+          if(!_tPerHr)_tPerHr=(ST.perfTargets&&ST.perfTargets['cmtTarget'])||0; // fallback
           var _fl=raw.firstLift||'';
           var _cmtTargets={};
           slotKeys.forEach(function(slot){_cmtTargets[slot]=cmtSlotTarget(_tPerHr,slot,_fl);});
@@ -1222,6 +1230,8 @@ if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShif
       var _rs=ST.sessions.find(function(x){return x.id===aid;});
       if(_rs){_rs.firstLift='';_rs.lastLift='';}
     });
+    // Reset per-crane first/last lifts in CMT (they belong to the shift, not the vessel)
+    if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
     // Stamp the new shift key so app-restart can detect missed rollovers
     ST.hourlyShiftKey=cShift+'_'+cDate;
     logActivity('Shift Rollover','New shift: '+cShift+' starting '+cDate,'Previous: '+outType+' '+outDate);
@@ -2506,6 +2516,7 @@ function renderPerformance(){
   if(ST.perfTargets.cmtTarget2===undefined)ST.perfTargets.cmtTarget2=ST.perfTargets.dlTarget||0;
 
   var view=ST.perfTargets.cmtView||'combined';
+  if(!ST.perfTargets.kpiMode)ST.perfTargets.kpiMode='shift'; // 'shift' | 'vessel' | 'last4'
   // firstLift from session is ONLY used for display — NOT for target line.
   // Target line uses per-crane craneLifts.fl_N so each crane's target is independent.
   var craneLifts=ST.perfTargets.craneLifts||{};
@@ -2586,9 +2597,64 @@ function renderPerformance(){
   h+='<button class="rh-share cmt-share-btn" onclick="sharePerformance()" style="padding:8px 12px;border-radius:8px;font-size:12px;font-weight:800;flex:0 0 auto;">📤</button>';
   h+='</div>';
 
+  // ── KPI Mode selector ──
+  var kpiMode=ST.perfTargets.kpiMode||'shift';
+  var kpiModes=[{id:'shift',lbl:'Current Shift'},{id:'vessel',lbl:'Entire Vessel'},{id:'last4',lbl:'Last 4 Hrs'}];
+  h+='<div style="margin:0 10px 8px;display:flex;gap:6px;align-items:center">';
+  h+='<span style="font-size:9px;color:#90a4c8;font-weight:700;letter-spacing:.4px;text-transform:uppercase;flex-shrink:0">KPI:</span>';
+  kpiModes.forEach(function(km){
+    var kActive=kpiMode===km.id;
+    h+='<button onclick="if(!ST.perfTargets)ST.perfTargets={};ST.perfTargets.kpiMode=\''+km.id+'\';sv();renderPerformance()" style="flex:1;padding:6px 4px;border-radius:7px;border:2px solid '+(kActive?'#4fc3f7':'transparent')+';font-size:10px;font-weight:800;cursor:pointer;background:'+(kActive?'#1e2a3a':'#141e2e')+';color:'+(kActive?'#4fc3f7':'#90a4c8')+';transition:all .15s;">'+km.lbl+'</button>';
+  });
+  h+='</div>';
+
   // ── Compute data for current view ──
-  // Actuals per slot (raw, not cumulative)
+  // Actuals per slot (raw, not cumulative) — CURRENT SHIFT only (for chart)
   var rawActuals=cmtActuals(sess,sl,view);
+
+  // ── KPI-mode aware actuals for Production Stats ──
+  var kpiMode=ST.perfTargets.kpiMode||'shift';
+  var kpiRawActuals; // flat array of move counts across the relevant slots/cranes
+  var kpiSlots; // the slot keys used for KPI computation
+  if(kpiMode==='vessel'){
+    // Entire vessel: sum across ALL stored shifts + current live
+    kpiSlots=ALL; // we'll query directly
+    kpiRawActuals=(function(){
+      var totals=[];
+      // Sum all shifts stored on the session
+      var allSlotData=getAllSlots(sess); // returns [{slot,disc,load}] across all shifts
+      allSlotData.forEach(function(obj){
+        var t=0;
+        if(view==='combined'){t=obj.disc+obj.load;}
+        else{
+          var ci=parseInt(view.replace('mhc',''))||1;
+          // Need per-crane data; getAllSlots aggregates — use live ST.hourly for current shift
+          var shiftSlotKeys=isDay()?ALL.slice(0,12):ALL.slice(12);
+          var inCurShift=shiftSlotKeys.indexOf(obj.slot)>=0;
+          if(inCurShift){
+            t=(ST.hourly[hk(sess.id,obj.slot,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,obj.slot,ci,'load')]||0);
+          } else {
+            // Past shift: approximate from per-crane stored data
+            var perCraneTotal=0;
+            if(sess.shifts){sess.shifts.forEach(function(sh){var sk=obj.slot+'_'+ci+'_discharge';var sk2=obj.slot+'_'+ci+'_load';perCraneTotal+=(sh.hourly&&sh.hourly[sk]||0)+(sh.hourly&&sh.hourly[sk2]||0);});}
+            t=perCraneTotal;
+          }
+        }
+        totals.push(t);
+      });
+      return totals;
+    })();
+  } else if(kpiMode==='last4'){
+    // Last 4 hourly slots
+    var _l4slots=sl.slice(Math.max(0,sl.indexOf(slot)-3),sl.indexOf(slot)+1);
+    if(_l4slots.length===0)_l4slots=sl.slice(-4);
+    kpiSlots=_l4slots;
+    kpiRawActuals=cmtActuals(sess,_l4slots,view);
+  } else {
+    // Current shift (default)
+    kpiSlots=sl;
+    kpiRawActuals=rawActuals;
+  }
   // Cumulative actuals — only up to and including the current slot
   // Slots after the current one get null so the line stops at now
   var cumActuals=[];
@@ -2726,7 +2792,12 @@ function renderPerformance(){
       });
     }
 
-    var hrsWorked=Math.max(0,(endMins-startMins+_earlyDelayMins)/60);
+    // Cap end at the current time within the shift so live KPI reflects hours worked so far,
+    // not the full 12-hr shift assumption.
+    var _nowMins=new Date().getHours()*60+new Date().getMinutes();
+    if(!isDay()&&_nowMins<12*60)_nowMins+=24*60; // night shift: adjust past-midnight hours
+    var nowCapMins=Math.min(endMins,_nowMins);
+    var hrsWorked=Math.max(0,(nowCapMins-startMins+_earlyDelayMins)/60);
     return Math.round(hrsWorked*100)/100;
   }
 
@@ -2740,9 +2811,9 @@ function renderPerformance(){
   totalCraneHrs=Math.round(totalCraneHrs*100)/100;
   var totalCraneMins=Math.round(totalCraneHrs*60);
 
-  // Total moves for the shift (all cranes, combined)
+  // Total moves for the KPI scope (all cranes, combined)
   var totalMoves=0;
-  rawActuals.forEach(function(v){totalMoves+=v||0;});
+  kpiRawActuals.forEach(function(v){totalMoves+=v||0;});
 
   // Deductable delays: only count delays for the viewed crane(s)
   var deductMins=0;
@@ -2774,17 +2845,19 @@ function renderPerformance(){
   // Net TPH = total moves / net crane hrs
   var netTPH=netCraneHrs>0?Math.round(totalMoves/netCraneHrs*10)/10:0;
 
+  var _isCombinedView=(view==='combined');
   var stats=[
-    {lbl:'TOTAL CRANE HRS',    val:totalCraneHrs,   unit:'hrs'},
-    {lbl:'GROSS TPH',          val:grossTPH,         unit:'moves/hr'},
-    {lbl:'TOTAL CRANE MIN',    val:totalCraneMins,   unit:'min'},
-    {lbl:'DEDUCTABLE DELAYS',  val:deductMins,       unit:'min'},
-    {lbl:'NET CRANE HRS',      val:netCraneHrs,      unit:'hrs'},
-    {lbl:'NET TPH',            val:netTPH,           unit:'moves/hr'},
+    {lbl:'TOTAL CRANE HRS',                             val:totalCraneHrs,   unit:'hrs'},
+    {lbl:_isCombinedView?'GROSS TPH':'GROSS CPH',       val:grossTPH,         unit:'moves/hr'},
+    {lbl:'TOTAL CRANE MIN',                             val:totalCraneMins,   unit:'min'},
+    {lbl:'DEDUCTABLE DELAYS',                           val:deductMins,       unit:'min'},
+    {lbl:'NET CRANE HRS',                               val:netCraneHrs,      unit:'hrs'},
+    {lbl:_isCombinedView?'NET TPH':'NET CPH',           val:netTPH,           unit:'moves/hr'},
   ];
 
+  var _kpiModeLabel={'shift':'Current Shift','vessel':'Entire Vessel','last4':'Last 4 Hours'}[kpiMode]||'Current Shift';
   h+='<div style="margin:0 10px 16px;border-radius:12px;overflow:hidden;border:1px solid #1e2a3a">';
-  h+='<div style="background:#1e2a3a;padding:10px 14px;font-size:11px;font-weight:800;color:#90a4c8;letter-spacing:.8px;text-transform:uppercase">Production Stats</div>';
+  h+='<div style="background:#1e2a3a;padding:10px 14px;font-size:11px;font-weight:800;color:#90a4c8;letter-spacing:.8px;text-transform:uppercase">Production Stats &nbsp;<span style="background:#4fc3f722;color:#4fc3f7;border-radius:5px;padding:2px 8px;font-size:9px;font-weight:700;letter-spacing:.3px">'+_kpiModeLabel+'</span></div>';
   stats.forEach(function(s,i){
     var bg=i%2===0?'#0d1521':'#111827';
     var isTPH=s.lbl.indexOf('TPH')>=0;
