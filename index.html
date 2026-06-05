@@ -4081,7 +4081,7 @@ function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buil
 // Only restores; never overwrites existing non-empty shift data.
 function recoverMissingShifts(){
   var statusEl=document.getElementById('recov-status');
-  if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">🔍 Scanning Firebase for missing shifts…</span>';
+  if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">🔍 Scanning for missing shifts…</span>';
   if(!dbRef){
     if(statusEl)statusEl.innerHTML='<span style="color:var(--red)">❌ Firebase not connected. Cannot recover.</span>';
     return;
@@ -4099,17 +4099,59 @@ function recoverMissingShifts(){
 
     var recovered=0;
     var checked=0;
+    var keysFixes=0;
 
+    // ── Pass 1: fix misfiled NIGHT shift keys in local sessions ──
+    // Bug: night shift after midnight was keyed as NIGHT_<today> instead of NIGHT_<yesterday>.
+    // Symptom: a NIGHT_YYYY-MM-DD entry exists in sess.shifts[] but the date is one day ahead
+    // of what it should be (the shift actually started the day before).
+    // Detection: a NIGHT shift whose date matches a DAY shift date in the same session
+    // — meaning both the night and following day were filed under the same date, leaving
+    // the previous night slot absent.
+    ST.sessions.forEach(function(sess,si){
+      if(!sess||!sess.shifts||!sess.shifts.length)return;
+      var shiftsByKey={};
+      sess.shifts.forEach(function(sh){if(sh&&sh.key)shiftsByKey[sh.key]=sh;});
+
+      sess.shifts.forEach(function(sh){
+        if(!sh||!sh.key)return;
+        var parts=sh.key.split('_');
+        if(parts[0]!=='NIGHT')return;
+        var shDate=parts.slice(1).join('_'); // YYYY-MM-DD
+        // Check: is there also a DAY shift on this same date?
+        var sameDayKey='DAY_'+shDate;
+        if(!shiftsByKey[sameDayKey])return; // no conflict — skip
+        // There IS a DAY shift on the same date as this NIGHT shift.
+        // Check: is the CORRECT night key (date - 1 day) missing?
+        var dateParts=shDate.split('-');
+        if(dateParts.length<3)return;
+        var d=new Date(parseInt(dateParts[0]),parseInt(dateParts[1])-1,parseInt(dateParts[2]));
+        d.setDate(d.getDate()-1);
+        var correctDate=d.toLocaleDateString('en-CA');
+        var correctKey='NIGHT_'+correctDate;
+        if(shiftsByKey[correctKey])return; // correct key already exists — skip
+        // Only fix if this shift actually has hourly data worth keeping
+        if(!sh.hourly||Object.keys(sh.hourly).length===0)return;
+        // Rename: change key from wrong date to correct date
+        sh.key=correctKey;
+        sh.date=correctDate;
+        keysFixes++;
+        checked++;
+      });
+      if(keysFixes>0){
+        ST.sessions[si]=JSON.parse(JSON.stringify(sess));
+      }
+    });
+
+    // ── Pass 2: restore from Firebase (missing or empty shifts) ──
     remoteSessions.forEach(function(remSess){
       if(!remSess||!remSess.id)return;
-      // Find matching local session
       var localIdx=ST.sessions.findIndex(function(s){return s.id===remSess.id;});
-      if(localIdx<0)return; // session not active locally — skip
+      if(localIdx<0)return;
 
       var localSess=ST.sessions[localIdx];
       if(!localSess.shifts)localSess.shifts=[];
 
-      // Restore remote shifts array
       var remShifts=remSess.shifts||[];
       if(!Array.isArray(remShifts)&&typeof remShifts==='object')remShifts=Object.values(remShifts);
       if(!Array.isArray(remShifts))remShifts=[];
@@ -4117,32 +4159,26 @@ function recoverMissingShifts(){
       remShifts.forEach(function(remSh){
         if(!remSh||!remSh.key)return;
         checked++;
-        // Restore remote shift's hourly (Firebase converts arrays to objects)
         var remHourly=remSh.hourly||{};
-        if(!Array.isArray(remHourly)&&typeof remHourly==='object'){}// already a plain object, fine
         var remHourlyCount=Object.keys(remHourly).length;
-        if(remHourlyCount===0)return; // nothing to restore in this remote shift
+        if(remHourlyCount===0)return;
 
-        // Find local version of this shift
         var localSh=localSess.shifts.find(function(sh){return sh.key===remSh.key;});
         var localHourlyCount=localSh?Object.keys(localSh.hourly||{}).length:0;
 
         if(!localSh){
-          // Shift completely missing locally — restore it
           localSess.shifts.push(JSON.parse(JSON.stringify(remSh)));
           recovered++;
         } else if(localHourlyCount===0&&remHourlyCount>0){
-          // Shift exists locally but hourly data is empty — restore hourly from remote
           localSh.hourly=JSON.parse(JSON.stringify(remHourly));
           if(remSh.delays&&Object.keys(remSh.delays).length>0&&Object.keys(localSh.delays||{}).length===0){
             localSh.delays=JSON.parse(JSON.stringify(remSh.delays));
           }
           recovered++;
         }
-        // If local already has data, never overwrite — skip
       });
 
-      // Sort shifts chronologically after restoring
+      // Sort shifts chronologically
       localSess.shifts.sort(function(a,b){
         function ts(key){
           var p=key.split('_'),t=p[0],dp=(p[1]||'').split('-');
@@ -4155,18 +4191,23 @@ function recoverMissingShifts(){
       ST.sessions[localIdx]=JSON.parse(JSON.stringify(localSess));
     });
 
-    if(recovered>0){
+    var totalFixed=recovered+keysFixes;
+    if(totalFixed>0){
       _myLastSave=Date.now();
       _saveProtectUntil=Date.now()+8000;
       sv();
-      if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">✅ Recovered '+recovered+' shift(s) from Firebase. Checked '+checked+' remote shifts. Data saved.</span>';
-      logActivity('Data Recovery','Recovered '+recovered+' missing shift(s) from Firebase');
+      var msg='✅ ';
+      if(keysFixes>0)msg+=keysFixes+' misfiled shift key(s) corrected. ';
+      if(recovered>0)msg+=recovered+' missing shift(s) restored from Firebase. ';
+      msg+='Data saved.';
+      if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">'+msg+'</span>';
+      logActivity('Data Recovery',msg);
       if(RT.tab==='results')renderResults();
       if(RT.tab==='history')renderHistory();
     } else if(checked>0){
-      if(statusEl)statusEl.innerHTML='<span style="color:#555">✅ Checked '+checked+' remote shifts — nothing missing. All data is present.</span>';
+      if(statusEl)statusEl.innerHTML='<span style="color:#555">✅ Checked '+checked+' shifts — nothing missing or misfiled. All data is present.</span>';
     } else {
-      if(statusEl)statusEl.innerHTML='<span style="color:#888">ℹ️ No shift data found in Firebase for the active session.</span>';
+      if(statusEl)statusEl.innerHTML='<span style="color:#888">ℹ️ No shift data found for the active session.</span>';
     }
   }).catch(function(e){
     if(statusEl)statusEl.innerHTML='<span style="color:var(--red)">❌ Recovery failed: '+e.message+'</span>';
