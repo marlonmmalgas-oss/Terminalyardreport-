@@ -2846,9 +2846,17 @@ function renderPerformance(){
         });
       }
     }
-    // Crane hrs: each completed past shift = 12hrs × statsNc; current shift = elapsed hrs × statsNc
-    var _pastShifts=sess.shifts?sess.shifts.length:0;
-    var _pastCraneHrs=_pastShifts*12*statsNc;
+    // Crane hrs: only count past shifts that had actual moves (skip empty/zero-move shifts)
+    var _pastCraneHrs=0;
+    if(sess.shifts){
+      sess.shifts.forEach(function(sh){
+        if(!sh.hourly)return;
+        // Check if this shift had any actual moves
+        var _shMoves=Object.values(sh.hourly).reduce(function(a,b){return a+(b||0);},0);
+        if(_shMoves===0)return; // skip empty shifts
+        _pastCraneHrs+=12*statsNc;
+      });
+    }
     var _curShiftHrs=0;
     if(view==='combined'){
       for(var _vci2=1;_vci2<=nc;_vci2++)_curShiftHrs+=_currentShiftCraneHrs(_vci2);
@@ -2866,6 +2874,7 @@ function renderPerformance(){
         for(var _vdc=_vdStartCi;_vdc<=_vdEndCi;_vdc++){
           Object.keys(sh.delays).forEach(function(k){
             var parts=k.split('_');if(parts.length<3)return;
+            // crane index is second-to-last part; use parseInt for type-safe comparison
             if(parseInt(parts[parts.length-2])!==_vdc)return;
             var _dd=sh.delays[k];
             if(_dd&&_dd.from&&_dd.to){
