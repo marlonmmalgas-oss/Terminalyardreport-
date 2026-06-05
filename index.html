@@ -1595,17 +1595,64 @@ function buildResultsTable(sess, slotKeys){
 }
 
 // Update a past shift's hourly snapshot (for results editing of completed shifts)
-function updateShiftHourly(sessId, shiftKey, slot, ci, type, val){
+// blockId, nc, ri passed so we can update totals in-place without re-rendering
+function updateShiftHourly(sessId, shiftKey, slot, ci, type, val, blockId, nc, ri){
   var raw=ST.sessions.find(function(x){return x.id===sessId;});
   if(!raw||!raw.shifts)return;
   var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
-  if(!sh)return;
+  if(!sh){
+    // Shift block exists in display but not yet in sess.shifts (empty slot) — create it
+    var keyParts=shiftKey.split('_');
+    sh={key:shiftKey,type:keyParts[0],date:keyParts.slice(1).join('_'),start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+    raw.shifts.push(sh);
+  }
   if(!sh.hourly)sh.hourly={};
   var sk=slot+'_'+ci+'_'+type;
   sh.hourly[sk]=parseFloat(val)||0;
   _myLastSave=Date.now();
   sv();
-  renderResults();
+
+  // Update cells in-place — no re-render, so open/closed state is preserved
+  if(!blockId)return;
+  // Update row total for this slot
+  var rowTotEl=document.getElementById('rrowtot_'+blockId+'_'+type+'_'+ri);
+  if(rowTotEl){
+    var rT=0;
+    for(var x=1;x<=nc;x++)rT+=(sh.hourly[slot+'_'+x+'_'+type])||0;
+    rowTotEl.textContent=rT||'';
+  }
+  // Update done/remain rows for this type
+  var doneRowId='res_done_'+blockId+'_'+type;
+  var remRowId='res_rem_'+blockId+'_'+type;
+  var perCrane={};
+  for(var x=1;x<=nc;x++)perCrane[x]=0;
+  Object.keys(sh.hourly).forEach(function(k){
+    var parts=k.split('_');if(parts.length<3)return;
+    var kci=parseInt(parts[parts.length-2]);
+    var kt=parts[parts.length-1];
+    if(kt===type&&kci>=1&&kci<=nc)perCrane[kci]=(perCrane[kci]||0)+(sh.hourly[k]||0);
+  });
+  var dT=0;
+  for(var x=1;x<=nc;x++){
+    dT+=perCrane[x];
+    var dc=document.getElementById(doneRowId+'_c'+x);
+    if(dc)dc.textContent=perCrane[x];
+  }
+  var dtEl=document.getElementById(doneRowId+'_tot');
+  if(dtEl)dtEl.textContent=dT;
+  var sess=getSess();
+  if(sess){
+    var rT2=0;
+    for(var x=1;x<=nc;x++){
+      var split=effSplit(sess,x,type);
+      var rem=split-perCrane[x];
+      rT2+=rem;
+      var rc=document.getElementById(remRowId+'_c'+x);
+      if(rc){rc.textContent=rem;rc.style.color=rem<0?'var(--red)':'';}
+    }
+    var rtEl=document.getElementById(remRowId+'_tot');
+    if(rtEl){rtEl.textContent=rT2;rtEl.style.color=rT2<0?'var(--red)':'';}
+  }
 }
 
 // Live-update Total Done, Total Remain, and row total cells without full re-render.
@@ -1686,52 +1733,85 @@ function renderResults(){
   var nc=sess.numCranes;
   var sl=shiftSlots();
 
-  // Build shift blocks: past shifts (from sess.shifts) + current shift
+  // Build shift blocks: generate ALL expected shifts from vessel start to now,
+  // then overlay actual data from sess.shifts[]. This ensures every shift slot
+  // appears even if it was never snapshotted (shows empty rows instead of disappearing).
   var shiftBlocks=[];
 
+  // Build a lookup of actual shift snapshots by key
+  var _shiftByKey={};
   if(sess.shifts&&sess.shifts.length){
-    // Deduplicate by key — keep the LAST entry per key (most data)
-    var _seenKeys={};
-    var _dedupedShifts=[];
     sess.shifts.forEach(function(sh){
       if(!sh||!sh.key)return;
-      _seenKeys[sh.key]=sh; // later entries overwrite earlier ones
+      // Keep the last entry per key (most data wins)
+      if(!_shiftByKey[sh.key]||Object.keys(sh.hourly||{}).length>=Object.keys((_shiftByKey[sh.key].hourly)||{}).length){
+        _shiftByKey[sh.key]=sh;
+      }
     });
-    // Preserve original order (last occurrence wins but maintain display order)
-    var _usedKeys={};
-    sess.shifts.forEach(function(sh){
-      if(!sh||!sh.key)return;
-      if(_usedKeys[sh.key])return; // already added this key
-      _dedupedShifts.push(_seenKeys[sh.key]); // push the winning (last) entry
-      _usedKeys[sh.key]=true;
-    });
+  }
 
-    _dedupedShifts.forEach(function(sh){
-      var isCurrent=sh.key===curShiftKey;
-      var shSlots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
+  // Generate expected shift sequence from vessel start up to and including current shift
+  var _vestStartMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
+  if(_vestStartMs){
+    // Snap vessel start to the shift boundary it fell in
+    var _vs=new Date(_vestStartMs);
+    var _vsH=_vs.getHours();
+    // Shift start: if 06<=h<18 → DAY starting that day; else NIGHT starting that day (or prev day if h<6)
+    var _curMs=new Date(_vs.getFullYear(),_vs.getMonth(),_vs.getDate(),_vsH>=6&&_vsH<18?6:(_vsH<6?(_vs.getDate()-1,18):18),0,0).getTime();
+    // Build properly: find the 06:00 or 18:00 boundary at or before vessel start
+    var _iter=new Date(_vs);
+    _iter.setSeconds(0);_iter.setMilliseconds(0);_iter.setMinutes(0);
+    if(_vsH>=6&&_vsH<18){_iter.setHours(6);}
+    else if(_vsH<6){_iter.setDate(_iter.getDate()-1);_iter.setHours(18);}
+    else{_iter.setHours(18);}
+
+    var _nowBoundary=new Date();
+    _nowBoundary.setSeconds(0);_nowBoundary.setMilliseconds(0);_nowBoundary.setMinutes(0);
+    var _nbH=_nowBoundary.getHours();
+    if(_nbH>=6&&_nbH<18){_nowBoundary.setHours(6);}
+    else if(_nbH<6){_nowBoundary.setDate(_nowBoundary.getDate()-1);_nowBoundary.setHours(18);}
+    else{_nowBoundary.setHours(18);}
+
+    // Walk from vessel-start shift boundary to current shift boundary (max 60 shifts safety cap)
+    var _safetyCount=0;
+    while(_iter.getTime()<=_nowBoundary.getTime()&&_safetyCount<60){
+      _safetyCount++;
+      var _itH=_iter.getHours();
+      var _shType=(_itH===6)?'DAY':'NIGHT';
+      var _shDateD=new Date(_iter);
+      var _shDateStr=_shDateD.toLocaleDateString('en-CA');
+      var _shKey=_shType+'_'+_shDateStr;
+      var _shSlots=_shType==='DAY'?ALL.slice(0,12):ALL.slice(12);
+      var _isCur=_shKey===curShiftKey;
       shiftBlocks.push({
-        key:sh.key,
-        label:buildShiftLabel(sh.type,sh.date||sh.start||''),
-        isCurrent:isCurrent,
-        isPast:!isCurrent,
-        slots:shSlots,
-        shiftObj:sh
+        key:_shKey,
+        label:buildShiftLabel(_shType,_shDateStr),
+        isCurrent:_isCur,
+        isPast:!_isCur,
+        slots:_isCur?sl:_shSlots,
+        shiftObj:_shiftByKey[_shKey]||null
       });
-    });
+      // Advance by 12 hours
+      _iter=new Date(_iter.getTime()+12*60*60*1000);
+    }
   }
 
-  // Current shift block: if not already in shiftBlocks, add it
-  var hasCurrentBlock=shiftBlocks.find(function(b){return b.isCurrent;});
-  if(!hasCurrentBlock){
-    shiftBlocks.push({
-      key:curShiftKey,
-      label:buildShiftLabel(curShiftType,_curShiftStartDate),
-      isCurrent:true,
-      isPast:false,
-      slots:sl,
-      shiftObj:null
+  // Fallback: if vessel start unknown, use existing sess.shifts + current
+  if(shiftBlocks.length===0){
+    Object.keys(_shiftByKey).forEach(function(key){
+      var sh=_shiftByKey[key];
+      var isCurrent=key===curShiftKey;
+      var shSlots=sh.type==='DAY'?ALL.slice(0,12):ALL.slice(12);
+      shiftBlocks.push({key:key,label:buildShiftLabel(sh.type,sh.date||sh.start||''),isCurrent:isCurrent,isPast:!isCurrent,slots:isCurrent?sl:shSlots,shiftObj:sh});
     });
+    if(!shiftBlocks.find(function(b){return b.isCurrent;})){
+      shiftBlocks.push({key:curShiftKey,label:buildShiftLabel(curShiftType,_curShiftStartDate),isCurrent:true,isPast:false,slots:sl,shiftObj:null});
+    }
   }
+
+  // Deduplicate by key (safety — walk above shouldn't produce dupes)
+  var _seenBlocks={};
+  shiftBlocks=shiftBlocks.filter(function(b){if(_seenBlocks[b.key])return false;_seenBlocks[b.key]=true;return true;});
 
   // Sort: true chronological order — DAY starts 06:00, NIGHT starts 18:00 on its date
   // Current is always last (bottom)
@@ -1819,10 +1899,10 @@ function renderResults(){
             var sk=s+'_'+i+'_'+t;
             v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
             rT+=v;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+block.key+'\',\''+s+'\','+i+',\''+t+'\',this.value)"/></td>';
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+block.key+'\',\''+s+'\','+i+',\''+t+'\',this.value,\''+blockId+'\','+nc+','+ri+')"/></td>';
           }
         }
-        var rtId=block.isCurrent?'id="rrowtot_'+blockId+'_'+t+'_'+ri+'"':'';
+        var rtId=block.isCurrent?'id="rrowtot_'+blockId+'_'+t+'_'+ri+'"':'id="rrowtot_'+blockId+'_'+t+'_'+ri+'"';
         h+='<td class="bold" '+rtId+'>'+(rT||'')+'</td></tr>';
       });
 
