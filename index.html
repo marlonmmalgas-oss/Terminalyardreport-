@@ -1147,13 +1147,11 @@ function initApp(){
     });
     ST.delays={};ST.delayRowIds={};
     ST.hourlyShiftKey=_curShiftKey;
-    // Delay the save so Firebase listener can load latest data first.
-    // If a remote update arrives in that window (_hadRemoteUpdate=true),
-    // skip this save entirely — Firebase already has the correct state
-    // and we don't want to overwrite it with our stale localStorage snapshot.
-    setTimeout(function(){
-      if(!_hadRemoteUpdate){sv();}
-    },3000);
+    // Always save — the shift snapshot we just built MUST reach Firebase.
+    // We delay 3 s so the Firebase listener can merge remote state first,
+    // but we never skip this save: the snapshot only exists here and must
+    // be persisted or that shift's data is lost forever.
+    setTimeout(function(){sv();},3000);
   } else if(!ST.hourlyShiftKey){
     // First ever load — stamp the current shift key
     ST.hourlyShiftKey=_curShiftKey;
@@ -1477,7 +1475,7 @@ function newVessel(){
       var _nc=_existing.numCranes||2;
       if(!_existing.shifts)_existing.shifts=[];
       var _shiftType=isDay()?'DAY':'NIGHT';
-      var _shiftDate=new Date().toLocaleDateString('en-CA');
+      var _shiftDate=_shiftStartDate(); // correct for night-after-midnight (uses yesterday's date)
       var _shiftKey=_shiftType+'_'+_shiftDate;
       var _shiftEntry=_existing.shifts.find(function(sh){return sh.key===_shiftKey;});
       var _isNew=!_shiftEntry;
@@ -1520,11 +1518,7 @@ function newVessel(){
   if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
   // Stamp current shift key so missed-rollover detection works
   var _nvShiftType=isDay()?'DAY':'NIGHT';
-  var _nvNow=new Date(),_nvH=_nvNow.getHours();
-  var _nvDate;
-  if(_nvH>=6&&_nvH<18){_nvDate=_nvNow.toLocaleDateString('en-CA');}
-  else if(_nvH<6){var _nvy=new Date(_nvNow);_nvy.setDate(_nvy.getDate()-1);_nvDate=_nvy.toLocaleDateString('en-CA');}
-  else{_nvDate=_nvNow.toLocaleDateString('en-CA');}
+  var _nvDate=_shiftStartDate(); // use canonical shift-start-date (handles night-after-midnight correctly)
   ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
   logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
   _saveProtectUntil=Date.now()+8000;
@@ -3939,6 +3933,13 @@ function renderAdmin(){
   h+='</div></div>';
   h+='</div>';
 
+  // ── Data Recovery ──
+  h+='<div class="asec"><div class="atitle">🔧 Data Recovery</div>';
+  h+='<p style="font-size:11px;color:#888;margin-bottom:12px">If shift data is missing from Results (e.g. after a missed shift rollover), tap below to scan Firebase and restore any shifts that exist remotely but are absent or empty locally. Only missing shifts are restored — existing data is never overwritten.</p>';
+  h+='<div id="recov-status" style="font-size:12px;color:#555;margin-bottom:10px;min-height:16px"></div>';
+  h+='<button onclick="recoverMissingShifts()" style="width:100%;padding:11px;background:#1e6e3a;color:white;border:none;border-radius:9px;font-size:13px;font-weight:800;cursor:pointer;">🔄 Recover Missing Shift Data from Firebase</button>';
+  h+='</div>';
+
 
   h+=`<div class="ai-card">
     <div class="ai-title">🤖 AI Performance Analysis</div>
@@ -4074,6 +4075,103 @@ function addUser(){
 }
 function toggleOp(v){RT.adminOp=v;$('abanner').style.display=v?'block':'none';buildNav();if(v)switchTab('input');}
 function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buildNav();switchTab('admin');}
+
+// ═══════════ DATA RECOVERY ═══════════
+// Scans Firebase for shift data that is missing or empty in local sessions.
+// Only restores; never overwrites existing non-empty shift data.
+function recoverMissingShifts(){
+  var statusEl=document.getElementById('recov-status');
+  if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">🔍 Scanning Firebase for missing shifts…</span>';
+  if(!dbRef){
+    if(statusEl)statusEl.innerHTML='<span style="color:var(--red)">❌ Firebase not connected. Cannot recover.</span>';
+    return;
+  }
+  dbRef.once('value',function(snap){
+    var remote=snap.val();
+    if(!remote){
+      if(statusEl)statusEl.innerHTML='<span style="color:var(--red)">❌ Firebase is empty. No data to recover.</span>';
+      return;
+    }
+    // Restore sessions array from Firebase (same as initSync does)
+    var remoteSessions=remote.sessions||[];
+    if(!Array.isArray(remoteSessions)&&typeof remoteSessions==='object')remoteSessions=Object.values(remoteSessions);
+    if(!Array.isArray(remoteSessions))remoteSessions=[];
+
+    var recovered=0;
+    var checked=0;
+
+    remoteSessions.forEach(function(remSess){
+      if(!remSess||!remSess.id)return;
+      // Find matching local session
+      var localIdx=ST.sessions.findIndex(function(s){return s.id===remSess.id;});
+      if(localIdx<0)return; // session not active locally — skip
+
+      var localSess=ST.sessions[localIdx];
+      if(!localSess.shifts)localSess.shifts=[];
+
+      // Restore remote shifts array
+      var remShifts=remSess.shifts||[];
+      if(!Array.isArray(remShifts)&&typeof remShifts==='object')remShifts=Object.values(remShifts);
+      if(!Array.isArray(remShifts))remShifts=[];
+
+      remShifts.forEach(function(remSh){
+        if(!remSh||!remSh.key)return;
+        checked++;
+        // Restore remote shift's hourly (Firebase converts arrays to objects)
+        var remHourly=remSh.hourly||{};
+        if(!Array.isArray(remHourly)&&typeof remHourly==='object'){}// already a plain object, fine
+        var remHourlyCount=Object.keys(remHourly).length;
+        if(remHourlyCount===0)return; // nothing to restore in this remote shift
+
+        // Find local version of this shift
+        var localSh=localSess.shifts.find(function(sh){return sh.key===remSh.key;});
+        var localHourlyCount=localSh?Object.keys(localSh.hourly||{}).length:0;
+
+        if(!localSh){
+          // Shift completely missing locally — restore it
+          localSess.shifts.push(JSON.parse(JSON.stringify(remSh)));
+          recovered++;
+        } else if(localHourlyCount===0&&remHourlyCount>0){
+          // Shift exists locally but hourly data is empty — restore hourly from remote
+          localSh.hourly=JSON.parse(JSON.stringify(remHourly));
+          if(remSh.delays&&Object.keys(remSh.delays).length>0&&Object.keys(localSh.delays||{}).length===0){
+            localSh.delays=JSON.parse(JSON.stringify(remSh.delays));
+          }
+          recovered++;
+        }
+        // If local already has data, never overwrite — skip
+      });
+
+      // Sort shifts chronologically after restoring
+      localSess.shifts.sort(function(a,b){
+        function ts(key){
+          var p=key.split('_'),t=p[0],dp=(p[1]||'').split('-');
+          if(dp.length<3)return 0;
+          var hr=t==='DAY'?6:18;
+          return new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2]),hr,0,0).getTime();
+        }
+        return ts(a.key)-ts(b.key);
+      });
+      ST.sessions[localIdx]=JSON.parse(JSON.stringify(localSess));
+    });
+
+    if(recovered>0){
+      _myLastSave=Date.now();
+      _saveProtectUntil=Date.now()+8000;
+      sv();
+      if(statusEl)statusEl.innerHTML='<span style="color:#1e6e3a">✅ Recovered '+recovered+' shift(s) from Firebase. Checked '+checked+' remote shifts. Data saved.</span>';
+      logActivity('Data Recovery','Recovered '+recovered+' missing shift(s) from Firebase');
+      if(RT.tab==='results')renderResults();
+      if(RT.tab==='history')renderHistory();
+    } else if(checked>0){
+      if(statusEl)statusEl.innerHTML='<span style="color:#555">✅ Checked '+checked+' remote shifts — nothing missing. All data is present.</span>';
+    } else {
+      if(statusEl)statusEl.innerHTML='<span style="color:#888">ℹ️ No shift data found in Firebase for the active session.</span>';
+    }
+  }).catch(function(e){
+    if(statusEl)statusEl.innerHTML='<span style="color:var(--red)">❌ Recovery failed: '+e.message+'</span>';
+  });
+}
 
 // ═══════════ ETC CALCULATOR ═══════════
 function calcETC(){
