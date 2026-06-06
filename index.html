@@ -706,7 +706,7 @@ const ALL=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-120
 function getAllSlots(sess){
   if(!sess)return[];
   var nc=sess.numCranes;
-  var isActive=sess.id===ST.activeId||sess.id===ST.activeId2;
+  var isActive=String(sess.id)===String(ST.activeId)||(ST.activeId2&&String(sess.id)===String(ST.activeId2));
   // For completed (non-active) sessions: aggregate from stored shift data only
   // This prevents a new vessel's live ST.hourly from contaminating old session totals
   if(!isActive){
@@ -3649,7 +3649,7 @@ function exportHistoryExcel(){
       sess.shifts.forEach(function(sh){shiftsFound.push(sh);});
     }
     // Live current shift for active session
-    var isActive=sess.id===ST.activeId||sess.id===ST.activeId2;
+    var isActive=String(sess.id)===String(ST.activeId)||(ST.activeId2&&String(sess.id)===String(ST.activeId2));
     if(isActive){
       var _n=new Date(),_hh=_n.getHours();
       var _csd;
