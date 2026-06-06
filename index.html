@@ -2436,53 +2436,60 @@ function renderDelays(){
 
       if(block.isCurrent){
         // ── Current shift: live editable (existing behaviour) ──
-        var rowIds=getDelayRowIds(sess.id,c);
-        rowIds.forEach(function(r){
-          var k=sess.id+'_'+c+'_'+r,d=ST.delays[k]||{};
-          var ri=rowIds.indexOf(r);
-          tbody+='<tr>';
-          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'from\',this.value)"/></td>';
-          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'to\',this.value)"/></td>';
-          tbody+='<td class="dur" id="dur'+c+'_'+r+'">'+dur(d.from,d.to)+'</td>';
-          tbody+='<td class="type-col"><input type="text" list="dtl'+c+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'type\',this.value)"/><datalist id="dtl'+c+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-          tbody+='<td class="desc-col"><input type="text" list="ddl'+c+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'desc\',this.value)"/><datalist id="ddl'+c+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-          tbody+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow(\''+sess.id+'\','+c+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
-          tbody+='</tr>';
-        });
+        // Use IIFE to capture c and sessId so forEach callbacks don't close over loop variable
+        tbody=(function(ci,sid){
+          var rowIds=getDelayRowIds(sid,ci);
+          var rows='';
+          rowIds.forEach(function(r){
+            var k=sid+'_'+ci+'_'+r,d=ST.delays[k]||{};
+            rows+='<tr>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'from\',this.value)"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'to\',this.value)"/></td>';
+            rows+='<td class="dur" id="dur'+ci+'_'+r+'">'+dur(d.from,d.to)+'</td>';
+            rows+='<td class="type-col"><input type="text" list="dtl'+ci+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay('+sid+','+ci+','+r+',\'type\',this.value)"/><datalist id="dtl'+ci+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td class="desc-col"><input type="text" list="ddl'+ci+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay('+sid+','+ci+','+r+',\'desc\',this.value)"/><datalist id="ddl'+ci+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow('+sid+','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+            rows+='</tr>';
+          });
+          return rows;
+        })(c, sess.id);
+        var craneLblCur=_editCraneLbl(c);
         h+='<div class="dblk" style="margin:0;border-radius:0;box-shadow:none;">';
-        h+='<div class="dchd">'+craneLbl+'<button class="add-row-btn" id="addBtn_'+c+'" onclick="addDRow('+c+')">+ Add Row</button></div>';
+        h+='<div class="dchd">'+craneLblCur+'<button class="add-row-btn" id="addBtn_'+c+'" onclick="addDRow('+c+')">+ Add Row</button></div>';
         h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
 
       } else {
         // ── Past shift: editable from snapshot ──
-        var shDelays=block.shiftObj&&block.shiftObj.delays?block.shiftObj.delays:{};
-        // Collect rows for this crane from the snapshot
-        var pastRows=[];
-        Object.keys(shDelays).forEach(function(k){
-          var parts=k.split('_');
-          if(parts.length>=3&&parseInt(parts[parts.length-2])===c){
-            pastRows.push({k:k,d:shDelays[k]});
+        tbody=(function(ci,blk,sid){
+          var shDelays=blk.shiftObj&&blk.shiftObj.delays?blk.shiftObj.delays:{};
+          var pastRows=[];
+          Object.keys(shDelays).forEach(function(k){
+            var parts=k.split('_');
+            if(parts.length>=3&&parseInt(parts[parts.length-2])===ci){
+              pastRows.push({k:k,d:shDelays[k]});
+            }
+          });
+          if(pastRows.length===0){
+            pastRows.push({k:sid+'_'+ci+'_0',d:{}});
           }
-        });
-        // If no rows exist yet in snapshot for this crane, show one blank row
-        if(pastRows.length===0){
-          var blankKey=sess.id+'_'+c+'_0';
-          pastRows.push({k:blankKey,d:{}});
-        }
-        pastRows.forEach(function(row,ri){
-          var d=row.d||{};
-          var rowKey=row.k;
-          tbody+='<tr>';
-          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'from\',this.value,\'dur_p_'+blockId+'_'+c+'_'+ri+'\')"/></td>';
-          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'to\',this.value,\'dur_p_'+blockId+'_'+c+'_'+ri+'\')"/></td>';
-          tbody+='<td class="dur" id="dur_p_'+blockId+'_'+c+'_'+ri+'">'+dur(d.from,d.to)+'</td>';
-          tbody+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+c+'_'+ri+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'type\',this.value,null)"/><datalist id="dtlp_'+blockId+'_'+c+'_'+ri+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-          tbody+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+c+'_'+ri+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'desc\',this.value,null)"/><datalist id="ddlp_'+blockId+'_'+c+'_'+ri+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-          tbody+='<td style="text-align:center;padding:2px 4px"><button onclick="removeShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
-          tbody+='</tr>';
-        });
+          var rows='';
+          pastRows.forEach(function(row,ri){
+            var d=row.d||{};
+            var rowKey=row.k;
+            var durId='dur_p_'+blockId+'_'+ci+'_'+ri;
+            rows+='<tr>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'from\',this.value,\''+durId+'\')"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'to\',this.value,\''+durId+'\')"/></td>';
+            rows+='<td class="dur" id="'+durId+'">'+dur(d.from,d.to)+'</td>';
+            rows+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+ci+'_'+ri+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'type\',this.value,null)"/><datalist id="dtlp_'+blockId+'_'+ci+'_'+ri+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+ci+'_'+ri+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'desc\',this.value,null)"/><datalist id="ddlp_'+blockId+'_'+ci+'_'+ri+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td style="text-align:center;padding:2px 4px"><button onclick="removeShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+            rows+='</tr>';
+          });
+          return rows;
+        })(c, block, sess.id);
         h+='<div class="dblk" style="margin:0;border-radius:0;box-shadow:none;">';
-        h+='<div class="dchd">'+craneLbl+'<button class="add-row-btn" onclick="addShiftDelayRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
+        h+='<div class="dchd">'+craneName(c)+'<button class="add-row-btn" onclick="addShiftDelayRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
         h+='<div class="twrap"><table class="dt"><thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
       }
     }
