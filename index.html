@@ -757,16 +757,14 @@ function getAllSlots(sess){
       });
     });
   }
-  // Step 2: add current live ST.hourly (current shift not yet snapshotted)
-  // SKIP any key already covered by sess.shifts[] to prevent double-counting
-  // Strip session prefix: '{sessId}_{slot}_{ci}_{type}' -> '{slot}_{ci}_{type}'
+  // Step 2: add current live ST.hourly.
+  // ST.hourly is always cleared at shift rollover so it only contains the CURRENT shift.
+  // No double-counting risk: current shift snapshot is already excluded in Step 1.
   var _pfx=sess.id+'_';
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(_pfx)===0){
       var sk=k.slice(_pfx.length);
-      if(!_snapshotedSlotKeys[sk]){
-        liveMerged[sk]=(liveMerged[sk]||0)+(ST.hourly[k]||0);
-      }
+      liveMerged[sk]=(liveMerged[sk]||0)+(ST.hourly[k]||0);
     }
   });
   return ALL.map(function(s){
