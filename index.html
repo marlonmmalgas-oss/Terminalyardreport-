@@ -1904,7 +1904,7 @@ function renderResults(){
             v=ST.hourly[hk(sess.id,s,i,t)]||0;
             rT+=v;
             var rowTotId='rrowtot_'+blockId+'_'+t+'_'+ri;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+curShiftKey+'\',\''+s+'\','+i+',\''+t+'\',this.value,\''+blockId+'\','+nc+','+ri+')"/></td>';
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv();_resLiveTotals(\''+sess.id+'\',\''+blockId+'\',\''+t+'\','+nc+',\''+s+'\','+ri+')"/></td>';
           } else {
             var sk=s+'_'+i+'_'+t;
             v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
