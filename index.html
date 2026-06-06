@@ -2575,7 +2575,38 @@ function addPastDRow(sid,shiftKey,c){
   const rk=sid+'_'+shiftKey+'_c'+c;
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   ST.delayRowIds[rk].push(Date.now());
-  sv();renderDelays();
+  sv();
+  _syncPastDelaysToShift(sid,shiftKey,c);
+  renderDelays();
+}
+
+// Sync ST.delays rows for a past shift back into sess.shifts[n].delays (for history + vessel KPI)
+function _syncPastDelaysToShift(sid,shiftKey,c){
+  var raw=ST.sessions.find(function(x){return x.id==sid;});
+  if(!raw)return;
+  if(!raw.shifts)raw.shifts=[];
+  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
+  if(!sh){
+    var kp=shiftKey.split('_');
+    sh={key:shiftKey,type:kp[0],date:kp.slice(1).join('_'),start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+    raw.shifts.push(sh);
+  }
+  if(!sh.delays)sh.delays={};
+  // Rebuild delays for this crane from ST.delays
+  var rk=sid+'_'+shiftKey+'_c'+c;
+  if(!ST.delayRowIds||!ST.delayRowIds[rk])return;
+  // Clear old entries for this crane in snapshot
+  Object.keys(sh.delays).forEach(function(k){
+    var parts=k.split('_');
+    if(parts.length>=3&&parseInt(parts[parts.length-2])===c)delete sh.delays[k];
+  });
+  // Write current ST.delays rows for this crane back to snapshot
+  ST.delayRowIds[rk].forEach(function(r){
+    var stKey=sid+'_'+shiftKey+'_'+c+'_'+r;
+    var d=ST.delays[stKey];
+    if(d)sh.delays[stKey]=JSON.parse(JSON.stringify(d));
+  });
+  sv();
 }
 function removeDelayRow(sid,c,rowId){
   if(!ST.delayRowIds)ST.delayRowIds={};
@@ -2583,19 +2614,28 @@ function removeDelayRow(sid,c,rowId){
   const rk=`${sid}_c${c}`;
   if(!ST.delayRowIds[rk])return;
   if(ST.delayRowIds[rk].length<=1){
-    // just clear the data, keep one blank row
     delete ST.delays[`${sid}_${c}_${rowId}`];
-    sv();renderDelays();return;
+    sv();
+    var _rm=String(sid).match(/^(\d+)_((?:DAY|NIGHT).+)$/);
+    if(_rm)_syncPastDelaysToShift(_rm[1],_rm[2],c);
+    renderDelays();return;
   }
   ST.delayRowIds[rk]=ST.delayRowIds[rk].filter(id=>id!==rowId);
   delete ST.delays[`${sid}_${c}_${rowId}`];
-  sv();renderDelays();
+  sv();
+  var _rm2=String(sid).match(/^(\d+)_((?:DAY|NIGHT).+)$/);
+  if(_rm2)_syncPastDelaysToShift(_rm2[1],_rm2[2],c);
+  renderDelays();
 }
 function updateDelay(sid,c,r,field,val){
   const k=`${sid}_${c}_${r}`;if(!ST.delays[k])ST.delays[k]={};
   ST.delays[k][field]=val;sv();
   const d=ST.delays[k],el=$(`dur${c}_${r}`);
   if(el)el.textContent=dur(d.from,d.to);
+  // If this is a past shift key (contains _DAY_ or _NIGHT_), sync back to sess.shifts
+  var _sidStr=String(sid);
+  var _shiftMatch=_sidStr.match(/^(\d+)_((?:DAY|NIGHT).+)$/);
+  if(_shiftMatch){_syncPastDelaysToShift(_shiftMatch[1],_shiftMatch[2],c);}
 }
 
 // ═══════════ HISTORY ═══════════
@@ -3110,26 +3150,40 @@ function renderPerformance(){
       _curShiftHrs=_currentShiftCraneHrs(parseInt(view.replace('mhc',''))||1);
     }
     totalCraneHrs=Math.round((_pastCraneHrs+_curShiftHrs)*100)/100;
-    // Delays: all stored shift delays + current live delays
+    // Delays: past shifts — read from ST.delays (live editable store) if present, else sess.shifts snapshot
     var _vdStartCi=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
     var _vdEndCi=view==='combined'?nc:_vdStartCi;
-    // Past shift delays from snapshots
     if(sess.shifts){
       sess.shifts.forEach(function(sh){
-        if(!sh.delays)return;
+        if(!sh.key)return;
         for(var _vdc=_vdStartCi;_vdc<=_vdEndCi;_vdc++){
-          Object.keys(sh.delays).forEach(function(k){
-            var parts=k.split('_');if(parts.length<3)return;
-            // crane index is second-to-last part; use parseInt for type-safe comparison
-            if(parseInt(parts[parts.length-2])!==_vdc)return;
-            var _dd=sh.delays[k];
-            if(_dd&&_dd.from&&_dd.to){
-              var _fm=parseInt(_dd.from.split(':')[0]||0)*60+parseInt(_dd.from.split(':')[1]||0);
-              var _tm=parseInt(_dd.to.split(':')[0]||0)*60+parseInt(_dd.to.split(':')[1]||0);
-              if(_tm<_fm)_tm+=24*60;
-              deductMins+=Math.max(0,_tm-_fm);
-            }
-          });
+          // Prefer ST.delays (live edits) over snapshot
+          var _prk=sess.id+'_'+sh.key+'_c'+_vdc;
+          var _hasLive=ST.delayRowIds&&ST.delayRowIds[_prk];
+          if(_hasLive){
+            ST.delayRowIds[_prk].forEach(function(r){
+              var _dd=ST.delays[sess.id+'_'+sh.key+'_'+_vdc+'_'+r]||{};
+              if(_dd.from&&_dd.to){
+                var _fm=parseInt(_dd.from.split(':')[0]||0)*60+parseInt(_dd.from.split(':')[1]||0);
+                var _tm=parseInt(_dd.to.split(':')[0]||0)*60+parseInt(_dd.to.split(':')[1]||0);
+                if(_tm<_fm)_tm+=24*60;
+                deductMins+=Math.max(0,_tm-_fm);
+              }
+            });
+          } else if(sh.delays){
+            // Fall back to snapshot
+            Object.keys(sh.delays).forEach(function(k){
+              var parts=k.split('_');if(parts.length<3)return;
+              if(parseInt(parts[parts.length-2])!==_vdc)return;
+              var _dd=sh.delays[k];
+              if(_dd&&_dd.from&&_dd.to){
+                var _fm=parseInt(_dd.from.split(':')[0]||0)*60+parseInt(_dd.from.split(':')[1]||0);
+                var _tm=parseInt(_dd.to.split(':')[0]||0)*60+parseInt(_dd.to.split(':')[1]||0);
+                if(_tm<_fm)_tm+=24*60;
+                deductMins+=Math.max(0,_tm-_fm);
+              }
+            });
+          }
         }
       });
     }
