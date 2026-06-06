@@ -974,7 +974,7 @@ function currSlot(){
 function curr4Slot(){
   const mins=new Date().getHours()*60+new Date().getMinutes();
   const s4=[{l:'0600-1000',s:360,e:600},{l:'1000-1400',s:600,e:840},{l:'1400-1800',s:840,e:1080},{l:'1800-2200',s:1080,e:1320},{l:'2200-0200',s:1320,e:1560},{l:'0200-0600',s:120,e:360}];
-  for(const x of s4){const am=mins<120?mins+1440:mins,as_=x.s<120?x.s+1440:x.s,ae=(x.e<120?x.e+1440:x.e)+90;if(am>=as_&&am<ae)return x.l;}
+  for(const x of s4){const am=mins<360?mins+1440:mins,as_=x.s<360?x.s+1440:x.s,ae=(x.e<=360?x.e+1440:x.e)+90;if(am>=as_&&am<ae)return x.l;}
   return '0600-1000';
 }
 function fs(s){return s.replace('-',' – ');}
@@ -2331,52 +2331,221 @@ function _adminLbl(key,def,invert){
   return '<span title="Tap to rename" style="cursor:pointer;border-bottom:1.5px dashed '+borderCol+';padding-bottom:1px;" onclick="_dlEdit(this,\''+key+'\')">' + val + '</span>';
 }
 function renderDelays(){
-  const sess=getSess(),slot=currSlot();
-  const mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
-  let h=rhHTML(mainTitle,slot,'dcap');
+  var sess=getSess(),slot=currSlot();
+  var mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
+  var h=rhHTML(mainTitle,slot,'dcap');
   h=h.replace("onclick=\"shareReport('dcap')\"","onclick=\"shareDelays()\"");
   h=h.replace('<h2>'+mainTitle+'</h2>','<h2>'+_editLbl('mainTitle','IDLE / DELAYS','font-size:inherit;font-weight:inherit;letter-spacing:inherit;')+'</h2>');
-  if(!sess){$('sc-delays').innerHTML=`<div id="dcap">${h}${noSess('⏸️','No active session.')}</div>`;return;}
-  const nc=sess.numCranes,dt=ST.sel.dtypes||[],dd=ST.sel.ddescs||[];
-  const colFrom=_editColLbl('from','From');
-  const colTo=_editColLbl('to','To');
-  const colDur=_editColLbl('dur','Dur.');
-  const colType=_editColLbl('type','Delay Type');
-  const colDesc=_editColLbl('desc','Description');
-  for(let c=1;c<=nc;c++){
-    const rowIds=getDelayRowIds(sess.id,c);
-    let tbody='';
-    rowIds.forEach((r)=>{
-      const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
-      tbody+=`<tr>
-        <td style="white-space:nowrap"><input type="time" value="${d.from||''}" onchange="updateDelay('${sess.id}',${c},${r},'from',this.value)"/></td>
-        <td style="white-space:nowrap"><input type="time" value="${d.to||''}" onchange="updateDelay('${sess.id}',${c},${r},'to',this.value)"/></td>
-        <td class="dur" id="dur${c}_${r}">${dur(d.from,d.to)}</td>
-        <td class="type-col">
-          <input type="text" list="dtl${c}_${r}" value="${(d.type||'').replace(/"/g,'&quot;')}" placeholder="Enter type..." onchange="updateDelay('${sess.id}',${c},${r},'type',this.value)"/>
-          <datalist id="dtl${c}_${r}">${dt.map(v=>`<option value="${v}"/>`).join('')}</datalist>
-        </td>
-        <td class="desc-col">
-          <input type="text" list="ddl${c}_${r}" value="${(d.desc||'').replace(/"/g,'&quot;')}" placeholder="Enter description..." onchange="updateDelay('${sess.id}',${c},${r},'desc',this.value)"/>
-          <datalist id="ddl${c}_${r}">${dd.map(v=>`<option value="${v}"/>`).join('')}</datalist>
-        </td>
-        <td style="text-align:center;padding:2px 4px">
-          <button class="del-row-btn" onclick="removeDelayRow('${sess.id}',${c},${r})" title="Delete row" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button>
-        </td>
-      </tr>`;
+  if(!sess){$('sc-delays').innerHTML='<div id="dcap">'+h+noSess('⏸️','No active session.')+'</div>';return;}
+
+  var nc=sess.numCranes,dt=ST.sel.dtypes||[],dd2=ST.sel.ddescs||[];
+  var colFrom=_editColLbl('from','From');
+  var colTo=_editColLbl('to','To');
+  var colDur=_editColLbl('dur','Dur.');
+  var colType=_editColLbl('type','Delay Type');
+  var colDesc=_editColLbl('desc','Description');
+
+  // ── Build same shift blocks as renderResults ──
+  var curShiftType=isDay()?'DAY':'NIGHT';
+  var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
+  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _totalMins=_nh*60+_nm;
+  var _curShiftStartDate;
+  if(_totalMins>=(6*60+_grace)&&_totalMins<(18*60+_grace)){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  else if(_totalMins<(6*60+_grace)){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
+  else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  var curShiftKey=curShiftType+'_'+_curShiftStartDate;
+
+  var _shiftByKey={};
+  if(sess.shifts&&sess.shifts.length){
+    sess.shifts.forEach(function(sh){
+      if(!sh||!sh.key)return;
+      if(!_shiftByKey[sh.key])_shiftByKey[sh.key]=sh;
     });
-    h+=`<div class="dblk">
-      <div class="dchd">${_editCraneLbl(c)}
-        <button class="add-row-btn" id="addBtn_${c}" onclick="addDRow(${c})">+ Add Row</button>
-      </div>
-      <div class="twrap"><table class="dt">
-        <thead><tr><th>${colFrom}</th><th>${colTo}</th><th>${colDur}</th><th>${colType}</th><th>${colDesc}</th><th></th></tr></thead>
-        <tbody>${tbody}</tbody>
-      </table></div>
-    </div>`;
   }
-  h+=`<div style="height:20px"></div>`;
-  $('sc-delays').innerHTML=`<div id="dcap">${h}</div>`;
+
+  var shiftBlocks=[];
+  var _vestStartMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
+  if(_vestStartMs){
+    var _vs=new Date(_vestStartMs),_vsH=_vs.getHours();
+    var _iter=new Date(_vs);
+    _iter.setSeconds(0);_iter.setMilliseconds(0);_iter.setMinutes(0);
+    if(_vsH>=6&&_vsH<18){_iter.setHours(6);}
+    else if(_vsH<6){_iter.setDate(_iter.getDate()-1);_iter.setHours(18);}
+    else{_iter.setHours(18);}
+    var _nowBoundary=new Date();
+    _nowBoundary.setSeconds(0);_nowBoundary.setMilliseconds(0);_nowBoundary.setMinutes(0);
+    var _nbH=_nowBoundary.getHours();
+    if(_nbH>=6&&_nbH<18){_nowBoundary.setHours(6);}
+    else if(_nbH<6){_nowBoundary.setDate(_nowBoundary.getDate()-1);_nowBoundary.setHours(18);}
+    else{_nowBoundary.setHours(18);}
+    var _sc=0;
+    while(_iter.getTime()<=_nowBoundary.getTime()&&_sc<60){
+      _sc++;
+      var _itH=_iter.getHours();
+      var _shType=(_itH===6)?'DAY':'NIGHT';
+      var _shDateStr=new Date(_iter).toLocaleDateString('en-CA');
+      var _shKey=_shType+'_'+_shDateStr;
+      var _isCur=_shKey===curShiftKey;
+      shiftBlocks.push({key:_shKey,label:buildShiftLabel(_shType,_shDateStr),isCurrent:_isCur,shiftObj:_shiftByKey[_shKey]||null});
+      _iter=new Date(_iter.getTime()+12*60*60*1000);
+    }
+  }
+  if(shiftBlocks.length===0){
+    Object.keys(_shiftByKey).forEach(function(key){
+      var sh=_shiftByKey[key];
+      shiftBlocks.push({key:key,label:buildShiftLabel(sh.type,sh.date||''),isCurrent:key===curShiftKey,shiftObj:sh});
+    });
+    if(!shiftBlocks.find(function(b){return b.isCurrent;})){
+      shiftBlocks.push({key:curShiftKey,label:buildShiftLabel(curShiftType,_curShiftStartDate),isCurrent:true,shiftObj:null});
+    }
+  }
+  // Deduplicate
+  var _seen={};
+  shiftBlocks=shiftBlocks.filter(function(b){if(_seen[b.key])return false;_seen[b.key]=true;return true;});
+  // Sort chronologically, current last
+  function _delShiftTs(key){
+    var p=key.split('_'),t=p[0],dp=(p[1]||'').split('-');
+    if(dp.length<3)return 0;
+    return new Date(parseInt(dp[0]),parseInt(dp[1])-1,parseInt(dp[2]),(t==='DAY'?6:18),0,0).getTime();
+  }
+  shiftBlocks.sort(function(a,b){
+    if(a.isCurrent&&!b.isCurrent)return 1;
+    if(!a.isCurrent&&b.isCurrent)return -1;
+    return _delShiftTs(a.key)-_delShiftTs(b.key);
+  });
+
+  // ── Render each block ──
+  shiftBlocks.forEach(function(block,bi){
+    var blockId='del_block_'+bi;
+    var isOpen=block.isCurrent;
+    var shiftIcon=block.label.indexOf('0600')>=0?'☀️':'🌙';
+    var headerBg=block.isCurrent?'#1a3320':'#374151'; // dark green for current, grey for past
+    var badge=block.isCurrent?'<span style="background:var(--yellow);color:#000;font-size:9px;font-weight:900;padding:2px 7px;border-radius:5px;margin-left:8px;">CURRENT</span>':'';
+
+    h+='<div style="margin:8px 10px;">';
+    h+='<div onclick="resBlockToggle(\''+blockId+'\')" style="display:flex;align-items:center;justify-content:space-between;background:'+headerBg+';color:white;padding:10px 13px;border-radius:'+(isOpen?'8px 8px 0 0':'8px')+';cursor:pointer;font-size:12px;font-weight:800;user-select:none;" id="'+blockId+'_hdr">';
+    h+='<span>'+shiftIcon+' '+block.label+badge+'</span>';
+    h+='<span id="'+blockId+'_arr">'+(isOpen?'▼':'▶')+'</span>';
+    h+='</div>';
+    h+='<div id="'+blockId+'" style="display:'+(isOpen?'block':'none')+';border:1px solid #dde3f0;border-top:none;border-radius:0 0 8px 8px;overflow:hidden;">';
+
+    for(var c=1;c<=nc;c++){
+      var craneLbl=block.isCurrent?_editCraneLbl(c):craneName(c);
+      var tbody='';
+
+      if(block.isCurrent){
+        // ── Current shift: live editable (existing behaviour) ──
+        var rowIds=getDelayRowIds(sess.id,c);
+        rowIds.forEach(function(r){
+          var k=sess.id+'_'+c+'_'+r,d=ST.delays[k]||{};
+          var ri=rowIds.indexOf(r);
+          tbody+='<tr>';
+          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'from\',this.value)"/></td>';
+          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'to\',this.value)"/></td>';
+          tbody+='<td class="dur" id="dur'+c+'_'+r+'">'+dur(d.from,d.to)+'</td>';
+          tbody+='<td class="type-col"><input type="text" list="dtl'+c+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'type\',this.value)"/><datalist id="dtl'+c+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+          tbody+='<td class="desc-col"><input type="text" list="ddl'+c+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay(\''+sess.id+'\','+c+','+r+',\'desc\',this.value)"/><datalist id="ddl'+c+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+          tbody+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow(\''+sess.id+'\','+c+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+          tbody+='</tr>';
+        });
+        h+='<div class="dblk" style="margin:0;border-radius:0;box-shadow:none;">';
+        h+='<div class="dchd">'+craneLbl+'<button class="add-row-btn" id="addBtn_'+c+'" onclick="addDRow('+c+')">+ Add Row</button></div>';
+        h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
+
+      } else {
+        // ── Past shift: editable from snapshot ──
+        var shDelays=block.shiftObj&&block.shiftObj.delays?block.shiftObj.delays:{};
+        // Collect rows for this crane from the snapshot
+        var pastRows=[];
+        Object.keys(shDelays).forEach(function(k){
+          var parts=k.split('_');
+          if(parts.length>=3&&parseInt(parts[parts.length-2])===c){
+            pastRows.push({k:k,d:shDelays[k]});
+          }
+        });
+        // If no rows exist yet in snapshot for this crane, show one blank row
+        if(pastRows.length===0){
+          var blankKey=sess.id+'_'+c+'_0';
+          pastRows.push({k:blankKey,d:{}});
+        }
+        pastRows.forEach(function(row,ri){
+          var d=row.d||{};
+          var rowKey=row.k;
+          tbody+='<tr>';
+          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'from\',this.value,\'dur_p_'+blockId+'_'+c+'_'+ri+'\')"/></td>';
+          tbody+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'to\',this.value,\'dur_p_'+blockId+'_'+c+'_'+ri+'\')"/></td>';
+          tbody+='<td class="dur" id="dur_p_'+blockId+'_'+c+'_'+ri+'">'+dur(d.from,d.to)+'</td>';
+          tbody+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+c+'_'+ri+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'type\',this.value,null)"/><datalist id="dtlp_'+blockId+'_'+c+'_'+ri+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+          tbody+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+c+'_'+ri+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\',\'desc\',this.value,null)"/><datalist id="ddlp_'+blockId+'_'+c+'_'+ri+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+          tbody+='<td style="text-align:center;padding:2px 4px"><button onclick="removeShiftDelay(\''+sess.id+'\',\''+block.key+'\',\''+rowKey+'\')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+          tbody+='</tr>';
+        });
+        h+='<div class="dblk" style="margin:0;border-radius:0;box-shadow:none;">';
+        h+='<div class="dchd">'+craneLbl+'<button class="add-row-btn" onclick="addShiftDelayRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
+        h+='<div class="twrap"><table class="dt"><thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
+      }
+    }
+    h+='</div></div>';
+  });
+
+  h+='<div style="height:20px"></div>';
+  $('sc-delays').innerHTML='<div id="dcap">'+h+'</div>';
+}
+
+// Update a field on a delay row stored inside a past shift snapshot
+function updateShiftDelay(sessId,shiftKey,rowKey,field,val,durElId){
+  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  if(!raw)return;
+  if(!raw.shifts)raw.shifts=[];
+  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
+  if(!sh){
+    var kp=shiftKey.split('_');
+    sh={key:shiftKey,type:kp[0],date:kp.slice(1).join('_'),start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+    raw.shifts.push(sh);
+  }
+  if(!sh.delays)sh.delays={};
+  if(!sh.delays[rowKey])sh.delays[rowKey]={};
+  sh.delays[rowKey][field]=val;
+  _myLastSave=Date.now();
+  sv();
+  // Update duration cell in-place
+  if(durElId){
+    var el=document.getElementById(durElId);
+    if(el)el.textContent=dur(sh.delays[rowKey].from,sh.delays[rowKey].to);
+  }
+}
+
+// Add a new blank delay row to a past shift snapshot
+function addShiftDelayRow(sessId,shiftKey,ci){
+  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  if(!raw)return;
+  if(!raw.shifts)raw.shifts=[];
+  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
+  if(!sh){
+    var kp=shiftKey.split('_');
+    sh={key:shiftKey,type:kp[0],date:kp.slice(1).join('_'),start:new Date().toISOString(),end:new Date().toISOString(),hourly:{},delays:{}};
+    raw.shifts.push(sh);
+  }
+  if(!sh.delays)sh.delays={};
+  // Create a new unique row key
+  var newKey=sessId+'_'+ci+'_'+Date.now();
+  sh.delays[newKey]={};
+  _myLastSave=Date.now();
+  sv();
+  renderDelays();
+}
+
+// Remove a delay row from a past shift snapshot
+function removeShiftDelay(sessId,shiftKey,rowKey){
+  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  if(!raw||!raw.shifts)return;
+  var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
+  if(!sh||!sh.delays)return;
+  delete sh.delays[rowKey];
+  _myLastSave=Date.now();
+  sv();
+  renderDelays();
 }
 function addDRow(c){
   const sess=getSess();if(!sess)return;
@@ -2430,7 +2599,8 @@ function cmtIsBreakSlot(slotStr){
 // Given a target per full hour and a slot string + firstLift time,
 // compute the proportional target for that specific slot.
 // Slots BEFORE firstLift return 0. Tea break slots get 30 min worth.
-function cmtSlotTarget(fullHrTarget, slotStr, firstLiftTime){
+// delayMinsInSlot (optional): minutes of delay that fall within this slot — reduces target proportionally.
+function cmtSlotTarget(fullHrTarget, slotStr, firstLiftTime, delayMinsInSlot){
   if(!fullHrTarget) return 0;
 
   // Convert slot start/end to minutes-since-midnight
@@ -2458,19 +2628,43 @@ function cmtSlotTarget(fullHrTarget, slotStr, firstLiftTime){
     // slot contains firstLift OR is after it → full target
   }
 
-  // Break slot gets 30 min worth (half target)
-  if(cmtIsBreakSlot(slotStr)){
-    return Math.floor(30 / (60/fullHrTarget));
-  }
-
-  return fullHrTarget;
+  // Break slot gets 30 min worth (half target), then apply delay deduction
+  var slotMins=cmtIsBreakSlot(slotStr)?30:60;
+  // Deduct delay minutes that fall within this slot
+  var deductMins=Math.min(delayMinsInSlot||0, slotMins);
+  var effectiveMins=Math.max(0, slotMins-deductMins);
+  return Math.round(fullHrTarget*(effectiveMins/60));
 }
 
 // Build cumulative targets array for chart
-function cmtCumulativeTargets(slots, fullHrTarget, firstLiftTime){
+// delaysByCrane: optional object {craneIndex: [{from:'HH:MM',to:'HH:MM'},...]}
+// craneIndices: array of crane indices to sum delays for (e.g. [1] or [1,2])
+function cmtCumulativeTargets(slots, fullHrTarget, firstLiftTime, delaysByCrane, craneIndices){
   var cum=0;
   return slots.map(function(s){
-    cum+=cmtSlotTarget(fullHrTarget,s,firstLiftTime);
+    // Calculate total delay minutes within this slot for the relevant cranes
+    var delayMinsInSlot=0;
+    if(delaysByCrane&&craneIndices){
+      var slotStartH=parseInt(s.substring(0,2));
+      var slotStartMins=slotStartH*60+parseInt(s.substring(2,4)||0);
+      var slotEndMins=slotStartMins+60;
+      if(!isDay()&&slotStartH<12){slotStartMins+=24*60;slotEndMins+=24*60;}
+      craneIndices.forEach(function(ci){
+        var rows=delaysByCrane[ci]||[];
+        rows.forEach(function(d){
+          if(!d.from||!d.to)return;
+          var fh=parseInt(d.from.split(':')[0]),fm=parseInt(d.from.split(':')[1]||0);
+          var th=parseInt(d.to.split(':')[0]),tm=parseInt(d.to.split(':')[1]||0);
+          var dStart=fh*60+fm,dEnd=th*60+tm;
+          if(!isDay()&&fh<12)dStart+=24*60;
+          if(!isDay()&&th<12)dEnd+=24*60;
+          if(dEnd<dStart)dEnd+=24*60;
+          var os=Math.max(dStart,slotStartMins),oe=Math.min(dEnd,slotEndMins);
+          if(oe>os)delayMinsInSlot+=oe-os;
+        });
+      });
+    }
+    cum+=cmtSlotTarget(fullHrTarget,s,firstLiftTime,delayMinsInSlot);
     return cum;
   });
 }
@@ -2677,14 +2871,45 @@ function renderPerformance(){
     tPerHrView=ST.perfTargets[tKey]||0;
   }
 
+  // Build delaysByCrane for target-line deduction: {craneIndex: [{from,to},...]}
+  var _delaysByCrane={};
+  if(sess){
+    for(var _dci=1;_dci<=nc;_dci++){
+      _delaysByCrane[_dci]=[];
+      getDelayRowIds(sess.id,_dci).forEach(function(r){
+        var _dd=ST.delays[sess.id+'_'+_dci+'_'+r]||{};
+        if(_dd.from&&_dd.to)_delaysByCrane[_dci].push({from:_dd.from,to:_dd.to});
+      });
+    }
+  }
+
   // Compute cumulative targets per crane using fullShiftSlots (all 12hrs, not just slots-to-now)
   var _derivedTgtPerHr=(sess&&sess.target&&nc)?(sess.target/12/nc):0;
   var cumTargetsByCrane={};
   for(var _cj=1;_cj<=nc;_cj++){
-    cumTargetsByCrane[_cj]=(function(tHr,flRaw){
+    cumTargetsByCrane[_cj]=(function(tHr,flRaw,ci){
       var _cum2=0;
-      return fullShiftSlots.map(function(s){_cum2+=cmtSlotTarget(tHr,s,flRaw);return _cum2;});
-    })(ST.perfTargets[(_cj===1)?'cmtTarget':('cmtTarget'+_cj)]||_derivedTgtPerHr, craneLifts['fl_'+_cj]||'');
+      return fullShiftSlots.map(function(s){
+        var _delMins=0;
+        var _rows=_delaysByCrane[ci]||[];
+        var _slotStartH=parseInt(s.substring(0,2));
+        var _slotStartM=parseInt(s.substring(2,4)||0);
+        var _sSt=_slotStartH*60+_slotStartM,_sEn=_sSt+60;
+        if(!isDay()&&_slotStartH<12){_sSt+=24*60;_sEn+=24*60;}
+        _rows.forEach(function(d){
+          if(!d.from||!d.to)return;
+          var _fh=parseInt(d.from.split(':')[0]),_fm=parseInt(d.from.split(':')[1]||0);
+          var _th=parseInt(d.to.split(':')[0]),_tm=parseInt(d.to.split(':')[1]||0);
+          var _ds=_fh*60+_fm,_de=_th*60+_tm;
+          if(!isDay()&&_fh<12)_ds+=24*60;
+          if(!isDay()&&_th<12)_de+=24*60;
+          if(_de<_ds)_de+=24*60;
+          var _os=Math.max(_ds,_sSt),_oe=Math.min(_de,_sEn);
+          if(_oe>_os)_delMins+=_oe-_os;
+        });
+        _cum2+=cmtSlotTarget(tHr,s,flRaw,_delMins);return _cum2;
+      });
+    })(ST.perfTargets[(_cj===1)?'cmtTarget':('cmtTarget'+_cj)]||_derivedTgtPerHr, craneLifts['fl_'+_cj]||'', _cj);
   }
 
   // Combined cumulative = sum of all cranes across fullShiftSlots
