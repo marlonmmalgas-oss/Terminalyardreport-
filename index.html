@@ -2459,37 +2459,44 @@ function renderDelays(){
         h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
 
       } else {
-        // ── Past shift: editable from snapshot ──
+        // ── Past shift: editable via ST.delays/ST.delayRowIds (same store as current shift) ──
+        // Key namespace: sessId_shiftKey_cN so it never collides with current shift
         tbody=(function(ci,blk,sid){
-          var shDelays=blk.shiftObj&&blk.shiftObj.delays?blk.shiftObj.delays:{};
-          var pastRows=[];
-          Object.keys(shDelays).forEach(function(k){
-            var parts=k.split('_');
-            if(parts.length>=3&&parseInt(parts[parts.length-2])===ci){
-              pastRows.push({k:k,d:shDelays[k]});
-            }
-          });
-          if(pastRows.length===0){
-            pastRows.push({k:sid+'_'+ci+'_0',d:{}});
+          var rk=sid+'_'+blk.key+'_c'+ci;
+          if(!ST.delayRowIds)ST.delayRowIds={};
+          // Seed from snapshot on first open if ST.delayRowIds not yet populated for this key
+          if(!ST.delayRowIds[rk]){
+            var shDelays=blk.shiftObj&&blk.shiftObj.delays?blk.shiftObj.delays:{};
+            var seeded=[];
+            Object.keys(shDelays).forEach(function(k){
+              var parts=k.split('_');
+              if(parts.length>=3&&parseInt(parts[parts.length-2])===ci){
+                var rowId=parseInt(parts[parts.length-1])||0;
+                ST.delays[sid+'_'+blk.key+'_'+ci+'_'+rowId]=shDelays[k];
+                seeded.push(rowId);
+              }
+            });
+            ST.delayRowIds[rk]=seeded.length?seeded:[0];
           }
+          var rowIds=ST.delayRowIds[rk];
           var rows='';
-          pastRows.forEach(function(row,ri){
-            var d=row.d||{};
-            var rowKey=row.k;
-            var durId='dur_p_'+blockId+'_'+ci+'_'+ri;
+          rowIds.forEach(function(r){
+            var k=sid+'_'+blk.key+'_'+ci+'_'+r;
+            var d=ST.delays[k]||{};
+            var durId='dur_p_'+blockId+'_'+ci+'_'+r;
             rows+='<tr>';
-            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'from\',this.value,\''+durId+'\')"/></td>';
-            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'to\',this.value,\''+durId+'\')"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'from\',this.value)"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'to\',this.value)"/></td>';
             rows+='<td class="dur" id="'+durId+'">'+dur(d.from,d.to)+'</td>';
-            rows+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+ci+'_'+ri+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'type\',this.value,null)"/><datalist id="dtlp_'+blockId+'_'+ci+'_'+ri+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-            rows+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+ci+'_'+ri+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\',\'desc\',this.value,null)"/><datalist id="ddlp_'+blockId+'_'+ci+'_'+ri+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-            rows+='<td style="text-align:center;padding:2px 4px"><button onclick="removeShiftDelay(\''+sid+'\',\''+blk.key+'\',\''+rowKey+'\')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+            rows+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+ci+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'type\',this.value)"/><datalist id="dtlp_'+blockId+'_'+ci+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+ci+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'desc\',this.value)"/><datalist id="ddlp_'+blockId+'_'+ci+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td style="text-align:center;padding:2px 4px"><button onclick="removeDelayRow(\''+sid+'_'+blk.key+'\','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
             rows+='</tr>';
           });
           return rows;
         })(c, block, sess.id);
         h+='<div class="dblk" style="margin:0;border-radius:0;box-shadow:none;">';
-        h+='<div class="dchd">'+craneName(c)+'<button class="add-row-btn" onclick="addShiftDelayRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
+        h+='<div class="dchd">'+craneName(c)+'<button class="add-row-btn" onclick="addPastDRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
         h+='<div class="twrap"><table class="dt"><thead><tr><th>From</th><th>To</th><th>Dur.</th><th>Delay Type</th><th>Description</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
       }
     }
@@ -2502,7 +2509,7 @@ function renderDelays(){
 
 // Update a field on a delay row stored inside a past shift snapshot
 function updateShiftDelay(sessId,shiftKey,rowKey,field,val,durElId){
-  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  var raw=ST.sessions.find(function(x){return x.id==sessId;});
   if(!raw)return;
   if(!raw.shifts)raw.shifts=[];
   var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
@@ -2525,7 +2532,7 @@ function updateShiftDelay(sessId,shiftKey,rowKey,field,val,durElId){
 
 // Add a new blank delay row to a past shift snapshot
 function addShiftDelayRow(sessId,shiftKey,ci){
-  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  var raw=ST.sessions.find(function(x){return x.id==sessId;});
   if(!raw)return;
   if(!raw.shifts)raw.shifts=[];
   var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
@@ -2545,7 +2552,7 @@ function addShiftDelayRow(sessId,shiftKey,ci){
 
 // Remove a delay row from a past shift snapshot
 function removeShiftDelay(sessId,shiftKey,rowKey){
-  var raw=ST.sessions.find(function(x){return x.id===sessId;});
+  var raw=ST.sessions.find(function(x){return x.id==sessId;});
   if(!raw||!raw.shifts)return;
   var sh=raw.shifts.find(function(s){return s.key===shiftKey;});
   if(!sh||!sh.delays)return;
@@ -2559,6 +2566,13 @@ function addDRow(c){
   if(!ST.delayRowIds)ST.delayRowIds={};
 
   const rk=`${sess.id}_c${c}`;
+  if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
+  ST.delayRowIds[rk].push(Date.now());
+  sv();renderDelays();
+}
+function addPastDRow(sid,shiftKey,c){
+  if(!ST.delayRowIds)ST.delayRowIds={};
+  const rk=sid+'_'+shiftKey+'_c'+c;
   if(!ST.delayRowIds[rk])ST.delayRowIds[rk]=[0];
   ST.delayRowIds[rk].push(Date.now());
   sv();renderDelays();
