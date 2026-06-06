@@ -1667,18 +1667,19 @@ function updateShiftHourly(sessId, shiftKey, slot, ci, type, val, blockId, nc, r
 
 // Live-update Total Done, Total Remain, and row total cells without full re-render.
 // Called from oninput on current-shift hourly inputs in renderResults.
-function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi, splits){
-  // splits[] is pre-computed effSplit per crane (passed at render time),
-  // so this function never needs getSess() — avoiding any runtime session lookup failure.
+function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
+  // Sum directly from ST.hourly across ALL slots in the current shift.
+  // This bypasses getCraneTotal and snapshot logic entirely — ST.hourly is
+  // already updated by the oninput before this function is called.
   var doneRowId='res_done_'+blockId+'_'+t;
   var remRowId='res_rem_'+blockId+'_'+t;
-  // Sum live ST.hourly for this session across all slots
+  // Gather all slot keys that belong to this block by reading all ST.hourly keys for this session
   var pfx=String(sessId)+'_';
   var perCrane={};
   for(var i=1;i<=nc;i++)perCrane[i]=0;
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(pfx)!==0)return;
-    var sk=k.slice(pfx.length);
+    var sk=k.slice(pfx.length); // slot_ci_type
     var parts=sk.split('_');
     if(parts.length<3)return;
     var kt=parts[parts.length-1];
@@ -1696,17 +1697,20 @@ function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi, splits){
   }
   var dtEl=document.getElementById(doneRowId+'_tot');
   if(dtEl)dtEl.textContent=dT;
-  // Update per-crane Remain cells using pre-computed splits (no getSess() needed)
-  var rT2=0;
-  for(var i=1;i<=nc;i++){
-    var split=(splits&&splits[i-1]!=null)?splits[i-1]:0;
-    var rem=split-perCrane[i];
-    rT2+=rem;
-    var rc=document.getElementById(remRowId+'_c'+i);
-    if(rc){rc.textContent=rem;rc.style.color=rem<0?'var(--red)':'';}
+  // Update per-crane Remain cells — need effSplit which needs sess
+  var sess=getSess();
+  if(sess){
+    var rT2=0;
+    for(var i=1;i<=nc;i++){
+      var split=effSplit(sess,i,t);
+      var rem=split-perCrane[i];
+      rT2+=rem;
+      var rc=document.getElementById(remRowId+'_c'+i);
+      if(rc){rc.textContent=rem;rc.style.color=rem<0?'var(--red)':'';}
+    }
+    var rtEl=document.getElementById(remRowId+'_tot');
+    if(rtEl){rtEl.textContent=rT2;rtEl.style.color=rT2<0?'var(--red)':'';}
   }
-  var rtEl=document.getElementById(remRowId+'_tot');
-  if(rtEl){rtEl.textContent=rT2;rtEl.style.color=rT2<0?'var(--red)':'';}
   // Update the changed slot row total
   var rowTotEl=document.getElementById('rrowtot_'+blockId+'_'+t+'_'+slotRi);
   if(rowTotEl){
@@ -1890,11 +1894,6 @@ function renderResults(){
       for(var i=1;i<=nc;i++){var v=effSplit(sess,i,t);obT+=v;h+='<td>'+v+'</td>';}
       h+='<td>'+obT+'</td></tr>';
 
-      // Pre-compute effSplit per crane at render time so _resLiveTotals never needs getSess()
-      var _splits=[];
-      for(var _si=1;_si<=nc;_si++)_splits.push(effSplit(sess,_si,t));
-      var _splitsJson=JSON.stringify(_splits);
-
       var blockSlots=block.slots;
       blockSlots.forEach(function(s,ri){
         var rT=0;
@@ -1905,7 +1904,7 @@ function renderResults(){
             v=ST.hourly[hk(sess.id,s,i,t)]||0;
             rT+=v;
             var rowTotId='rrowtot_'+blockId+'_'+t+'_'+ri;
-            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="ST.hourly[hk(\''+sess.id+'\',\''+s+'\','+i+',\''+t+'\')]=parseFloat(this.value)||0;_resLiveTotals(\''+sess.id+'\',\''+blockId+'\',\''+t+'\','+nc+',\''+s+'\','+ri+','+_splitsJson+');sv()"/></td>';
+            h+='<td><input class="ci" type="number" value="'+(v||'')+'" placeholder="-" oninput="updateShiftHourly('+sess.id+',\''+curShiftKey+'\',\''+s+'\','+i+',\''+t+'\',this.value,\''+blockId+'\','+nc+','+ri+')"/></td>';
           } else {
             var sk=s+'_'+i+'_'+t;
             v=(block.shiftObj&&block.shiftObj.hourly&&block.shiftObj.hourly[sk])||0;
