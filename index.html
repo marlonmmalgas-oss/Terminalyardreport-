@@ -817,12 +817,12 @@ function getCraneTotal(sess, craneIdx, type){
       });
     });
   }
-  // Step 2: add live ST.hourly — for current shift this is always the authority.
-  // For past shifts, _snapKeys prevents double-counting.
+  // Step 2: add live ST.hourly — current shift authority.
+  // ST.hourly is cleared at every shift rollover so it only contains the CURRENT shift.
+  // No double-counting risk with past snapshots.
   Object.keys(ST.hourly).forEach(function(k){
     if(k.indexOf(pfx)===0){
       var sk=k.slice(pfx.length);
-      if(_snapKeys[sk])return;
       var parts=sk.split('_');
       if(parts.length>=3){
         var ci=parseInt(parts[parts.length-2]);
