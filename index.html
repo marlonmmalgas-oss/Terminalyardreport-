@@ -1177,6 +1177,7 @@ function initApp(){
     ST.delays={};ST.delayRowIds={};
     // Reset per-crane first/last lifts (they belong to the shift, not the vessel)
     if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
+    if(ST.perfTargets)ST.perfTargets.remainingAtShiftStart=0;
     ST.hourlyShiftKey=_curShiftKey;
     // Always save — the shift snapshot we just built MUST reach Firebase.
     // We delay 3 s so the Firebase listener can merge remote state first,
@@ -1261,6 +1262,7 @@ if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShif
     });
     // Reset per-crane first/last lifts in CMT (they belong to the shift, not the vessel)
     if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
+    if(ST.perfTargets)ST.perfTargets.remainingAtShiftStart=0;
     // Stamp the new shift key so app-restart can detect missed rollovers
     ST.hourlyShiftKey=cShift+'_'+cDate;
     logActivity('Shift Rollover','New shift: '+cShift+' starting '+cDate,'Previous: '+outType+' '+outDate);
@@ -3011,11 +3013,23 @@ function renderPerformance(){
     return tot;
   });
 
-  // Cap target line at total remaining moves — only applies when splits are configured
-  // (remaining > 0 AND session has a non-zero target split set)
+  // Cap target line at remaining moves at the START of the shift.
+  // We snapshot remaining once when the shift begins and reuse it throughout.
+  // This means completing 150 of 400 moves does NOT shrink the target line —
+  // it stays anchored to the 400 that were remaining when the shift started.
   var _gtCap=calcGlobalTotals(sess);
-  var _remaining=_gtCap.remaining;
+  var _liveRemaining=_gtCap.remaining;
   var _hasSplits=sess&&sess.target&&sess.target>0;
+  if(_hasSplits&&_liveRemaining>=0){
+    // Snapshot on first call this shift — stored in perfTargets so it persists
+    if(!ST.perfTargets.remainingAtShiftStart||ST.perfTargets.remainingAtShiftStart<=0){
+      ST.perfTargets.remainingAtShiftStart=_liveRemaining;
+      sv();
+    }
+  }
+  var _remaining=(_hasSplits&&ST.perfTargets.remainingAtShiftStart>0)
+    ? ST.perfTargets.remainingAtShiftStart
+    : 0;
   if(_hasSplits&&_remaining>0){
     // Cap combined
     cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_remaining);});
