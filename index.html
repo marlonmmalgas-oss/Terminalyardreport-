@@ -736,7 +736,7 @@ function getAllSlots(sess){
   var liveMerged={};
   // Compute current shift key so we skip its snapshot (same logic as getCraneTotal)
   var _as_now=new Date(),_as_h=_as_now.getHours(),_as_m=_as_now.getMinutes();
-  var _as_grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _as_grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
   var _as_totalMins=_as_h*60+_as_m;
   var _as_isDay=_as_totalMins>=(6*60+_as_grace)&&_as_totalMins<(18*60+_as_grace);
   var _as_csd;
@@ -789,7 +789,7 @@ function getCraneTotal(sess, craneIdx, type){
   // of the CURRENT shift block the live ST.hourly values for those same slots.
   // Only PAST shift snapshots should claim _snapKeys.
   var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
-  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
   var _totalMins=_nh*60+_nm;
   var _isDayNow=_totalMins>=(6*60+_grace)&&_totalMins<(18*60+_grace);
   var _csd;
@@ -838,27 +838,20 @@ function getCraneTotal(sess, craneIdx, type){
 // Auto-resets at shift boundary — NO manual reset
 function getShiftSlots(sess){
   if(!sess)return[];
-  // Fall back to sess.id (Date.now() number) or savedAt if created not set
   var startMs=sess.created||sess.id||(sess.savedAt?new Date(sess.savedAt).getTime():null);
   if(!startMs)return[];
-  var start=new Date(startMs);
   var now=new Date();
-  // Snap to standard 06:00/18:00 shift boundaries
-  var startHour=start.getHours();
-  var isDayShiftAtStart=startHour>=6&&startHour<18;
-  // Use exact 06:00/18:00 boundaries — no grace period here.
-  // Grace only affects which SLOT is displayed (currSlot), not which SHIFT we're in.
-  var nowHour=now.getHours();
   var nowMins=now.getHours()*60+now.getMinutes();
-  var isDayShiftNow=nowMins>=6*60&&nowMins<18*60;
-  // Shift window is always 06-18 (day) or 18-06 (night) — snap to these boundaries
+  var grace=ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30;
+  // Shift boundary uses hourlyGrace — matches isDay() and currSlot()
+  var isDayShiftNow=nowMins>=(6*60+grace)&&nowMins<(18*60+grace);
+  var nowHour=now.getHours();
   var shiftStart=new Date(now);
-  shiftStart.setMinutes(0,0,0);
   if(isDayShiftNow){
     shiftStart.setHours(6,0,0,0);
   } else {
-    // Night shift: started at 18:00 today, or 18:00 yesterday if after midnight
-    if(nowHour<6){
+    if(nowHour<6||(nowHour===6&&now.getMinutes()<grace)){
+      // Night shift that started yesterday at 18:00
       shiftStart.setDate(shiftStart.getDate()-1);
     }
     shiftStart.setHours(18,0,0,0);
@@ -902,9 +895,11 @@ const $=id=>document.getElementById(id);
 function isDay(){
   var now=new Date();
   var totalMins=now.getHours()*60+now.getMinutes();
-  // Exact 06:00/18:00 boundaries — no grace period
-  // Grace only affects currSlot() display, not which shift we're actually in
-  return totalMins>=6*60&&totalMins<18*60;
+  // Shift boundary uses hourlyGrace — same grace that controls currSlot display.
+  // This means the shift truly changes at 06:00+grace and 18:00+grace,
+  // matching the moment the hourly report switches to the new slot.
+  var grace=ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30;
+  return totalMins>=(6*60+grace)&&totalMins<(18*60+grace);
 }
 function shiftSlots(){
   // Returns slot-key strings for the current session's shift window
@@ -918,7 +913,7 @@ function shiftSlots(){
 function getShiftType(date){
   var d=new Date(date);
   var h=d.getHours(),m=d.getMinutes();
-  var grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
   var totalMins=h*60+m;
   var dayStart=6*60+grace;
   var dayEnd=18*60+grace;
@@ -1069,19 +1064,19 @@ function initApp(){
   RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();if(RT.tab==='4hourly')renderFour();},300000);
   // Shift rollover — runs every minute, saves results+delays at 06:00/18:00
   RT.lastShiftType=isDay()?'DAY':'NIGHT';
-  // Track the shift start date: for night shift after midnight, use yesterday's date as the shift start date
+  // Track the shift start date: for night shift after midnight, use yesterday's date
+  // Uses same hourlyGrace as isDay() for consistency
   function _shiftStartDate(){
     var now=new Date();
-    var h=now.getHours();
-    if(h>=6&&h<18){
-      // Day shift — starts today
+    var h=now.getHours(),m=now.getMinutes();
+    var grace=ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30;
+    var totalMins=h*60+m;
+    if(totalMins>=(6*60+grace)&&totalMins<(18*60+grace)){
       return now.toLocaleDateString('en-CA');
-    } else if(h<6){
-      // Night shift that started yesterday at 18:00
+    } else if(totalMins<(6*60+grace)){
       var y=new Date(now);y.setDate(y.getDate()-1);
       return y.toLocaleDateString('en-CA');
     } else {
-      // Night shift that starts today at 18:00
       return now.toLocaleDateString('en-CA');
     }
   }
@@ -1473,6 +1468,24 @@ function unlockSess(){
   setTimeout(function(){_myLastSave=Date.now();},3000);
 }
 // ═══════════ SESSION LIFECYCLE (single, canonical) ═══════════
+// Top-level so newVessel and any other global function can call it
+function _shiftStartDate(){
+  var now=new Date();
+  var h=now.getHours(),m=now.getMinutes();
+  var grace=ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30;
+  var totalMins=h*60+m;
+  if(totalMins>=(6*60+grace)&&totalMins<(18*60+grace)){
+    // Day shift — starts today
+    return now.toLocaleDateString('en-CA');
+  } else if(totalMins<(6*60+grace)){
+    // Night shift that started yesterday at 18:00
+    var y=new Date(now);y.setDate(y.getDate()-1);
+    return y.toLocaleDateString('en-CA');
+  } else {
+    // Night shift starting today at 18:00
+    return now.toLocaleDateString('en-CA');
+  }
+}
 function newVessel(){
   var targetSlot=ST.vesselSlot||1;
   var currentId=targetSlot===2?(ST.activeId2||null):ST.activeId;
@@ -1705,9 +1718,9 @@ function _resLiveTotals(sessId, blockId, t, nc, changedSlot, slotRi){
 function renderResults(){
   var sess=getSess();
   var curShiftType=isDay()?'DAY':'NIGHT';
-  // Use isDay() (which respects shiftRolloverGrace) for the date too
+  // Use isDay() (which respects hourlyGrace) for the date too
   var _now=new Date(),_h=_now.getHours(),_hm=_now.getMinutes();
-  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
   var _totalMins=_h*60+_hm;
   var _dayStart=6*60+_grace, _dayEnd=18*60+_grace;
   var _curShiftStartDate;
@@ -2330,7 +2343,7 @@ function renderDelays(){
   // ── Build same shift blocks as renderResults ──
   var curShiftType=isDay()?'DAY':'NIGHT';
   var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
-  var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+  var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
   var _totalMins=_nh*60+_nm;
   var _curShiftStartDate;
   if(_totalMins>=(6*60+_grace)&&_totalMins<(18*60+_grace)){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
@@ -2962,7 +2975,23 @@ function renderPerformance(){
     return tot;
   });
 
-  // No cap — target line is a rate projection for the full shift
+  // Cap target line at total remaining moves — it cannot extend beyond what is left
+  var _gtCap=calcGlobalTotals(sess);
+  var _remaining=_gtCap.remaining;
+  if(_remaining>0){
+    // Cap combined
+    cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_remaining);});
+    // Cap per-crane (proportional cap using combined max)
+    var _combinedMax=cumTargetsCombined[cumTargetsCombined.length-1]||0;
+    if(_combinedMax>0){
+      for(var _capCj=1;_capCj<=nc;_capCj++){
+        cumTargetsByCrane[_capCj]=(cumTargetsByCrane[_capCj]||[]).map(function(v,i){
+          var _ratio=cumTargetsCombined[i]<_remaining?1:(_remaining/(_combinedMax||1));
+          return Math.round(v*_ratio);
+        });
+      }
+    }
+  }
 
   // Single-crane cumulative for non-combined
   var craneIdx=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
@@ -3498,7 +3527,7 @@ function renderHistory(){
     // Use isDay() (grace-aware) for shift start date — matches renderResults and getCraneTotal
     var _now=new Date();
     var _nh=_now.getHours(),_nm=_now.getMinutes();
-    var _grace=(ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15);
+    var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
     var _totalMins=_nh*60+_nm;
     var _dayStart=6*60+_grace,_dayEnd=18*60+_grace;
     var _curShiftStartDate;
@@ -4265,17 +4294,22 @@ var _ACT_MAX = 500;
 function logActivity(action, detail, extra){
   if(!ST.activityLog)ST.activityLog=[];
   var user=RT.user?RT.user.name+' ('+RT.user.role+')':'System';
+  var ua=navigator.userAgent||'';
+  var device='Desktop';
+  if(/iPhone|iPad|iPod/i.test(ua))device='iOS';
+  else if(/Android/i.test(ua))device='Android';
+  else if(/Mobile/i.test(ua))device='Mobile';
   var entry={
     ts:new Date().toISOString(),
     user:user,
     action:action,
     detail:detail||'',
-    extra:extra||''
+    extra:extra||'',
+    device:device
   };
   ST.activityLog.unshift(entry);
   if(ST.activityLog.length>_ACT_MAX)ST.activityLog=ST.activityLog.slice(0,_ACT_MAX);
   // Note: sv() is NOT called here — caller already calls sv() after the action
-  // This prevents double-saves; the log entry goes with the next sv() from the caller
 }
 
 function renderActivityLog(){
@@ -4297,7 +4331,8 @@ function renderActivityLog(){
     var byDate={};
     var dateOrder=[];
     filtered.forEach(function(e){
-      var d=e.ts?e.ts.substring(0,10):'Unknown';
+      var _d=e.ts?new Date(e.ts):null;
+      var d=_d?_d.toLocaleDateString('en-CA'):'Unknown';
       if(!byDate[d]){byDate[d]=[];dateOrder.push(d);}
       byDate[d].push(e);
     });
@@ -4307,7 +4342,8 @@ function renderActivityLog(){
       try{dLabel=new Date(d).toLocaleDateString('en-ZA',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});}catch(ex){dLabel=d;}
       h+='<div style="font-size:10px;font-weight:900;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--lb)">'+dLabel+'</div>';
       entries.forEach(function(e){
-        var t=e.ts?e.ts.substring(11,16):'--:--';
+        var _tsD=e.ts?new Date(e.ts):null;
+        var t=_tsD?_tsD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false}):'--:--';
         var actionColour={
           'Session Saved':'#1e8449','Session Unlocked':'#2980b9',
           'New Vessel':'#8e44ad','Vessel Switched':'#0891b2',
@@ -4323,7 +4359,7 @@ function renderActivityLog(){
         h+='<div style="font-size:12px;font-weight:800;color:'+actionColour+'">'+e.action+'</div>';
         if(e.detail)h+='<div style="font-size:11px;color:#444;margin-top:2px">'+e.detail+'</div>';
         if(e.extra)h+='<div style="font-size:10px;color:#888;margin-top:1px">'+e.extra+'</div>';
-        h+='<div style="font-size:10px;color:#aaa;margin-top:3px">'+e.user+'</div>';
+        h+='<div style="font-size:10px;color:#aaa;margin-top:3px">'+e.user+(e.device?' · '+e.device:'')+'</div>';
         h+='</div></div>';
       });
     });
@@ -4413,7 +4449,7 @@ function renderAdmin(){
 
   // ── Timing settings (admin only) ──
   h+=`<div class="asec"><div class="atitle">⏱️ Report Timing Settings</div>
-    <p style="font-size:11px;color:#888;margin-bottom:12px">Minutes past the hour before the report moves to the next time slot.</p>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Hourly Grace controls both the slot display and the shift rollover — the shift rolls over at 06:00+grace and 18:00+grace, matching the moment the report switches to the new slot.</p>
     <div class="g2">
       <div class="f"><label>Hourly Grace (min)</label>
         <input type="number" value="${ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30}" min="1" max="59"
@@ -4424,11 +4460,6 @@ function renderAdmin(){
         <input type="number" value="${ST.timing&&ST.timing.fourHourlyGrace!=null?ST.timing.fourHourlyGrace:90}" min="1" max="180"
           oninput="if(!ST.timing)ST.timing={};ST.timing.fourHourlyGrace=parseInt(this.value)||90;sv()"/>
         <span style="font-size:10px;color:#888;margin-top:2px">e.g. 90 = switch 90min after slot ends</span>
-      </div>
-      <div class="f"><label>Shift Rollover Grace (min)</label>
-        <input type="number" value="${ST.timing&&ST.timing.shiftRolloverGrace!=null?ST.timing.shiftRolloverGrace:15}" min="0" max="59"
-          oninput="if(!ST.timing)ST.timing={};ST.timing.shiftRolloverGrace=parseInt(this.value)||15;sv()"/>
-        <span style="font-size:10px;color:#888;margin-top:2px">e.g. 15 = day starts at 06:15, night at 18:15</span>
       </div>
     </div>
   </div>`;
