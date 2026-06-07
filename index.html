@@ -2975,23 +2975,56 @@ function renderPerformance(){
     return tot;
   });
 
-  // Cap target line at total remaining moves — it cannot extend beyond what is left
+  // Cap target line at total remaining moves — only applies when splits are configured
+  // (remaining > 0 AND session has a non-zero target split set)
   var _gtCap=calcGlobalTotals(sess);
   var _remaining=_gtCap.remaining;
-  if(_remaining>0){
+  var _hasSplits=sess&&sess.target&&sess.target>0;
+  if(_hasSplits&&_remaining>0){
     // Cap combined
     cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_remaining);});
-    // Cap per-crane (proportional cap using combined max)
-    var _combinedMax=cumTargetsCombined[cumTargetsCombined.length-1]||0;
+    // Cap per-crane proportionally
+    var _combinedMax=cumTargetsByCrane[1]&&cumTargetsByCrane[1].length?
+      (function(){var t=0;for(var _x=1;_x<=nc;_x++)t+=(cumTargetsByCrane[_x]||[])[fullShiftSlots.length-1]||0;return t;}()):0;
     if(_combinedMax>0){
       for(var _capCj=1;_capCj<=nc;_capCj++){
-        cumTargetsByCrane[_capCj]=(cumTargetsByCrane[_capCj]||[]).map(function(v,i){
-          var _ratio=cumTargetsCombined[i]<_remaining?1:(_remaining/(_combinedMax||1));
-          return Math.round(v*_ratio);
+        var _craneMax=(cumTargetsByCrane[_capCj]||[])[fullShiftSlots.length-1]||0;
+        var _craneRemain=_remaining*(_craneMax/(_combinedMax||1));
+        cumTargetsByCrane[_capCj]=(cumTargetsByCrane[_capCj]||[]).map(function(v){
+          return Math.min(v,_craneRemain);
         });
       }
     }
   }
+
+  // Stop per-crane target line at last lift time — target cannot grow after last lift
+  for(var _llCj=1;_llCj<=nc;_llCj++){
+    var _llRaw2=craneLifts['ll_'+_llCj]||'';
+    if(!_llRaw2)continue;
+    var _llParts=_llRaw2.split(':');
+    var _llH=parseInt(_llParts[0])||0,_llM=parseInt(_llParts[1])||0;
+    var _llMins=_llH*60+_llM;
+    if(!isDay()&&_llH<12)_llMins+=24*60;
+    // Find the index in fullShiftSlots where the last lift falls
+    var _llFrozenVal=null;
+    cumTargetsByCrane[_llCj]=(cumTargetsByCrane[_llCj]||[]).map(function(v,i){
+      var _slotH=parseInt(fullShiftSlots[i].substring(0,2));
+      var _slotMins=_slotH*60;
+      if(!isDay()&&_slotH<12)_slotMins+=24*60;
+      // Once the slot starts at or after last lift, freeze the line at the value it had
+      if(_slotMins>=_llMins){
+        if(_llFrozenVal===null)_llFrozenVal=i>0?(cumTargetsByCrane[_llCj][i-1]||v):v;
+        return _llFrozenVal;
+      }
+      return v;
+    });
+  }
+  // Recompute combined after per-crane adjustments
+  cumTargetsCombined=fullShiftSlots.map(function(s,i){
+    var tot=0;
+    for(var _cj2b=1;_cj2b<=nc;_cj2b++) tot+=(cumTargetsByCrane[_cj2b]||[])[i]||0;
+    return tot;
+  });
 
   // Single-crane cumulative for non-combined
   var craneIdx=view==='combined'?1:parseInt(view.replace('mhc',''))||1;
