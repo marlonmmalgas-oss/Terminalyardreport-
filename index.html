@@ -300,7 +300,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 <body>
 
 <!-- LOGIN -->
-<div id="loginScreen">
+<div id="loginScreen" style="display:none">
   <div class="lcard">
     <div class="llogo" id="loginLogo">TR</div>
     <div class="lh">Terminal Report</div>
@@ -310,8 +310,17 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <button class="btn" onclick="doLogin()">Sign In</button>
     <div class="err" id="liErr"></div>
     <div class="credit">Developed by Marlon Malgas</div>
-    
   </div>
+</div>
+
+<!-- LOADING SCREEN — shown until Firebase confirms first sync -->
+<div id="loadingScreen" style="position:fixed;inset:0;background:#0d1521;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99999">
+  <img src="" id="loadingLogo" style="width:90px;height:90px;object-fit:contain;border-radius:16px;margin-bottom:22px;display:none"/>
+  <div style="font-size:22px;font-weight:900;color:white;margin-bottom:6px">Terminal Report</div>
+  <div style="font-size:13px;color:#90a4c8;margin-bottom:32px">Connecting to Firebase…</div>
+  <div style="width:48px;height:48px;border:4px solid #1e2a3a;border-top:4px solid #4fc3f7;border-radius:50%;animation:spin .8s linear infinite"></div>
+  <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+  <div id="loadingMsg" style="font-size:11px;color:#4a5a72;margin-top:18px"></div>
 </div>
 
 <!-- APP -->
@@ -422,9 +431,43 @@ function sv(){
   }
 }
 
+var _firebaseReady=false; // true after first Firebase value event — loading screen dismissed
+
+function _dismissLoadingScreen(){
+  if(_firebaseReady)return;
+  _firebaseReady=true;
+  var ls=document.getElementById('loadingScreen');
+  var login=document.getElementById('loginScreen');
+  if(ls)ls.style.display='none';
+  if(login)login.style.display='';
+  // Show logo in loading screen while waiting
+  try{
+    var _lsData=ld();
+    if(_lsData&&_lsData.settings&&_lsData.settings.logo){
+      var _ll=document.getElementById('loadingLogo');
+      if(_ll){_ll.src=_lsData.settings.logo;_ll.style.display='block';}
+    }
+  }catch(e){}
+}
+
 // initSync() - initializes Firebase and sets up real-time listener
 // Called automatically on app load - no user action required
 function initSync(){
+  // Show logo on loading screen from localStorage (images-only read)
+  try{
+    var _lsImg=ld();
+    if(_lsImg&&_lsImg.settings&&_lsImg.settings.logo&&_lsImg.settings.logo.startsWith('data:')){
+      var _ll=document.getElementById('loadingLogo');
+      if(_ll){_ll.src=_lsImg.settings.logo;_ll.style.display='block';}
+    }
+  }catch(e){}
+  // Fallback: if Firebase takes more than 12 seconds, dismiss anyway
+  setTimeout(function(){
+    if(!_firebaseReady){
+      document.getElementById('loadingMsg').textContent='Could not reach Firebase. Working offline.';
+      setTimeout(_dismissLoadingScreen,2000);
+    }
+  },12000);
   try{
     if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     var db=firebase.database();
@@ -440,6 +483,7 @@ function initSync(){
           ST.users=JSON.parse(JSON.stringify(DEF.users));
         }
         dbRef.set(JSON.parse(JSON.stringify(ST)));
+        _dismissLoadingScreen();
         return;
       }
       // Step 2: apply remote data - NEVER overwrite users or local images
@@ -543,6 +587,8 @@ function initSync(){
         })) ST.users.push(JSON.parse(JSON.stringify(du)));
       });
       try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+      // Dismiss loading screen and show login on first Firebase response
+      _dismissLoadingScreen();
       applyDark();
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
@@ -593,7 +639,7 @@ function initSync(){
       });
     }
     console.log('Firebase sync active:',DB_PATH);
-  }catch(e){console.log('Firebase error:',e.message);}
+  }catch(e){console.log('Firebase error:',e.message);_dismissLoadingScreen();}
 }
 
 function showSyncBanner(msg){
@@ -644,18 +690,27 @@ const DEF={
   hourlyShiftKey:null
 };
 const saved=ld();
-// Deep copy state from saved localStorage, falling back to DEF for missing keys
+// ── ST is built from DEF defaults only ──
+// Operational data (sessions, hourly, delays) comes exclusively from Firebase.
+// localStorage is only used for: base64 images and Firebase connection keys.
+// This eliminates the stale-localStorage data leak where Person B's old cache
+// could overwrite live shift data before Firebase responded.
 const ST={};
 Object.keys(DEF).forEach(function(k){
-  if(saved&&saved[k]!==undefined){
-    ST[k]=saved[k];
-  } else {
-    // Deep copy arrays/objects from DEF so we never mutate DEF
-    ST[k]=Array.isArray(DEF[k])?DEF[k].map(function(x){return Object.assign({},x);}):
-           (typeof DEF[k]==='object'&&DEF[k]!==null)?Object.assign({},DEF[k]):DEF[k];
-  }
+  // Deep copy from DEF — never reference DEF objects directly
+  ST[k]=Array.isArray(DEF[k])?DEF[k].map(function(x){return Object.assign({},x);}):
+         (typeof DEF[k]==='object'&&DEF[k]!==null)?Object.assign({},DEF[k]):DEF[k];
 });
-// Ensure all sub-objects exist
+// Restore images from localStorage only — these are too large for Firebase
+// and are device-local (logo, backgrounds)
+if(saved&&saved.settings){
+  ['logo','bg','bgHourly','bgFour','bgDelay','bgYard'].forEach(function(k){
+    if(saved.settings[k]&&typeof saved.settings[k]==='string'&&saved.settings[k].startsWith('data:')){
+      ST.settings[k]=saved.settings[k];
+    }
+  });
+}
+// Ensure required sub-objects exist
 if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.settings);
 if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
 if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
@@ -670,27 +725,8 @@ if(!Array.isArray(ST.generators))ST.generators=[];
 if(!Array.isArray(ST.activityLog))ST.activityLog=[];
 if(!ST.timing||typeof ST.timing!=='object')ST.timing=Object.assign({},DEF.timing);
 if(!ST.craneNames||typeof ST.craneNames!=='object')ST.craneNames=Object.assign({},DEF.craneNames);
-// Always ensure ST.users is a fresh array - never reference DEF.users
-if(!Array.isArray(ST.users)||ST.users.length===0){
-  ST.users=DEF.users.map(function(u){return Object.assign({},u);});
-} else {
-  // Remove legacy @agl.com accounts
-  ST.users=ST.users.filter(function(u){return u.email&&!u.email.includes('@agl.com');});
-  // Ensure all 4 default terminal accounts exist
-  DEF.users.forEach(function(du){
-    if(!ST.users.find(function(u){return u.email&&u.email.toLowerCase()===du.email.toLowerCase();})){
-      ST.users.push(Object.assign({},du));
-    }
-  });
-}
-if(!ST.vesselAbbrevs)ST.vesselAbbrevs=DEF.vesselAbbrevs.map(function(x){return Object.assign({},x);});
-if(!ST.yardReports)ST.yardReports=[];
-if(!ST.delayRowIds)ST.delayRowIds={};
-
-if(!ST.vesselAbbrevs)ST.vesselAbbrevs=[...DEF.vesselAbbrevs];
-if(!ST.generators)ST.generators=[];
-if(!ST.timing)ST.timing={hourlyGrace:30,fourHourlyGrace:90};
-if(!ST.craneNames)ST.craneNames={1:'CR1',2:'CR2',3:'CR3',4:'CR4'};
+// Always start with clean default users — Firebase will supply the real user list
+ST.users=DEF.users.map(function(u){return Object.assign({},u);});
 
 const RT={user:null,adminOp:false,tab:'input',timer:null};
 
