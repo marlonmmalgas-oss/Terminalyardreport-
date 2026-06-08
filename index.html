@@ -1121,15 +1121,59 @@ function initApp(){
   // If app was closed when shift boundary passed, ST.hourly has stale data.
   // Detect by comparing stored hourlyShiftKey to the current shift.
   var _curShiftKey=(isDay()?'DAY':'NIGHT')+'_'+_shiftStartDate();
+  // Determine the stale shift key — either from stored hourlyShiftKey or by inspecting ST.hourly keys
+  var _detectedStaleKey=null;
   if(ST.hourlyShiftKey && ST.hourlyShiftKey !== _curShiftKey){
+    _detectedStaleKey=ST.hourlyShiftKey;
+  } else if(!ST.hourlyShiftKey){
+    // hourlyShiftKey not set (first load after localStorage removal fix).
+    // Inspect ST.hourly keys to find which shift they belong to.
+    // Keys look like: sessId_HHMM-HHMM_ci_type
+    // If any key's slot belongs to a DIFFERENT shift than _curShiftKey, treat it as stale.
+    var _activeIdsCheck=[ST.activeId,ST.activeId2].filter(Boolean);
+    var _foundStale=false;
+    _activeIdsCheck.forEach(function(aid){
+      if(_foundStale)return;
+      var _daySlotSet={};ALL.slice(0,12).forEach(function(s){_daySlotSet[s]=true;});
+      var _nightSlotSet={};ALL.slice(12).forEach(function(s){_nightSlotSet[s]=true;});
+      var _curIsDayShift=_curShiftKey.indexOf('DAY')===0;
+      Object.keys(ST.hourly).forEach(function(k){
+        if(_foundStale)return;
+        if(k.indexOf(aid+'_')!==0)return;
+        var sk=k.slice((aid+'_').length);
+        var slotEnd=sk.indexOf('_',sk.indexOf('-')+1);
+        var slotPart=slotEnd>=0?sk.substring(0,slotEnd):sk;
+        // If this slot belongs to the opposite shift type, data is stale from previous shift
+        var _slotIsDay=!!_daySlotSet[slotPart];
+        var _slotIsNight=!!_nightSlotSet[slotPart];
+        if(_curIsDayShift&&_slotIsNight&&ST.hourly[k]){_foundStale=true;}
+        if(!_curIsDayShift&&_slotIsDay&&ST.hourly[k]){_foundStale=true;}
+      });
+    });
+    if(_foundStale){
+      // Build the stale key: opposite shift type, correct date
+      var _staleType=isDay()?'NIGHT':'DAY';
+      var _staleNow=new Date();
+      var _staleDate;
+      if(_staleType==='NIGHT'){
+        // Night shift that ended at 06:00 today started yesterday at 18:00
+        var _sy=new Date(_staleNow);_sy.setDate(_sy.getDate()-1);
+        _staleDate=_sy.toLocaleDateString('en-CA');
+      } else {
+        _staleDate=_staleNow.toLocaleDateString('en-CA');
+      }
+      _detectedStaleKey=_staleType+'_'+_staleDate;
+    }
+  }
+  if(_detectedStaleKey){
     // Shift boundary(s) were crossed while app was closed.
     // 1. Snapshot the one stale shift (if not already saved).
     // 2. Delete from ST.hourly ALL keys belonging to ANY already-snapshotted shift.
     //    This handles the case where multiple boundaries were missed and ST.hourly
     //    still contains data from several old shifts — all of which are already in
     //    sess.shifts[] — causing double-counting in getAllSlots step 2.
-    var _missedType=ST.hourlyShiftKey.split('_')[0];
-    var _missedDate=ST.hourlyShiftKey.split('_').slice(1).join('_');
+    var _missedType=_detectedStaleKey.split('_')[0];
+    var _missedDate=_detectedStaleKey.split('_').slice(1).join('_');
     var _activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
     _activeIds.forEach(function(aid){
       var _raw=ST.sessions.find(function(x){return x.id===aid;});
@@ -1151,7 +1195,11 @@ function initApp(){
           var rk=aid+'_c'+ci;
           (ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){
             var dk=aid+'_'+ci+'_'+r;
-            if(ST.delays[dk])_mEntry.delays[dk]=Object.assign({},ST.delays[dk]);
+            if(ST.delays[dk]){
+              // Use shift-scoped key so snapshot never collides with current-shift delay keys
+              var _snapDk=aid+'_'+_mKey+'_'+ci+'_'+r;
+              _mEntry.delays[_snapDk]=Object.assign({},ST.delays[dk]);
+            }
           });
         }
         _raw.shifts.push(_mEntry);
@@ -1179,13 +1227,14 @@ function initApp(){
     if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
     if(ST.perfTargets)ST.perfTargets.remainingAtShiftStart=0;
     ST.hourlyShiftKey=_curShiftKey;
-    // Always save — the shift snapshot we just built MUST reach Firebase.
-    // We delay 3 s so the Firebase listener can merge remote state first,
-    // but we never skip this save: the snapshot only exists here and must
-    // be persisted or that shift's data is lost forever.
-    setTimeout(function(){sv();},3000);
-  } else if(!ST.hourlyShiftKey){
-    // First ever load — stamp the current shift key
+    // Save snapshot immediately — do NOT delay. The snapshot only exists here.
+    // Save 3 times (0s, 2s, 5s) to handle transient Firebase failures.
+    sv();
+    setTimeout(function(){sv();},2000);
+    setTimeout(function(){sv();},5000);
+  }
+  // Always ensure hourlyShiftKey is stamped
+  if(!ST.hourlyShiftKey){
     ST.hourlyShiftKey=_curShiftKey;
     sv();
   }
@@ -1210,8 +1259,12 @@ function initApp(){
         var isDaySlots=outType==='DAY';
         var slotKeys=isDaySlots?ALL.slice(0,12):ALL.slice(12);
         slotKeys.forEach(function(slot){for(var ci=1;ci<=nc;ci++){['discharge','load'].forEach(function(t){var k=hk(aid,slot,ci,t);var sk=slot+'_'+ci+'_'+t;if(ST.hourly[k])se.hourly[sk]=ST.hourly[k];});}});
-        for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;var _dd=ST.delays[dk];if(!_dd)return;// Only snapshot delays whose 'from' time falls within the outgoing shift window
-if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShift=isDaySlots?(_dfh>=6&&_dfh<18):(_dfh>=18||_dfh<6);if(!_inShift)return;}se.delays[dk]=Object.assign({},_dd);});}
+        for(var ci=1;ci<=nc;ci++){var rk=aid+'_c'+ci;(ST.delayRowIds&&ST.delayRowIds[rk]||[0]).forEach(function(r){var dk=aid+'_'+ci+'_'+r;var _dd=ST.delays[dk];if(!_dd)return;
+// Only snapshot delays whose 'from' time falls within the outgoing shift window
+if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShift=isDaySlots?(_dfh>=6&&_dfh<18):(_dfh>=18||_dfh<6);if(!_inShift)return;}
+// Use shift-scoped key in snapshot so it never collides with current-shift delay keys
+var _snapDk=aid+'_'+sKey+'_'+ci+'_'+r;
+se.delays[_snapDk]=Object.assign({},_dd);});}
         // Snapshot CMT data for Excel export (not shown in history display)
         try{
           var _cmtActuals={};
@@ -1266,7 +1319,10 @@ if(_dd.from){var _dfh=parseInt((_dd.from||'00:00').split(':')[0],10);var _inShif
     // Stamp the new shift key so app-restart can detect missed rollovers
     ST.hourlyShiftKey=cShift+'_'+cDate;
     logActivity('Shift Rollover','New shift: '+cShift+' starting '+cDate,'Previous: '+outType+' '+outDate);
+    // Save snapshot immediately — 3 times to guarantee Firebase persistence
     sv();
+    setTimeout(function(){sv();},2000);
+    setTimeout(function(){sv();},5000);
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='results')renderResults();
     if(RT.tab==='hourly')renderHourly();
