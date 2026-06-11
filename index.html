@@ -368,6 +368,15 @@ var dbRef = null;
 // sv() - saves to Firebase (source of truth) AND localStorage (cache)
 var _myLastSave=0;
 var _saveProtectUntil=0; // blocks session overwrite from Firebase for N ms after save
+// svCritical() — like sv() but clears _saveProtectUntil so the rollover snapshot
+// is never blocked by the echo-protection window. Used ONLY at shift rollover.
+function svCritical(){
+  _saveProtectUntil=0; // disable echo protection — this save MUST get through
+  sv();
+  // Re-save at 2s and 5s in case of transient Firebase failure
+  setTimeout(function(){_saveProtectUntil=0;sv();},2000);
+  setTimeout(function(){_saveProtectUntil=0;sv();},5000);
+}
 var _myLastYardSave=0;    // timestamp of last yard save — used to skip own yard echo
 var _pendingDeleteSave=0; // set to future timestamp during delSess
 var _saveGen=0;           // monotonic counter — written into payload as _gen
@@ -523,6 +532,23 @@ function initSync(){
         }
         if(!Array.isArray(ST[k]))ST[k]=[];
       });
+      // CRITICAL: restore nested arrays inside each session that Firebase also converts.
+      // sess.shifts is the most important — getAllSlots/getCraneTotal iterate it.
+      // Without this fix sess.shifts is a keyed object and forEach fails silently,
+      // causing ALL past shift data to disappear from hourly totals and history.
+      if(Array.isArray(ST.sessions)){
+        ST.sessions.forEach(function(sess){
+          if(!sess)return;
+          if(sess.shifts&&!Array.isArray(sess.shifts)&&typeof sess.shifts==='object'){
+            sess.shifts=Object.values(sess.shifts);
+          }
+          if(!Array.isArray(sess.shifts))sess.shifts=[];
+          // Also restore craneBalances if Firebase converted it
+          if(sess.craneBalances&&!Array.isArray(sess.craneBalances)&&typeof sess.craneBalances==='object'){
+            // craneBalances is a keyed object {1:{...},2:{...}} — keep as object, just ensure it exists
+          }
+        });
+      }
       // Restore nested arrays inside yardReports that Firebase also converts to objects
       if(Array.isArray(ST.yardReports)){
         ST.yardReports.forEach(function(report){
@@ -1227,11 +1253,8 @@ function initApp(){
     if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
     if(ST.perfTargets)ST.perfTargets.remainingAtShiftStart=0;
     ST.hourlyShiftKey=_curShiftKey;
-    // Save snapshot immediately — do NOT delay. The snapshot only exists here.
-    // Save 3 times (0s, 2s, 5s) to handle transient Firebase failures.
-    sv();
-    setTimeout(function(){sv();},2000);
-    setTimeout(function(){sv();},5000);
+    // Use svCritical — bypasses echo-protection so snapshot always reaches Firebase
+    svCritical();
   }
   // Always ensure hourlyShiftKey is stamped
   if(!ST.hourlyShiftKey){
@@ -1319,10 +1342,8 @@ se.delays[_snapDk]=Object.assign({},_dd);});}
     // Stamp the new shift key so app-restart can detect missed rollovers
     ST.hourlyShiftKey=cShift+'_'+cDate;
     logActivity('Shift Rollover','New shift: '+cShift+' starting '+cDate,'Previous: '+outType+' '+outDate);
-    // Save snapshot immediately — 3 times to guarantee Firebase persistence
-    sv();
-    setTimeout(function(){sv();},2000);
-    setTimeout(function(){sv();},5000);
+    // svCritical bypasses echo-protection so snapshot always reaches Firebase
+    svCritical();
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='results')renderResults();
     if(RT.tab==='hourly')renderHourly();
@@ -2548,38 +2569,37 @@ function renderDelays(){
         h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
 
       } else {
-        // ── Past shift: editable via ST.delays/ST.delayRowIds (same store as current shift) ──
-        // Key namespace: sessId_shiftKey_cN so it never collides with current shift
+        // ── Past shift: read directly from snapshot — NEVER write to ST.delays ──
+        // Seeding past delays into ST.delays caused bleed: those keys persisted in
+        // Firebase and appeared in the current shift. Now we read from blk.shiftObj.delays
+        // directly at render time — no ST side effects at all.
         tbody=(function(ci,blk,sid){
-          var rk=sid+'_'+blk.key+'_c'+ci;
-          if(!ST.delayRowIds)ST.delayRowIds={};
-          // Seed from snapshot on first open if ST.delayRowIds not yet populated for this key
-          if(!ST.delayRowIds[rk]){
-            var shDelays=blk.shiftObj&&blk.shiftObj.delays?blk.shiftObj.delays:{};
-            var seeded=[];
-            Object.keys(shDelays).forEach(function(k){
-              var parts=k.split('_');
-              if(parts.length>=3&&parseInt(parts[parts.length-2])===ci){
-                var rowId=parseInt(parts[parts.length-1])||0;
-                ST.delays[sid+'_'+blk.key+'_'+ci+'_'+rowId]=shDelays[k];
-                seeded.push(rowId);
-              }
-            });
-            ST.delayRowIds[rk]=seeded.length?seeded:[0];
-          }
-          var rowIds=ST.delayRowIds[rk];
+          var shDelays=blk.shiftObj&&blk.shiftObj.delays?blk.shiftObj.delays:{};
+          // Collect rows for this crane from the snapshot
+          var craneRows={};
+          Object.keys(shDelays).forEach(function(k){
+            var parts=k.split('_');
+            // Key format: aid_shiftKey_ci_rowId  e.g. 1717000_DAY_2026-06-07_1_0
+            // Find ci and rowId from the end (last two numeric parts)
+            var rowId=parseInt(parts[parts.length-1]);
+            var snapCi=parseInt(parts[parts.length-2]);
+            if(isNaN(snapCi)||isNaN(rowId))return;
+            if(snapCi!==ci)return;
+            craneRows[rowId]=shDelays[k];
+          });
+          var rowIds=Object.keys(craneRows).map(Number).sort(function(a,b){return a-b;});
+          if(rowIds.length===0)rowIds=[0];
           var rows='';
           rowIds.forEach(function(r){
-            var k=sid+'_'+blk.key+'_'+ci+'_'+r;
-            var d=ST.delays[k]||{};
+            var d=craneRows[r]||{};
             var durId='dur_p_'+blockId+'_'+ci+'_'+r;
             rows+='<tr>';
-            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'from\',this.value)"/></td>';
-            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'to\',this.value)"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+sid+'_'+blk.key+'_'+ci+'_'+r+'\',\'from\',this.value,\''+durId+'\')"/></td>';
+            rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+sid+'_'+blk.key+'_'+ci+'_'+r+'\',\'to\',this.value,\''+durId+'\')"/></td>';
             rows+='<td class="dur" id="'+durId+'">'+dur(d.from,d.to)+'</td>';
-            rows+='<td class="type-col"><input type="text" list="dtlp_'+blockId+'_'+ci+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'type\',this.value)"/><datalist id="dtlp_'+blockId+'_'+ci+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-            rows+='<td class="desc-col"><input type="text" list="ddlp_'+blockId+'_'+ci+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay(\''+sid+'_'+blk.key+'\','+ci+','+r+',\'desc\',this.value)"/><datalist id="ddlp_'+blockId+'_'+ci+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-            rows+='<td style="text-align:center;padding:2px 4px"><button onclick="removeDelayRow(\''+sid+'_'+blk.key+'\','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
+            rows+='<td class="type-col"><input type="text" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Type..." onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+sid+'_'+blk.key+'_'+ci+'_'+r+'\',\'type\',this.value,\'\')"/></td>';
+            rows+='<td class="desc-col"><input type="text" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Description..." onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+sid+'_'+blk.key+'_'+ci+'_'+r+'\',\'desc\',this.value,\'\')"/></td>';
+            rows+='<td></td>';
             rows+='</tr>';
           });
           return rows;
