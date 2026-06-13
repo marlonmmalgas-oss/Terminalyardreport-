@@ -484,6 +484,7 @@ function initSync(){
     window._yardRef=db.ref('agl-terminal/yard');
     dbRef.on('value',function(snap){
       var remote=snap.val();
+      var _shiftMergeRecovered=false;
       // Step 1: always preserve local users before doing anything
       var localUsers=Array.isArray(ST.users)?ST.users.slice():JSON.parse(JSON.stringify(DEF.users));
       if(!remote){
@@ -512,6 +513,12 @@ function initSync(){
       if(!isOwnSave2&&remote)_hadRemoteUpdate=true;
       // Preserve local activityLog before remote overwrite — merge after
       var _localLog=Array.isArray(ST.activityLog)?ST.activityLog.slice():[];
+      // Capture previous in-memory sessions BEFORE remote overwrite.
+      // Used below as a merge safety net: if the incoming remote snapshot is
+      // missing a shift entry that we already have locally (e.g. a lagging
+      // Firebase echo from another tab/device), we re-merge it back in.
+      // This makes sess.shifts effectively append-only and self-healing.
+      var _prevSessions=Array.isArray(ST.sessions)?JSON.parse(JSON.stringify(ST.sessions)):[];
       Object.keys(remote).forEach(function(k){
         if(k!=='_ts'&&k!=='_gen'&&k!=='users'&&k!=='activityLog'){
           if(k==='yardReports'&&(!remote[k]||!remote[k].length))return;
@@ -543,6 +550,25 @@ function initSync(){
             sess.shifts=Object.values(sess.shifts);
           }
           if(!Array.isArray(sess.shifts))sess.shifts=[];
+          // ── Shift merge safety net ──
+          // If we previously had shift entries for this session that are
+          // missing from the incoming remote data, re-add them. A shift
+          // snapshot is taken once at rollover and must never disappear —
+          // if it's gone from remote but we have it locally, remote is stale.
+          var _prevSess=_prevSessions.find(function(p){return String(p.id)===String(sess.id);});
+          if(_prevSess&&Array.isArray(_prevSess.shifts)&&_prevSess.shifts.length){
+            var _haveKeys={};
+            sess.shifts.forEach(function(sh){if(sh&&sh.key)_haveKeys[sh.key]=true;});
+            _prevSess.shifts.forEach(function(prevSh){
+              if(!prevSh||!prevSh.key)return;
+              if(!_haveKeys[prevSh.key]){
+                // Remote is missing a shift we already had — restore it
+                sess.shifts.push(JSON.parse(JSON.stringify(prevSh)));
+                _haveKeys[prevSh.key]=true;
+                _shiftMergeRecovered=true;
+              }
+            });
+          }
           // Also restore craneBalances if Firebase converted it
           if(sess.craneBalances&&!Array.isArray(sess.craneBalances)&&typeof sess.craneBalances==='object'){
             // craneBalances is a keyed object {1:{...},2:{...}} — keep as object, just ensure it exists
@@ -613,6 +639,12 @@ function initSync(){
         })) ST.users.push(JSON.parse(JSON.stringify(du)));
       });
       try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+      // If we recovered a shift entry that was missing from remote, push the
+      // corrected sessions back to Firebase so it doesn't get lost again.
+      if(_shiftMergeRecovered){
+        svCritical();
+        logActivity('Data Recovery','Restored missing shift snapshot(s) during sync');
+      }
       // Dismiss loading screen and show login on first Firebase response
       _dismissLoadingScreen();
       applyDark();
@@ -2286,6 +2318,43 @@ function getDelayRowIds(sessId,c){
   return ST.delayRowIds[rk];
 }
 function shareDelays(){
+  // Show a small chooser modal: all current-shift delays, or just the last 2 hours
+  var overlay=document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:99998;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML=`
+    <div style="background:white;border-radius:14px;padding:22px;max-width:320px;width:90%;box-shadow:0 8px 30px rgba(0,0,0,.25)">
+      <div style="font-size:16px;font-weight:800;color:#1f3864;margin-bottom:4px">Share Delays</div>
+      <div style="font-size:12px;color:#888;margin-bottom:16px">Choose which delays to include</div>
+      <button id="_shareAllDelaysBtn" style="width:100%;background:#1f3864;color:white;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:14px;margin-bottom:8px;cursor:pointer">Entire Current Shift</button>
+      <button id="_shareRecentDelaysBtn" style="width:100%;background:#ffe600;color:#1f3864;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:14px;margin-bottom:8px;cursor:pointer">Last 2 Hours Only</button>
+      <button id="_shareDelaysCancelBtn" style="width:100%;background:#eee;color:#444;border:none;border-radius:10px;padding:10px;font-weight:600;font-size:13px;cursor:pointer">Cancel</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  function close(){if(overlay.parentNode)document.body.removeChild(overlay);}
+  document.getElementById('_shareAllDelaysBtn').onclick=function(){close();_doShareDelays('all');};
+  document.getElementById('_shareRecentDelaysBtn').onclick=function(){close();_doShareDelays('recent');};
+  document.getElementById('_shareDelaysCancelBtn').onclick=close;
+  overlay.onclick=function(e){if(e.target===overlay)close();};
+}
+// Returns true if a delay's 'from' time is within the last 2 hours of now
+function _delayIsRecent(d){
+  if(!d||!d.from)return false;
+  var now=new Date();
+  var fp=(d.from||'').split(':');
+  var fh=parseInt(fp[0],10)||0,fm=parseInt(fp[1],10)||0;
+  var delayDate=new Date(now);
+  delayDate.setHours(fh,fm,0,0);
+  // Handle delays that started just before midnight relative to 'now'
+  var diffMs=now-delayDate;
+  if(diffMs<0){
+    // delay time is "later" than now — likely from yesterday, push back a day
+    delayDate.setDate(delayDate.getDate()-1);
+    diffMs=now-delayDate;
+  }
+  var twoHoursMs=2*60*60*1000;
+  return diffMs>=0 && diffMs<=twoHoursMs;
+}
+function _doShareDelays(mode){
   const sess=getSess(),slot=currSlot();
   if(!sess){alert('No active session.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
@@ -2299,7 +2368,7 @@ function shareDelays(){
   h+=`<div class="rh" style="${bgStyle}">
     <div class="rh1">
       <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>IDLE / DELAYS</h2><p>${tn}</p></div>
+      <div class="rh-txt"><h2>IDLE / DELAYS${mode==='recent'?' (Last 2 Hrs)':''}</h2><p>${tn}</p></div>
     </div>
     <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
       <div style="flex:1;min-width:0;"><span class="rh-vessel">${sess.vesselName}</span>
@@ -2318,8 +2387,12 @@ function shareDelays(){
   for(let c=1;c<=nc;c++){
     const rowIds=getDelayRowIds(sess.id,c);
     let tbody='';
+    let _anyRow=false;
     rowIds.forEach(function(r){
       const k=`${sess.id}_${c}_${r}`,d=ST.delays[k]||{};
+      if(!d.from&&!d.to&&!d.type&&!d.desc)return; // skip fully empty rows
+      if(mode==='recent'&&!_delayIsRecent(d))return;
+      _anyRow=true;
       tbody+=`<tr style="background:${rowIds.indexOf(r)%2===0?'white':'#f5f8fc'}">
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.from||''}</td>
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
@@ -2328,6 +2401,9 @@ function shareDelays(){
         <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
     });
+    if(!_anyRow){
+      tbody=`<tr><td colspan="5" style="text-align:center;font-size:11px;color:#999;padding:14px;font-style:italic">No delays${mode==='recent'?' in the last 2 hours':''}</td></tr>`;
+    }
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
       <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
       <table style="width:100%;border-collapse:collapse">
@@ -2373,17 +2449,17 @@ function shareDelays(){
             if(host.parentNode)document.body.removeChild(host);
             canvas.toBlob(function(blob){
               if(!blob)return;
-              const file=new File([blob],'Delays.png',{type:'image/png'});
+              const file=new File([blob],mode==='recent'?'Delays_Last2Hrs.png':'Delays.png',{type:'image/png'});
               var shared=false;
               try{
                 if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-                  navigator.share({files:[file],title:'Idle / Delays'});
+                  navigator.share({files:[file],title:mode==='recent'?'Idle / Delays (Last 2 Hrs)':'Idle / Delays'});
                   shared=true;
                 }
               }catch(se){shared=false;}
               if(!shared){
                 const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-                a.download='Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
+                a.download=mode==='recent'?'Delays_Last2Hrs.png':'Delays.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
                 setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
               }
             },'image/png',0.96);
