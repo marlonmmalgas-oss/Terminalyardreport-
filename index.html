@@ -338,7 +338,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc" id="sc-admin"></div>
     <div class="sc" id="sc-analysis"></div>
     <div class="sc" id="sc-activitylog"></div>
-    <div class="sc" id="sc-emergency"></div>
+    <div class="sc" id="sc-pastreports"></div>
   </div>
   <nav class="bnav" id="bnav"></nav>
 </div>
@@ -539,6 +539,19 @@ function initSync(){
         }
         if(!Array.isArray(ST[k]))ST[k]=[];
       });
+      // Firebase also flattens nested arrays inside ST.sel (vessels/dtypes/ddescs/delayReasons)
+      // into keyed objects. Without restoring these, admin edits to selectable lists silently
+      // break (arr.map is not a function) and appear to "fail to save".
+      if(ST.sel&&typeof ST.sel==='object'){
+        ['vessels','dtypes','ddescs','delayReasons'].forEach(function(k){
+          if(ST.sel[k]&&!Array.isArray(ST.sel[k])&&typeof ST.sel[k]==='object'){
+            ST.sel[k]=Object.values(ST.sel[k]);
+          }
+          if(!Array.isArray(ST.sel[k]))ST.sel[k]=[];
+        });
+      } else {
+        ST.sel=Object.assign({},DEF.sel);
+      }
       // CRITICAL: restore nested arrays inside each session that Firebase also converts.
       // sess.shifts is the most important — getAllSlots/getCraneTotal iterate it.
       // Without this fix sess.shifts is a keyed object and forEach fails silently,
@@ -719,20 +732,20 @@ const DEF={
   sessions:[],hourly:{},delays:{},delayRows:{},delayRowIds:{},
   settings:{logo:null,bg:null,bgHourly:null,bgFour:null,bgDelay:null,bgYard:null,term:'',reportNumColor:'#000000',fbUrl:'',fbKey:''},
   generators:[],
-  emergency:{
-    heading:'EMERGENCY HOURLY REPORT',
-    subheading:'PORT OPERATIONS',
-    vesselName:'',dockedOn:'',firstLift:'',lastLift:'',
-    craneLabels:['MHC1','MHC2','MHC3','MHC4'],
-    timeSlots:['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800'],
-    rows:{},numCranes:2,
-    dischargeLabel:'DISCHARGE',loadLabel:'LOAD',
-    plannedLabel:'Planned',obLabel:'Opening Bal.',doneLabel:'Total Done',remainLabel:'Total Remain',
-    planned:{},ob:{}
-  },
   timing:{hourlyGrace:30,fourHourlyGrace:90,shiftRolloverGrace:15},
   craneNames:{1:'CR1',2:'CR2',3:'CR3',4:'CR4'},
-  sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change']},
+  sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change'],
+    delayReasons:[
+      {label:'Windbound',type:'Weather Delay'},
+      {label:'Rain',type:'Weather Delay'},
+      {label:'Changing Gear',type:'Equipment Delay'},
+      {label:'Crane Breakdown',type:'Equipment Delay'},
+      {label:'A1 Waiting for unit in stack',type:'Operational Delay'},
+      {label:'Awaiting Forklift',type:'Operational Delay'},
+      {label:'Hatch Cover',type:'Vessel Delay'},
+      {label:'Crew Change',type:'Vessel Delay'},
+      {label:'FPT',type:'FPT Delay'}
+    ]},
   vesselAbbrevs:[
     {abbrev:'ada',full:'MSC ADA F'},
     {abbrev:'ana',full:'MSC ANA CAMILA'},
@@ -772,6 +785,9 @@ if(saved&&saved.settings){
 if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.settings);
 if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
 if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
+if(!Array.isArray(ST.sel.delayReasons))ST.sel.delayReasons=DEF.sel.delayReasons.map(function(x){return Object.assign({},x);});
+if(!Array.isArray(ST.sel.vessels))ST.sel.vessels=[...(DEF.sel.vessels||[])];
+if(!Array.isArray(ST.sel.dtypes))ST.sel.dtypes=[...(DEF.sel.dtypes||[])];
 if(!ST.hourly||typeof ST.hourly!=='object')ST.hourly={};
 if(!ST.delays||typeof ST.delays!=='object')ST.delays={};
 if(!ST.delayRows||typeof ST.delayRows!=='object')ST.delayRows={};
@@ -1389,15 +1405,15 @@ se.delays[_snapDk]=Object.assign({},_dd);});}
 // ═══════════ NAV ═══════════
 function tabs(){
   const r=role();
-  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'},{id:'emergency',ico:'🚨',l:'Emergency'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'emergency',ico:'🚨',l:'Emergency'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'},{id:'emergency',ico:'🚨',l:'Emergency'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'emergency',ico:'🚨',l:'Emergency'}];
+  if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'},{id:'pastreports',ico:'📜',l:'Reports'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'pastreports',ico:'📜',l:'Reports'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'},{id:'pastreports',ico:'📜',l:'Reports'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'pastreports',ico:'📜',l:'Reports'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog,emergency:renderEmergency})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog,pastreports:renderPastReports})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -1462,16 +1478,7 @@ function renderInput(){
   h+=`</div>`;
 
   if(sess){
-    h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Hourly Moves — ${fs(slot)}</div>
-    <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
-    for(let i=1;i<=nc;i++){
-      h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
-        <div class="g2">
-          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
-          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
-        </div></div>`;
-    }
-    h+=`</div>`;
+    h+=`<div class="sec" style="background:#fffbea;border:1.5px dashed #d97706"><div style="font-size:12px;color:#92400e;font-weight:700">⏱️ Hourly moves are now entered on the <strong>Hourly</strong> tab, right below the report — so you can see the numbers while you type.</div></div>`;
   }
 
   h+=`<div style="padding:0 10px 28px">`;
@@ -1512,28 +1519,8 @@ function onCraneChange(){
   }
   bh+=`</div>`;
 
-  let mh='';
-  if(sess){
-    mh=`<div class="sec"><div class="st">Hourly Moves — ${fs(slot)}</div><p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane.</p>`;
-    for(let i=1;i<=nc;i++){
-      mh+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
-        <div class="g2">
-          <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'discharge')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
-          <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="ST.hourly[hk('${sess.id}','${slot}',${i},'load')]=parseFloat(this.value)||0;_myLastSave=Date.now();sv()"/></div>
-        </div></div>`;
-    }
-    mh+=`</div>`;
-  }
-
   const oldB=$('craneBalanceSection');
-  if(oldB){
-    oldB.outerHTML=bh;
-    // Also update hourly section which comes right after
-    const allSecs=document.querySelectorAll('#sc-input .sec');
-    if(allSecs.length>=3){
-      allSecs[allSecs.length-2].outerHTML=mh;
-    }
-  }
+  if(oldB)oldB.outerHTML=bh;
 }
 
 function saveSession(){
@@ -2128,7 +2115,8 @@ function rhHTML(title,slot,capId){
 }
 
 // ═══════════ CRANE TABLE ═══════════
-function craneTableHTML(sess,cumSlots,curSlot){
+function craneTableHTML(sess,cumSlots,curSlot,idPfx){
+  idPfx=idPfx||'';
   const nc=sess.numCranes;let rows='';
   for(let i=1;i<=nc;i++){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl=cb.loadSplit||0;
@@ -2140,10 +2128,10 @@ function craneTableHTML(sess,cumSlots,curSlot){
     rows+=`<tr class="${i%2===0?'e':'o'}">
       <td class="crane-cell">${craneName(i)}</td>
       <td>${sd}</td><td>${sl}</td>
-      <td class="hl">${(hd!=null&&hd!==undefined)?hd:'—'}</td>
-      <td class="hl">${(hl!=null&&hl!==undefined)?hl:'—'}</td>
-      <td${rd<0?' class="neg"':''}>${rd}</td>
-      <td${rl<0?' class="neg"':''}>${rl}</td>
+      <td class="hl" id="${idPfx}hd${i}">${(hd!=null&&hd!==undefined)?hd:'—'}</td>
+      <td class="hl" id="${idPfx}hl${i}">${(hl!=null&&hl!==undefined)?hl:'—'}</td>
+      <td${rd<0?' class="neg"':''} id="${idPfx}rd${i}">${rd}</td>
+      <td${rl<0?' class="neg"':''} id="${idPfx}rl${i}">${rl}</td>
     </tr>`;
   }
   return`<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt">
@@ -2198,7 +2186,10 @@ function calcGlobalTotals(sess){
 }
 
 // ═══════════ SUMMARY + CHART (Segment 7 — no view-level calculations) ═══════════
-function summaryHTML(sess){
+function summaryHTML(sess,opts){
+  opts=opts||{};
+  const idPfx=opts.idPrefix||'';
+  const hideTargetChart=!!opts.hideTargetChart;
   // All totals from single source — no local reduce/forEach
   const g=calcGlobalTotals(sess);
   const tgt=sess.target||0;
@@ -2207,21 +2198,25 @@ function summaryHTML(sess){
   const mx=Math.max(graphTotal,tgt,1);
   const mp=Math.max(graphTotal/mx*100,graphTotal>0?5:0);
   const tp=Math.max(tgt/mx*100,tgt>0?5:0);
-  return`<div class="card" style="margin:8px 10px"><div class="twrap">
+  let out=`<div class="card" style="margin:8px 10px"><div class="twrap">
     <table class="rt">
       <thead><tr><th class="grp" style="text-align:left;padding-left:9px">${_adminLbl('sum_hd','Summary',true)}</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr></thead>
       <tbody>
-        <tr class="ry"><td style="font-weight:800;padding-left:9px">${_adminLbl('sum_remaining','Total Remaining',false)}</td><td>${g.baseTotalDisc-g.totalDoneDisc}</td><td>${g.baseTotalLoad-g.totalDoneLoad}</td><td style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
-        <tr class="o"><td style="padding-left:9px">${_adminLbl('sum_done','Total Done',false)}</td><td>${g.totalDoneDisc}</td><td>${g.totalDoneLoad}</td><td class="bold">${g.totalDone}</td></tr>
-        <tr class="e"><td style="padding-left:9px">${_adminLbl('sum_done12','Total Done 12hrs',false)}</td><td>${g.total12Disc}</td><td>${g.total12Load}</td><td class="bold">${g.total12}</td></tr>
+        <tr class="ry"><td style="font-weight:800;padding-left:9px">${_adminLbl('sum_remaining','Total Remaining',false)}</td><td id="${idPfx}remD">${g.baseTotalDisc-g.totalDoneDisc}</td><td id="${idPfx}remL">${g.baseTotalLoad-g.totalDoneLoad}</td><td id="${idPfx}remT" style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
+        <tr class="o"><td style="padding-left:9px">${_adminLbl('sum_done','Total Done',false)}</td><td id="${idPfx}doneD">${g.totalDoneDisc}</td><td id="${idPfx}doneL">${g.totalDoneLoad}</td><td class="bold" id="${idPfx}doneT">${g.totalDone}</td></tr>
+        <tr class="e"><td style="padding-left:9px">${_adminLbl('sum_done12','Total Done 12hrs',false)}</td><td id="${idPfx}d12D">${g.total12Disc}</td><td id="${idPfx}d12L">${g.total12Load}</td><td class="bold" id="${idPfx}d12T">${g.total12}</td></tr>
       </tbody>
     </table>
-  </div></div>
-  <div class="chcard" style="margin:8px 10px">
+  </div></div>`;
+  if(!hideTargetChart){
+    out+=`<div class="chcard" style="margin:8px 10px">
     <div class="cht">Total Done 12hrs vs Target</div>
-    <div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" style="width:${mp}%"><span style="font-size:11px;font-weight:800">${graphTotal}</span></div></div></div>
+    <div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" id="${idPfx}barFill" style="width:${mp}%"><span id="${idPfx}barVal" style="font-size:11px;font-weight:800">${graphTotal}</span></div></div></div>
     <div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:${tp}%"><span style="font-size:11px;font-weight:800">${tgt}</span></div></div></div>
-  </div><div style="height:14px"></div>`;
+  </div>`;
+  }
+  out+=`<div style="height:14px"></div>`;
+  return out;
 }
 
 
@@ -2257,9 +2252,54 @@ function renderHourly(){
   const cum=idx>=0?sl.slice(0,idx+1):[slot];
   let h=rhHTML('HOURLY REPORT',slot,'hcap');
   if(!sess){$('sc-hourly').innerHTML=`<div id="hcap">${h}${noSess('📊','No active session.')}</div>`;return;}
-  h+=craneTableHTML(sess,cum,slot);
-  h+=summaryHTML(sess);
+  h+=craneTableHTML(sess,cum,slot,'hr_');
+  h+=summaryHTML(sess,{idPrefix:'hr_'});
+  // Hourly moves entry lives here, right below the report, so the numbers
+  // above update live as they're typed.
+  h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Enter Hourly Moves — ${fs(slot)}</div>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane. The report above updates as you type.</p>`;
+  for(let i=1;i<=sess.numCranes;i++){
+    h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
+      <div class="g2">
+        <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="updateHourlyLive('${sess.id}','${slot}',${i},'discharge',this.value,'hr_')"/></div>
+        <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="updateHourlyLive('${sess.id}','${slot}',${i},'load',this.value,'hr_')"/></div>
+      </div></div>`;
+  }
+  h+=`</div>`;
   $('sc-hourly').innerHTML=`<div id="hcap">${h}</div>`;
+}
+// Live-updates the hourly report cells above the entry form without a full
+// re-render, so focus/cursor position in the input isn't lost while typing.
+function updateHourlyLive(sessId,slot,ci,type,val,pfx){
+  ST.hourly[hk(sessId,slot,ci,type)]=parseFloat(val)||0;
+  _myLastSave=Date.now();sv();
+  const sess=ST.sessions.find(function(s){return String(s.id)===String(sessId);})||getSess();
+  if(!sess)return;
+  const hd=ST.hourly[hk(sess.id,slot,ci,'discharge')],hl=ST.hourly[hk(sess.id,slot,ci,'load')];
+  const ed=effSplit(sess,ci,'discharge'),el=effSplit(sess,ci,'load');
+  const cd=getCraneTotal(sess,ci,'discharge'),cl=getCraneTotal(sess,ci,'load');
+  const rd=ed-cd,rl=el-cl;
+  const setTxt=function(id,v){const e=document.getElementById(id);if(e)e.textContent=v;};
+  const setNeg=function(id,v){const e=document.getElementById(id);if(!e)return;e.textContent=v;e.classList.toggle('neg',v<0);};
+  setTxt(pfx+'hd'+ci,(hd!=null&&hd!==undefined)?hd:'—');
+  setTxt(pfx+'hl'+ci,(hl!=null&&hl!==undefined)?hl:'—');
+  setNeg(pfx+'rd'+ci,rd);
+  setNeg(pfx+'rl'+ci,rl);
+  const g=calcGlobalTotals(sess);
+  setTxt(pfx+'remD',g.baseTotalDisc-g.totalDoneDisc);
+  setTxt(pfx+'remL',g.baseTotalLoad-g.totalDoneLoad);
+  setTxt(pfx+'remT',g.remaining);
+  setTxt(pfx+'doneD',g.totalDoneDisc);
+  setTxt(pfx+'doneL',g.totalDoneLoad);
+  setTxt(pfx+'doneT',g.totalDone);
+  setTxt(pfx+'d12D',g.total12Disc);
+  setTxt(pfx+'d12L',g.total12Load);
+  setTxt(pfx+'d12T',g.total12);
+  const tgt=sess.target||0;
+  const mx=Math.max(g.total12,tgt,1);
+  const mp=Math.max(g.total12/mx*100,g.total12>0?5:0);
+  const barFill=document.getElementById(pfx+'barFill');if(barFill)barFill.style.width=mp+'%';
+  setTxt(pfx+'barVal',g.total12);
 }
 
 // ═══════════ 4-HOURLY ═══════════
@@ -2305,7 +2345,7 @@ function renderFour(){
     </thead>
     <tbody>${rows}</tbody>
   </table></div></div>`;
-  h+=summaryHTML(sess);
+  h+=summaryHTML(sess,{hideTargetChart:true});
   $('sc-4hourly').innerHTML=`<div id="fcap">${h}</div>`;
 }
 
@@ -2524,12 +2564,12 @@ function renderDelays(){
   h=h.replace('<h2>'+mainTitle+'</h2>','<h2>'+_editLbl('mainTitle','IDLE / DELAYS','font-size:inherit;font-weight:inherit;letter-spacing:inherit;')+'</h2>');
   if(!sess){$('sc-delays').innerHTML='<div id="dcap">'+h+noSess('⏸️','No active session.')+'</div>';return;}
 
-  var nc=sess.numCranes,dt=ST.sel.dtypes||[],dd2=ST.sel.ddescs||[];
+  var nc=sess.numCranes,dt=ST.sel.dtypes||[],dReasons=ST.sel.delayReasons||[];
   var colFrom=_editColLbl('from','From');
   var colTo=_editColLbl('to','To');
   var colDur=_editColLbl('dur','Dur.');
   var colType=_editColLbl('type','Delay Type');
-  var colDesc=_editColLbl('desc','Description');
+  var colDesc=_editColLbl('desc','Reason');
 
   // ── Build same shift blocks as renderResults ──
   var curShiftType=isDay()?'DAY':'NIGHT';
@@ -2632,8 +2672,8 @@ function renderDelays(){
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'from\',this.value)"/></td>';
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'to\',this.value)"/></td>';
             rows+='<td class="dur" id="dur'+ci+'_'+r+'">'+dur(d.from,d.to)+'</td>';
-            rows+='<td class="type-col"><input type="text" list="dtl'+ci+'_'+r+'" value="'+(d.type||'').replace(/"/g,'&quot;')+'" placeholder="Enter type..." onchange="updateDelay('+sid+','+ci+','+r+',\'type\',this.value)"/><datalist id="dtl'+ci+'_'+r+'">'+dt.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
-            rows+='<td class="desc-col"><input type="text" list="ddl'+ci+'_'+r+'" value="'+(d.desc||'').replace(/"/g,'&quot;')+'" placeholder="Enter description..." onchange="updateDelay('+sid+','+ci+','+r+',\'desc\',this.value)"/><datalist id="ddl'+ci+'_'+r+'">'+dd2.map(function(v){return'<option value="'+v+'"/>';}).join('')+'</datalist></td>';
+            rows+='<td class="type-col" id="typecell'+ci+'_'+r+'"><span style="font-weight:800;color:#1f3864;font-size:11px">'+(d.type||'—')+'</span></td>';
+            rows+='<td class="desc-col">'+buildReasonSelect(sid,ci,r,d)+'</td>';
             rows+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow('+sid+','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
             rows+='</tr>';
           });
@@ -2821,6 +2861,51 @@ function updateDelay(sid,c,r,field,val){
   var _sidStr=String(sid);
   var _shiftMatch=_sidStr.match(/^(\d+)_((?:DAY|NIGHT).+)$/);
   if(_shiftMatch){_syncPastDelaysToShift(_shiftMatch[1],_shiftMatch[2],c);}
+}
+// ── Single-selection delay reason: picking a reason auto-fills its Delay Type ──
+function buildReasonSelect(sid,ci,r,d){
+  var reasons=ST.sel.delayReasons||[];
+  var curLabel=d.desc||'';
+  var byType={};
+  reasons.forEach(function(rs){
+    var t=rs.type||'Other';
+    if(!byType[t])byType[t]=[];
+    byType[t].push(rs);
+  });
+  var matched=reasons.some(function(rs){return rs.label===curLabel;});
+  var h='<select onchange="if(this.value===\'__custom__\'){updateDelayCustomReason('+sid+','+ci+','+r+');}else{updateDelayReason('+sid+','+ci+','+r+',this.value)}">';
+  h+='<option value=""'+(curLabel?'':' selected')+'>Select reason…</option>';
+  Object.keys(byType).forEach(function(t){
+    h+='<optgroup label="'+t+'">';
+    byType[t].forEach(function(rs){
+      if(!rs.label)return;
+      h+='<option value="'+rs.label.replace(/"/g,'&quot;')+'"'+(rs.label===curLabel?' selected':'')+'>'+rs.label+'</option>';
+    });
+    h+='</optgroup>';
+  });
+  if(curLabel&&!matched)h+='<option value="'+curLabel.replace(/"/g,'&quot;')+'" selected>'+curLabel+'</option>';
+  h+='<option value="__custom__">✏️ Custom…</option>';
+  h+='</select>';
+  return h;
+}
+function updateDelayReason(sid,ci,r,label){
+  var k=sid+'_'+ci+'_'+r;
+  if(!ST.delays[k])ST.delays[k]={};
+  var reason=(ST.sel.delayReasons||[]).find(function(x){return x.label===label;});
+  ST.delays[k].desc=label;
+  ST.delays[k].type=reason?(reason.type||''):'';
+  _myLastSave=Date.now();sv();
+  renderDelays();
+}
+function updateDelayCustomReason(sid,ci,r){
+  var k=sid+'_'+ci+'_'+r;
+  var current=(ST.delays[k]&&ST.delays[k].desc)||'';
+  var label=prompt('Enter a custom delay reason:',current);
+  if(label===null)return; // cancelled — leave as-is
+  if(!ST.delays[k])ST.delays[k]={};
+  ST.delays[k].desc=label.trim();
+  _myLastSave=Date.now();sv();
+  renderDelays();
 }
 
 // ═══════════ HISTORY ═══════════
@@ -4833,7 +4918,22 @@ function renderAdmin(){
   h+=`<div class="asec"><div class="atitle">📋 Selectables (users choose or type their own)</div>
     ${selBlock('Vessel Names','vessels')}
     ${selBlock('Delay Types','dtypes')}
-    ${selBlock('Delay Descriptions','ddescs')}
+  </div>`;
+
+  // Delay Reasons — each reason maps to one Delay Type. Selecting the reason
+  // on the Delays screen auto-fills its type, so operators make one selection.
+  h+=`<div class="asec"><div class="atitle">⏸️ Delay Reasons</div>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Each reason belongs to one Delay Type. On the Delays screen, operators pick a reason and the type fills in automatically.</p>`;
+  (ST.sel.delayReasons||[]).forEach(function(r,i){
+    h+=`<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+      <input value="${(r.label||'').replace(/"/g,'&quot;')}" placeholder="e.g. A1 Waiting for unit in stack" oninput="ST.sel.delayReasons[${i}].label=this.value;sv()" style="flex:2;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none"/>
+      <select onchange="ST.sel.delayReasons[${i}].type=this.value;sv()" style="flex:1;padding:8px 6px;border:1.5px solid var(--border);border-radius:7px;font-size:12px">
+        ${(ST.sel.dtypes||[]).map(function(t){return'<option value="'+t+'"'+(r.type===t?' selected':'')+'>'+t+'</option>';}).join('')}
+      </select>
+      <button onclick="ST.sel.delayReasons.splice(${i},1);sv();renderAdmin()" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px">✕</button>
+    </div>`;
+  });
+  h+=`<button onclick="ST.sel.delayReasons.push({label:'',type:(ST.sel.dtypes&&ST.sel.dtypes[0])||''});sv();renderAdmin()" style="background:white;color:var(--navy);border:2px solid var(--navy);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:800;cursor:pointer;margin-top:4px">+ Add Reason</button>
   </div>`;
 
   h+=renderAbbrevSection();
@@ -6565,370 +6665,191 @@ function removeYardCol(reportId,ci){
   sv();renderYard();
 }
 
-// ═══════════ EMERGENCY REPORT ═══════════
-function _emgSv(){if(!ST.emergency)ST.emergency={};sv();}
-function _emgInit(){
-  if(!ST.emergency)ST.emergency={};
-  var e=ST.emergency;
-  if(!e.title)e.title='HOURLY REPORT';
-  if(!e.rows)e.rows={};           // key: ci+'_'+type+'_'+slot  → number
-  if(!e.splits)e.splits={};       // key: ci+'_'+type           → number
-  if(!e.ob)e.ob={};               // key: ci+'_'+type           → number
-  if(!e.target)e.target=0;
-  if(e.numCranes===undefined)e.numCranes=2;
-  if(!e.slots)e.slots=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-1200','1200-1300','1300-1400','1400-1500','1500-1600','1600-1700','1700-1800'];
-  if(!e.craneNames)e.craneNames={};
-  // Pre-fill vessel info from active session once
-  if(!e._prefilled){
-    var sess=getSess();
-    if(sess){
-      if(!e.vesselName)e.vesselName=sess.vesselName||'';
-      if(!e.dockedOn)e.dockedOn=sess.dockedOn||'';
-      if(!e.firstLift)e.firstLift=sess.firstLift||'';
-      if(!e.lastLift)e.lastLift=sess.lastLift||'';
-      // Copy splits from session craneBalances
-      var nc=parseInt(e.numCranes)||2;
-      for(var i=1;i<=nc;i++){
-        var cb=sess.craneBalances&&sess.craneBalances[i]||{};
-        if(e.splits[i+'_discharge']===undefined)e.splits[i+'_discharge']=cb.dischargeSplit||0;
-        if(e.splits[i+'_load']===undefined)e.splits[i+'_load']=cb.loadSplit||0;
-        if(e.ob[i+'_discharge']===undefined&&cb.dischargeOB!=null&&cb.dischargeOB!=='')e.ob[i+'_discharge']=parseFloat(cb.dischargeOB)||0;
-        if(e.ob[i+'_load']===undefined&&cb.loadOB!=null&&cb.loadOB!=='')e.ob[i+'_load']=parseFloat(cb.loadOB)||0;
+// ═══════════ PAST REPORTS ═══════════
+// Reusable: build the list of shift blocks (one per DAY/NIGHT shift) for a session,
+// each carrying its own hourly + delays data. Shared by History and Past Reports.
+function getSessionShiftBlocks(s){
+  var blocks=[];
+  var isActiveSession=s.id===ST.activeId||s.id===ST.activeId2;
+  var curShiftType=isDay()?'DAY':'NIGHT';
+  var _now=new Date();
+  var _nh=_now.getHours(),_nm=_now.getMinutes();
+  var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
+  var _totalMins=_nh*60+_nm;
+  var _dayStart=6*60+_grace,_dayEnd=18*60+_grace;
+  var _curShiftStartDate;
+  if(_totalMins>=_dayStart&&_totalMins<_dayEnd){_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  else if(_totalMins<_dayStart){var _y=new Date(_now);_y.setDate(_y.getDate()-1);_curShiftStartDate=_y.toLocaleDateString('en-CA');}
+  else{_curShiftStartDate=_now.toLocaleDateString('en-CA');}
+  var curShiftDate=_curShiftStartDate;
+  var curShiftKey=curShiftType+'_'+curShiftDate;
+  var _curShiftSlots=curShiftType==='DAY'?ALL.slice(0,12):ALL.slice(12);
+  var _curShiftSlotsSet={};
+  _curShiftSlots.forEach(function(sl){_curShiftSlotsSet[sl]=true;});
+  if(s.shifts&&s.shifts.length){
+    s.shifts.forEach(function(sh){
+      var isCurrentShift=isActiveSession&&sh.key===curShiftKey;
+      var hourlyData;
+      if(isCurrentShift){
+        hourlyData=Object.assign({},sh.hourly||{});
+        var _pfx=s.id+'_';
+        Object.keys(ST.hourly).forEach(function(k){
+          if(k.indexOf(_pfx)!==0)return;
+          var sk=k.slice(_pfx.length);
+          var slotEnd=sk.indexOf('_',sk.indexOf('-')+1);
+          var slotPart=slotEnd>=0?sk.substring(0,slotEnd):sk;
+          if(_curShiftSlotsSet[slotPart])hourlyData[sk]=ST.hourly[k];
+        });
+      } else { hourlyData=sh.hourly||{}; }
+      var delayData;
+      if(isCurrentShift){
+        var _isDayShift=(sh.type||curShiftType)==='DAY';
+        var _sidPfx=String(s.id)+'_';
+        delayData={};
+        Object.keys(ST.delays).forEach(function(dk){
+          if(dk.indexOf(_sidPfx)!==0)return;
+          var dd=ST.delays[dk];if(!dd||!dd.from)return;
+          var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
+          var inShift=_isDayShift?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
+          if(inShift)delayData[dk]=dd;
+        });
+      } else {
+        delayData=sh.delays||{};
       }
-      if(!e.target)e.target=sess.target||0;
-      e._prefilled=true;
+      if((Object.keys(hourlyData).length)||(Object.keys(delayData).length)){
+        blocks.push({key:sh.key||'',label:buildShiftLabel(sh.type,sh.date||sh.start||s.savedAt||s.id),hourly:hourlyData,delays:delayData,isCurrent:isCurrentShift});
+      }
+    });
+  }
+  if(isActiveSession&&!blocks.find(function(b){return b.isCurrent;})){
+    var _liveHourly={};
+    var _lfx=s.id+'_';
+    Object.keys(ST.hourly).forEach(function(k){
+      if(k.indexOf(_lfx)!==0)return;
+      var sk=k.slice(_lfx.length);
+      var slotEnd=sk.indexOf('_',sk.indexOf('-')+1);
+      var slotPart=slotEnd>=0?sk.substring(0,slotEnd):sk;
+      if(_curShiftSlotsSet[slotPart])_liveHourly[sk]=ST.hourly[k];
+    });
+    var _isDaySh=curShiftType==='DAY';
+    var _sidPfx2=String(s.id)+'_';
+    var _liveDelays={};
+    Object.keys(ST.delays).forEach(function(dk){
+      if(dk.indexOf(_sidPfx2)!==0)return;
+      var dd=ST.delays[dk];if(!dd||!dd.from)return;
+      var fromH=parseInt((dd.from||'00:00').split(':')[0],10);
+      var inShift=_isDaySh?(fromH>=6&&fromH<18):(fromH>=18||fromH<6);
+      if(inShift)_liveDelays[dk]=dd;
+    });
+    if(Object.keys(_liveHourly).length||Object.keys(_liveDelays).length){
+      blocks.push({key:curShiftKey,label:buildShiftLabel(curShiftType,curShiftDate),hourly:_liveHourly,delays:_liveDelays,isCurrent:true});
     }
   }
-  return e;
-}
-function _emgCraneName(ci){
-  var e=ST.emergency||{};
-  return(e.craneNames&&e.craneNames[ci])||('MHC'+ci);
-}
-function _emgEffSplit(ci,type){
-  var e=ST.emergency||{};
-  var ob=e.ob&&e.ob[ci+'_'+type];
-  if(ob!=null&&ob!==''&&!isNaN(ob))return parseFloat(ob);
-  return parseFloat((e.splits&&e.splits[ci+'_'+type])||0);
-}
-function _emgDone(ci,type){
-  var e=ST.emergency||{};
-  var tot=0;
-  (e.slots||[]).forEach(function(s,si){
-    tot+=parseFloat((e.rows&&e.rows[ci+'_'+type+'_'+si])||0);
+  if(!blocks.length&&s._results){
+    var hr=s._results.hourly||{},dl=s._results.delays||{};
+    if(Object.keys(hr).length||Object.keys(dl).length)
+      blocks.push({key:'',label:buildShiftLabel(null,s.savedAt||s.id),hourly:hr,delays:dl});
+  }
+  function histShiftTs(key){
+    var parts=(key||'').split('_');
+    var type=parts[0];
+    var dateParts=(parts[1]||'').split('-');
+    if(dateParts.length<3)return 0;
+    var yr=parseInt(dateParts[0]),mo=parseInt(dateParts[1])-1,dy=parseInt(dateParts[2]);
+    var hr2=type==='DAY'?6:18;
+    return new Date(yr,mo,dy,hr2,0,0).getTime();
+  }
+  blocks.sort(function(a,b){
+    if(a.isCurrent&&!b.isCurrent)return 1;
+    if(!a.isCurrent&&b.isCurrent)return -1;
+    return histShiftTs(a.key)-histShiftTs(b.key);
   });
-  return tot;
+  return blocks;
 }
-function _emgUpdateLive(ci,type,si){
-  var e=_emgInit();
-  var nc=parseInt(e.numCranes)||2;
-  // Update row total
-  var rt=0;
-  for(var i=1;i<=nc;i++)rt+=parseFloat(e.rows[i+'_'+type+'_'+si]||0);
-  var rtEl=document.getElementById('emg_rt_'+type+'_'+si);
-  if(rtEl)rtEl.textContent=rt||'';
-  // Update crane done/remain
-  var done=_emgDone(ci,type);
-  var split=_emgEffSplit(ci,type);
-  var rem=split-done;
-  var dcEl=document.getElementById('emg_done_'+type+'_'+ci);
-  if(dcEl)dcEl.textContent=done;
-  var rcEl=document.getElementById('emg_rem_'+type+'_'+ci);
-  if(rcEl){rcEl.textContent=rem;rcEl.style.color=rem<0?'var(--red)':'';}
-  // Update column totals
-  var dTot=0,rTot=0;
-  for(var i=1;i<=nc;i++){
-    var d=_emgDone(i,type);
-    var s2=_emgEffSplit(i,type);
-    dTot+=d;rTot+=s2-d;
-  }
-  var dtEl=document.getElementById('emg_done_'+type+'_tot');if(dtEl)dtEl.textContent=dTot;
-  var rtEl2=document.getElementById('emg_rem_'+type+'_tot');if(rtEl2){rtEl2.textContent=rTot;rtEl2.style.color=rTot<0?'var(--red)':'';}
-  // Update summary bar
-  var totalDone=0;
-  var nc2=parseInt(e.numCranes)||2;
-  ['discharge','load'].forEach(function(tp){for(var i=1;i<=nc2;i++)totalDone+=_emgDone(i,tp);});
-  var tgt=parseInt(e.target)||0;
-  var mx=Math.max(totalDone,tgt,1);
-  var mp=Math.max(totalDone/mx*100,totalDone>0?5:0);
-  var tp2=Math.max(tgt/mx*100,tgt>0?5:0);
-  var bf=document.getElementById('emg_bfill');var bsp=document.getElementById('emg_bspan');
-  if(bf){bf.style.width=mp+'%';if(bsp)bsp.textContent=totalDone;}
-}
-function renderEmergency(){
-  var e=_emgInit();
-  var nc=parseInt(e.numCranes)||2;
-  var todayStr=new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
-  var bgStyle='style="background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+(HARDCODED_BG||'')+') center/cover"';
-  var slot=e.slotLabel||fs(currSlot());
-
-  // ── Header — identical to rhHTML ──
-  var h='<div id="emgCap">';
-  h+='<div class="rh" '+bgStyle+'>';
-  h+='<div class="rh1">';
-  h+='<div class="rh-logo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
-  h+='<div class="rh-txt">';
-  h+='<h2 contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text;display:inline-block;min-width:40px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.title=this.textContent.trim();_emgSv()">'+(e.title||'HOURLY REPORT')+'</h2>';
-  h+='<p>'+(ST.settings&&ST.settings.term||'Terminal')+'</p>';
-  h+='</div>';
-  h+='<button class="rh-share" onclick="shareEmergency()">📤 Share</button>';
-  h+='</div>';
-  h+='<div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">';
-  h+='<div style="flex:1;min-width:0;">';
-  h+='<span class="rh-vessel" contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text;display:inline-block;min-width:30px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.vesselName=this.textContent.trim();_emgSv()">'+(e.vesselName||'Vessel')+'</span>';
-  h+='<div style="font-size:12px;opacity:.8;color:#ffcdd2;margin-top:2px;">Docked: <span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.dockedOn=this.textContent.trim();_emgSv()">'+(e.dockedOn||'—')+'</span></div>';
-  h+='</div>';
-  h+='<div style="flex:0 0 auto;text-align:center;">';
-  h+='<span class="rh-slot" contenteditable="true" style="outline:none;cursor:text;border-bottom:1px dashed rgba(255,255,255,.4)" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.slotLabel=this.textContent.trim();_emgSv()">'+slot+'</span>';
-  h+='</div>';
-  h+='<div style="flex:1;min-width:0;text-align:right;">';
-  h+='<span class="rh-date">'+todayStr+'</span>';
-  h+='<div style="font-size:11px;color:rgba(255,255,255,.85);margin-top:3px;text-align:right;line-height:1.7;">';
-  h+='<div>🟢 First Lift: <strong contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.firstLift=this.textContent.trim();_emgSv()">'+(e.firstLift||'—')+'</strong></div>';
-  h+='<div>🔴 Last Lift: &nbsp;<strong contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.3);cursor:text;display:inline-block;min-width:20px" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.lastLift=this.textContent.trim();_emgSv()">'+(e.lastLift||'—')+'</strong></div>';
-  h+='</div></div></div></div>';
-
-  // ── Controls (cranes, copy, reset) ──
-  h+='<div class="no-share" style="display:flex;gap:8px;padding:8px 10px;flex-wrap:wrap;align-items:center;background:#f0f2f7;border-bottom:1px solid #dde3f0">';
-  h+='<label style="font-size:11px;font-weight:700;color:#1F3864">Cranes:</label>';
-  h+='<select style="border:1px solid #dde3f0;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;background:white;color:#1F3864" onchange="if(!ST.emergency)ST.emergency={};ST.emergency.numCranes=parseInt(this.value);ST.emergency._prefilled=false;_emgSv();renderEmergency()">';
-  for(var n=1;n<=4;n++)h+='<option value="'+n+'"'+(nc===n?' selected':'')+'>'+n+'</option>';
-  h+='</select>';
-  h+='<button onclick="_emgCopyFromActive()" style="padding:5px 12px;border-radius:6px;background:#1F3864;color:white;font-size:11px;font-weight:700;border:none;cursor:pointer;">📋 Copy from Hourly Report</button>';
-  h+='<button onclick="_emgReset()" style="padding:5px 10px;border-radius:6px;background:#fee2e2;color:#991b1b;font-size:11px;font-weight:700;border:1px solid #fca5a5;cursor:pointer;">🔄 Reset</button>';
-  h+='</div>';
-
-  // ── Crane table — identical structure to craneTableHTML, all cells editable ──
-  var rows='';
-  for(var ci=1;ci<=nc;ci++){
-    var sd=parseFloat((e.splits&&e.splits[ci+'_discharge'])||0);
-    var sl2=parseFloat((e.splits&&e.splits[ci+'_load'])||0);
-    var ed2=_emgEffSplit(ci,'discharge');
-    var el2=_emgEffSplit(ci,'load');
-    var hd=parseFloat((e.rows&&e.rows[ci+'_discharge'])||0);
-    var hl=parseFloat((e.rows&&e.rows[ci+'_load'])||0);
-    var rd=parseFloat((e.remaining&&e.remaining[ci+'_discharge'])!=null?e.remaining[ci+'_discharge']:ed2-hd);
-    var rl=parseFloat((e.remaining&&e.remaining[ci+'_load'])!=null?e.remaining[ci+'_load']:el2-hl);
-    var cname=_emgCraneName(ci);
-    rows+='<tr class="'+(ci%2===0?'e':'o')+'">';
-    // Crane name editable
-    rows+='<td class="crane-cell"><span contenteditable="true" style="outline:none;border-bottom:1px dashed #aaa;cursor:text;font-weight:800;display:inline-block;min-width:30px" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.craneNames)ST.emergency.craneNames={};ST.emergency.craneNames['+ci+']=this.textContent.trim();_emgSv()">'+cname+'</span></td>';
-    // Splits editable
-    rows+='<td><input type="number" value="'+sd+'" placeholder="-" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.splits)ST.emergency.splits={};ST.emergency.splits[\''+ci+'_discharge\']=parseFloat(this.value)||0;_emgSv()"/></td>';
-    rows+='<td><input type="number" value="'+sl2+'" placeholder="-" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.splits)ST.emergency.splits={};ST.emergency.splits[\''+ci+'_load\']=parseFloat(this.value)||0;_emgSv()"/></td>';
-    // Hourly moves editable (highlighted)
-    rows+='<td class="hl"><input type="number" value="'+(hd||'')+'" placeholder="—" class="ci" style="background:#e8f4fb" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.rows)ST.emergency.rows={};ST.emergency.rows[\''+ci+'_discharge\']=parseFloat(this.value)||0;_emgSv()"/></td>';
-    rows+='<td class="hl"><input type="number" value="'+(hl||'')+'" placeholder="—" class="ci" style="background:#e8f4fb" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.rows)ST.emergency.rows={};ST.emergency.rows[\''+ci+'_load\']=parseFloat(this.value)||0;_emgSv()"/></td>';
-    // Remaining editable
-    rows+='<td'+(rd<0?' class="neg"':'')+'><input type="number" value="'+rd+'" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.remaining)ST.emergency.remaining={};ST.emergency.remaining[\''+ci+'_discharge\']=parseFloat(this.value);_emgSv()"/></td>';
-    rows+='<td'+(rl<0?' class="neg"':'')+'><input type="number" value="'+rl+'" class="ci" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.remaining)ST.emergency.remaining={};ST.emergency.remaining[\''+ci+'_load\']=parseFloat(this.value);_emgSv()"/></td>';
-    rows+='</tr>';
-  }
-  h+='<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt"><thead>';
-  h+='<tr>';
-  h+='<th class="grp crane-col" rowspan="2">Crane</th>';
-  h+='<th class="grp" colspan="2"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.splitsLabel=this.textContent.trim();_emgSv()">'+(e.splitsLabel||'Splits')+'</span></th>';
-  h+='<th class="grp" colspan="2" style="background:#1a4a7a"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.hourlyLabel=this.textContent.trim();_emgSv()">'+(e.hourlyLabel||'Hourly Moves')+'</span></th>';
-  h+='<th class="grp" colspan="2"><span contenteditable="true" style="outline:none;border-bottom:1px dashed rgba(255,255,255,.4);cursor:text" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.remainingLabel=this.textContent.trim();_emgSv()">'+(e.remainingLabel||'Remaining')+'</span></th>';
-  h+='</tr><tr>';
-  h+='<th class="sub">Disch.</th><th class="sub">Load</th>';
-  h+='<th class="sub sub-hl">Disch.</th><th class="sub sub-hl">Load</th>';
-  h+='<th class="sub">Disch.</th><th class="sub">Load</th>';
-  h+='</tr></thead><tbody>'+rows+'</tbody></table></div></div>';
-
-  // ── Summary — identical to summaryHTML, all cells editable ──
-  var tRemD=parseFloat(e.summary&&e.summary.remD!=null?e.summary.remD:0);
-  var tRemL=parseFloat(e.summary&&e.summary.remL!=null?e.summary.remL:0);
-  var tRemT=parseFloat(e.summary&&e.summary.remT!=null?e.summary.remT:tRemD+tRemL);
-  var tDoneD=parseFloat(e.summary&&e.summary.doneD!=null?e.summary.doneD:0);
-  var tDoneL=parseFloat(e.summary&&e.summary.doneL!=null?e.summary.doneL:0);
-  var tDoneT=parseFloat(e.summary&&e.summary.doneT!=null?e.summary.doneT:tDoneD+tDoneL);
-  var t12D=parseFloat(e.summary&&e.summary.done12D!=null?e.summary.done12D:0);
-  var t12L=parseFloat(e.summary&&e.summary.done12L!=null?e.summary.done12L:0);
-  var t12T=parseFloat(e.summary&&e.summary.done12T!=null?e.summary.done12T:t12D+t12L);
-  var tgt=parseFloat(e.target)||0;
-  var mx=Math.max(t12T,tgt,1);
-  var mp=Math.max(t12T/mx*100,t12T>0?5:0);
-  var tp=Math.max(tgt/mx*100,tgt>0?5:0);
-
-  function numIn(key,val,extra){
-    return '<input type="number" value="'+(val||0)+'" class="ci" style="width:60px;text-align:center;'+(extra||'')+'" oninput="if(!ST.emergency)ST.emergency={};if(!ST.emergency.summary)ST.emergency.summary={};ST.emergency.summary[\''+key+'\']=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/>';
-  }
-
-  h+='<div class="card" style="margin:8px 10px"><div class="twrap"><table class="rt"><thead>';
-  h+='<tr><th class="grp" style="text-align:left;padding-left:9px">Summary</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr>';
-  h+='</thead><tbody>';
-  h+='<tr class="ry"><td style="font-weight:800;padding-left:9px">Total Remaining</td><td>'+numIn('remD',tRemD)+'</td><td>'+numIn('remL',tRemL)+'</td><td style="font-weight:900;'+(tRemT<0?'color:var(--red)':'')+'">'+numIn('remT',tRemT,'font-weight:900;')+'</td></tr>';
-  h+='<tr class="o"><td style="padding-left:9px">Total Done</td><td>'+numIn('doneD',tDoneD)+'</td><td>'+numIn('doneL',tDoneL)+'</td><td class="bold">'+numIn('doneT',tDoneT)+'</td></tr>';
-  h+='<tr class="e"><td style="padding-left:9px">Total Done 12hrs</td><td>'+numIn('done12D',t12D)+'</td><td>'+numIn('done12L',t12L)+'</td><td class="bold">'+numIn('done12T',t12T)+'</td></tr>';
-  h+='</tbody></table></div></div>';
-
-  // Bar chart — uses Total Done 12hrs vs Target (exactly as summaryHTML)
-  h+='<div class="chcard" style="margin:8px 10px">';
-  h+='<div class="cht">Total Done 12hrs vs Target</div>';
-  h+='<div class="brow"><div class="blbl">Total Done 12hrs</div><div class="btrack"><div class="bfill bn" id="emg_bfill" style="width:'+mp+'%"><span id="emg_bspan" style="font-size:11px;font-weight:800">'+t12T+'</span></div></div></div>';
-  h+='<div class="brow"><div class="blbl">Target</div><div class="btrack"><div class="bfill by" style="width:'+tp+'%"><span style="font-size:11px;font-weight:800"><input type="number" value="'+tgt+'" style="width:55px;font-size:11px;font-weight:800;background:transparent;border:none;border-bottom:1px dashed rgba(0,0,0,.3);color:inherit;text-align:center" oninput="if(!ST.emergency)ST.emergency={};ST.emergency.target=parseFloat(this.value)||0;_emgUpdateBar();_emgSv()"/></span></div></div></div>';
-  h+='</div><div style="height:14px"></div></div>';
-
-  $('sc-emergency').innerHTML=h;
-}
-
-function _emgUpdateBar(){
-  var e=ST.emergency||{};
-  var t12T=parseFloat(e.summary&&e.summary.done12T||0);
-  var tgt=parseFloat(e.target)||0;
-  var mx=Math.max(t12T,tgt,1);
-  var mp=Math.max(t12T/mx*100,t12T>0?5:0);
-  var bf=document.getElementById('emg_bfill');
-  var bs=document.getElementById('emg_bspan');
-  if(bf)bf.style.width=mp+'%';
-  if(bs)bs.textContent=t12T;
-}
-function _emgCopyFromActive(){
-  var sess=getSess();
-  if(!sess){alert('No active session to copy from.');return;}
-  if(!ST.emergency)ST.emergency={};
-  var e=ST.emergency;
-  // Vessel info
-  e.vesselName=sess.vesselName||'';
-  e.dockedOn=sess.dockedOn||'';
-  e.firstLift=sess.firstLift||'';
-  e.lastLift=sess.lastLift||'';
-  e.numCranes=sess.numCranes||2;
-  e.target=sess.target||0;
-  e.slotLabel=fs(currSlot());
-  e._prefilled=true;
-  var nc=parseInt(e.numCranes)||2;
-  // Crane names
-  if(!e.craneNames)e.craneNames={};
-  for(var i=1;i<=nc;i++)e.craneNames[i]=craneName(i);
-  // Splits
-  if(!e.splits)e.splits={};
-  for(var i=1;i<=nc;i++){
-    var cb=sess.craneBalances&&sess.craneBalances[i]||{};
-    e.splits[i+'_discharge']=cb.dischargeSplit||0;
-    e.splits[i+'_load']=cb.loadSplit||0;
-  }
-  // OB
-  if(!e.ob)e.ob={};
-  for(var i=1;i<=nc;i++){
-    var cb=sess.craneBalances&&sess.craneBalances[i]||{};
-    if(cb.dischargeOB!=null&&cb.dischargeOB!=='')e.ob[i+'_discharge']=parseFloat(cb.dischargeOB)||0;
-    if(cb.loadOB!=null&&cb.loadOB!=='')e.ob[i+'_load']=parseFloat(cb.loadOB)||0;
-  }
-  // Current slot hourly moves
-  if(!e.rows)e.rows={};
-  var slot=currSlot();
-  for(var i=1;i<=nc;i++){
-    e.rows[i+'_discharge']=ST.hourly[hk(sess.id,slot,i,'discharge')]||0;
-    e.rows[i+'_load']=ST.hourly[hk(sess.id,slot,i,'load')]||0;
-  }
-  // Remaining
-  if(!e.remaining)e.remaining={};
-  for(var i=1;i<=nc;i++){
-    e.remaining[i+'_discharge']=effSplit(sess,i,'discharge')-getCraneTotal(sess,i,'discharge');
-    e.remaining[i+'_load']=effSplit(sess,i,'load')-getCraneTotal(sess,i,'load');
-  }
-  // Summary — copy from calcGlobalTotals
-  var g=calcGlobalTotals(sess);
-  e.summary={
-    remD:Math.round(g.baseTotalDisc-g.totalDoneDisc),
-    remL:Math.round(g.baseTotalLoad-g.totalDoneLoad),
-    remT:Math.round(g.remaining),
-    doneD:Math.round(g.totalDoneDisc),
-    doneL:Math.round(g.totalDoneLoad),
-    doneT:Math.round(g.totalDone),
-    done12D:Math.round(g.total12Disc),
-    done12L:Math.round(g.total12Load),
-    done12T:Math.round(g.total12)
-  };
-  _emgSv();renderEmergency();
-}
-function _emgAddSlot(){
-  var e=_emgInit();
-  if(!e.slots)e.slots=[];
-  e.slots.push('0000-0100');
-  _emgSv();renderEmergency();
-}
-function _emgDelSlot(si){
-  var e=_emgInit();
-  e.slots.splice(si,1);
-  // Shift row keys down
-  var newRows={};
-  Object.keys(e.rows||{}).forEach(function(k){
-    var parts=k.split('_');
-    var idx=parseInt(parts[parts.length-1]);
-    if(idx===si)return;
-    if(idx>si){parts[parts.length-1]=String(idx-1);newRows[parts.join('_')]=e.rows[k];}
-    else newRows[k]=e.rows[k];
+// Aggregate a shift's hourly slot data into consecutive 4-hour blocks and render a table
+function buildHistory4HourlyHTML(hourlyData,snc){
+  var groups=[];
+  for(var i=0;i<ALL.length;i+=4)groups.push(ALL.slice(i,i+4));
+  var used=groups.filter(function(g){
+    return g.some(function(slot){for(var ci=1;ci<=snc;ci++){if(hourlyData[slot+'_'+ci+'_discharge']||hourlyData[slot+'_'+ci+'_load'])return true;}return false;});
   });
-  e.rows=newRows;
-  _emgSv();renderEmergency();
-}
-function _emgReset(){
-  if(!confirm('Reset Emergency Report? All data will be cleared.'))return;
-  ST.emergency={};_emgSv();renderEmergency();
-}
-function shareEmergency(){
-  var el=document.getElementById('emgCap');
-  if(!el){alert('Open Emergency tab first.');return;}
-
-  // Clone the element for capture
-  var clone=el.cloneNode(true);
-  clone.style.cssText='position:fixed;left:-9999px;top:0;width:'+el.offsetWidth+'px;overflow:visible;background:#f0f2f7;';
-
-  // Stamp live input values onto cloned inputs before replacing
-  var liveInputs=el.querySelectorAll('input');
-  var cloneInputs=clone.querySelectorAll('input');
-  liveInputs.forEach(function(inp,i){if(cloneInputs[i])cloneInputs[i].value=inp.value;});
-
-  // Remove no-share elements (controls strip, buttons)
-  clone.querySelectorAll('.no-share,.rh-share,button,select').forEach(function(e2){e2.remove();});
-
-  // Replace all inputs with plain text spans showing their value
-  clone.querySelectorAll('input').forEach(function(inp){
-    var span=document.createElement('span');
-    var val=inp.value||inp.placeholder||'';
-    span.textContent=val==='-'||val===''?'—':val;
-    span.style.cssText='display:inline-block;min-width:'+inp.offsetWidth+'px;text-align:center;font-size:'+getComputedStyle(inp).fontSize+';font-weight:'+getComputedStyle(inp).fontWeight+';color:'+getComputedStyle(inp).color+';';
-    inp.parentNode.replaceChild(span,inp);
+  if(!used.length)return'<div style="font-size:11px;color:#999;padding:10px 6px">No results recorded.</div>';
+  var th='<tr style="background:#1f3864;color:white"><th rowspan="2" style="padding:7px 8px;font-size:11px;text-align:left">Block</th>';
+  for(var ci=1;ci<=snc;ci++)th+='<th colspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+craneName(ci)+'</th>';
+  th+='<th rowspan="2" style="padding:7px 6px;font-size:11px;text-align:center;border-left:2px solid rgba(255,255,255,.2)">Total</th></tr>';
+  th+='<tr style="background:#162d52;color:rgba(255,255,255,.8)">';
+  for(var ci2=1;ci2<=snc;ci2++)th+='<th style="padding:4px 6px;font-size:10px;border-left:2px solid rgba(255,255,255,.2)">D</th><th style="padding:4px 6px;font-size:10px">L</th>';
+  th+='</tr>';
+  var tb='';var gD=0,gL=0;var ct={};
+  for(var ci3=1;ci3<=snc;ci3++)ct[ci3]={d:0,l:0};
+  used.forEach(function(grp,idx){
+    var label=fs(grp[0].split('-')[0]+'-'+grp[grp.length-1].split('-')[1]);
+    var rt=0,cells='<td style="padding:6px 8px;font-size:11px;font-weight:700;white-space:nowrap">'+label+'</td>';
+    for(var ci=1;ci<=snc;ci++){
+      var dv=0,lv=0;
+      grp.forEach(function(slot){dv+=hourlyData[slot+'_'+ci+'_discharge']||0;lv+=hourlyData[slot+'_'+ci+'_load']||0;});
+      ct[ci].d+=dv;ct[ci].l+=lv;rt+=dv+lv;gD+=dv;gL+=lv;
+      cells+='<td style="padding:6px 5px;font-size:11px;text-align:center;border-left:2px solid #dde3f0">'+(dv||'—')+'</td><td style="padding:6px 5px;font-size:11px;text-align:center">'+(lv||'—')+'</td>';
+    }
+    cells+='<td style="padding:6px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid #dde3f0">'+rt+'</td>';
+    tb+='<tr style="background:'+(idx%2===0?'white':'#f5f8fc')+'">'+cells+'</tr>';
   });
-
-  // Replace contenteditable spans — they already show text, just remove the dashed border
-  clone.querySelectorAll('[contenteditable]').forEach(function(e2){
-    e2.removeAttribute('contenteditable');
-    e2.style.borderBottom='none';
-  });
-
-  document.body.appendChild(clone);
-
-  // Measure full height after clone is in DOM
-  var captureH=clone.scrollHeight;
-  var captureW=el.offsetWidth;
-
-  html2canvas(clone,{
-    scale:2,useCORS:true,backgroundColor:'#f0f2f7',
-    width:captureW,height:captureH,
-    windowWidth:captureW,scrollX:0,scrollY:0,
-    allowTaint:true,logging:false
-  }).then(function(canvas){
-    document.body.removeChild(clone);
-    canvas.toBlob(function(blob){
-      if(!blob)return;
-      var file=new File([blob],'EmergencyReport.png',{type:'image/png'});
-      if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-        navigator.share({files:[file],title:'Emergency Report'});
-      } else {
-        var a=document.createElement('a');a.href=URL.createObjectURL(blob);
-        a.download='EmergencyReport.png';document.body.appendChild(a);a.click();document.body.removeChild(a);
-        setTimeout(function(){URL.revokeObjectURL(a.href);},1000);
-      }
-    },'image/png',0.96);
-  }).catch(function(err){
-    if(document.body.contains(clone))document.body.removeChild(clone);
-    alert('Share failed: '+err.message);
-  });
+  var tf='<tr style="background:#1a3a5c;color:white"><td style="padding:7px 8px;font-size:11px;font-weight:800">TOTAL</td>';
+  for(var ci4=1;ci4<=snc;ci4++)tf+='<td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+ct[ci4].d+'</td><td style="padding:7px 5px;font-size:12px;font-weight:800;text-align:center">'+ct[ci4].l+'</td>';
+  tf+='<td style="padding:7px 5px;font-size:13px;font-weight:900;text-align:center;border-left:2px solid rgba(255,255,255,.2)">'+(gD+gL)+'</td></tr>';
+  return'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse"><thead>'+th+'</thead><tbody>'+tb+'</tbody><tfoot>'+tf+'</tfoot></table></div>';
 }
+// UI selection state (not persisted — resets when leaving the tab, harmless)
+var PR_SEL={sessId:null,type:'hourly',shiftKey:null};
+function prSetVessel(id){PR_SEL.sessId=id;PR_SEL.shiftKey=null;renderPastReports();}
+function prSetType(t){PR_SEL.type=t;renderPastReports();}
+function prSetShift(key){PR_SEL.shiftKey=key;renderPastReports();}
+function renderPastReports(){
+  var h='<div class="ph"><h2>📜 Past Reports</h2><p>Hourly, 4-Hourly &amp; Delays — every day the vessel has worked</p></div>';
+  if(!ST.sessions||!ST.sessions.length){h+=noSess('📜','No sessions recorded yet.');$('sc-pastreports').innerHTML=h;return;}
+  // Pick the vessel/session: keep current selection if still valid, else default to active, else most recent
+  var sess=ST.sessions.find(function(s){return s.id===PR_SEL.sessId;});
+  if(!sess){
+    sess=ST.sessions.find(function(s){return s.id===ST.activeId;})||ST.sessions[0];
+    PR_SEL.sessId=sess.id;PR_SEL.shiftKey=null;
+  }
+  // Vessel selector
+  h+='<div class="fbar"><select onchange="prSetVessel(this.value)" style="width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:8px;font-size:13px">';
+  ST.sessions.forEach(function(s){
+    var isA=s.id===ST.activeId||s.id===ST.activeId2;
+    h+='<option value="'+s.id+'"'+(s.id===sess.id?' selected':'')+'>'+s.vesselName+(isA?' (Active)':'')+'</option>';
+  });
+  h+='</select></div>';
+  var snc=sess.numCranes||2;
+  var blocks=getSessionShiftBlocks(sess);
+  if(!blocks.length){
+    h+=noSess('📜','No reports recorded yet for this vessel.');
+    $('sc-pastreports').innerHTML=h;return;
+  }
+  // Shift/day selector — default to the most recent (current) shift
+  var block=blocks.find(function(b){return b.key===PR_SEL.shiftKey;});
+  if(!block){block=blocks[blocks.length-1];PR_SEL.shiftKey=block.key;}
+  h+='<div class="fbar"><select onchange="prSetShift(this.value)" style="width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:8px;font-size:13px">';
+  blocks.forEach(function(b,bi){
+    h+='<option value="'+b.key+'"'+(b.key===block.key?' selected':'')+'>'+b.label+(b.isCurrent?' (Current)':'')+'</option>';
+  });
+  h+='</select></div>';
+  // Report type selector
+  var types=[{id:'hourly',l:'🕐 Hourly'},{id:'4hourly',l:'📅 4-Hourly'},{id:'delays',l:'⏸️ Delays'}];
+  h+='<div style="display:flex;gap:6px;padding:0 10px 8px;flex-wrap:wrap">';
+  types.forEach(function(t){
+    var active=PR_SEL.type===t.id;
+    h+='<button class="btn btn-sm'+(active?'':' btn-out')+'" style="flex:1;min-width:90px" onclick="prSetType(\''+t.id+'\')">'+t.l+'</button>';
+  });
+  h+='</div>';
+  h+='<div class="card"><div class="card-hd">'+(types.find(function(t){return t.id===PR_SEL.type;})||{}).l+' — '+block.label+'</div><div class="twrap" style="padding:8px">';
+  if(PR_SEL.type==='hourly')h+=buildHistoryResultsHTML(block.hourly,snc);
+  else if(PR_SEL.type==='4hourly')h+=buildHistory4HourlyHTML(block.hourly,snc);
+  else h+=buildHistoryDelaysHTML(block.delays,snc);
+  h+='</div></div>';
+  $('sc-pastreports').innerHTML=h;
+}
+
 </script>
 </body>
 </html>
