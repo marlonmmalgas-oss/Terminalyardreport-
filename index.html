@@ -5903,6 +5903,10 @@ function renderYard(){
 }
 var YARD_VIEW='complex';
 function setYardView(v){YARD_VIEW=v;renderYard();}
+// Which hour's dispatch count is being entered, per report. Defaults to the
+// current hour but the user can pick any other hour of the shift.
+var YARD_DISPATCH_SEL={};
+function setYardDispatchHour(reportId,slot){YARD_DISPATCH_SEL[reportId]=slot;renderYard();}
 
 // ═══════════ YARD — SIMPLIFIED DASHBOARD ═══════════
 // A lighter, single-screen view of the same yard report: a quick staged-truck
@@ -5953,12 +5957,9 @@ function updateYardSimpleLive(reportId){
   var totalTrucks=0;r.simple.locations.forEach(function(l){totalTrucks+=l.total||0;});
   var slots=shiftSlots();
   var dispatched=0;slots.forEach(function(s){dispatched+=r.simple.dispatches[s]||0;});
-  var remaining=totalTrucks-dispatched;
   var setTxt=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
   setTxt('ys_totalTrucks_'+reportId,totalTrucks);
   setTxt('ys_dispatched_'+reportId,dispatched);
-  var remEl=document.getElementById('ys_remaining_'+reportId);
-  if(remEl){remEl.textContent=remaining;remEl.style.color=remaining<0?'#c0392b':'';}
   var maxV=1;slots.forEach(function(s){maxV=Math.max(maxV,r.simple.dispatches[s]||0);});
   slots.forEach(function(s){
     var v=r.simple.dispatches[s]||0;
@@ -5978,7 +5979,6 @@ function renderYardSimple(report){
 
   var totalTrucks=0;report.simple.locations.forEach(function(l){totalTrucks+=l.total||0;});
   var dispatched=0;slots.forEach(function(s){dispatched+=report.simple.dispatches[s]||0;});
-  var remaining=totalTrucks-dispatched;
 
   let h=`<div id="ycap_simple_${report.id}">`;
 
@@ -5996,18 +5996,14 @@ function renderYardSimple(report){
         <button class="rh-share" onclick="shareYardSimple(${report.id})" style="background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.3);color:white;padding:8px 14px;border-radius:9px;font-size:12px;font-weight:800;cursor:pointer">📤 Share</button>
       </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr">
+    <div style="display:grid;grid-template-columns:1fr 1fr">
       <div style="padding:10px;text-align:center;border-right:1px solid #eee">
         <div style="font-size:10px;font-weight:800;color:var(--navy);letter-spacing:.5px">TOTAL TRUCKS</div>
         <div id="ys_totalTrucks_${report.id}" style="font-size:20px;font-weight:900;color:var(--navy)">${totalTrucks}</div>
       </div>
-      <div style="padding:10px;text-align:center;border-right:1px solid #eee">
+      <div style="padding:10px;text-align:center">
         <div style="font-size:10px;font-weight:800;color:#e67e22;letter-spacing:.5px">DISPATCHED</div>
         <div id="ys_dispatched_${report.id}" style="font-size:20px;font-weight:900;color:#e67e22">${dispatched}</div>
-      </div>
-      <div style="padding:10px;text-align:center">
-        <div style="font-size:10px;font-weight:800;color:#888;letter-spacing:.5px">REMAINING</div>
-        <div id="ys_remaining_${report.id}" style="font-size:20px;font-weight:900;${remaining<0?'color:#c0392b':''}">${remaining}</div>
       </div>
     </div>
   </div>`;
@@ -6075,15 +6071,29 @@ function renderYardSimple(report){
     <div class="no-share" style="padding:8px 10px;font-size:10px;color:#888">Vessel numbers are pulled from the Complex report — switch views to add or edit vessels.</div>
   </div>`;
 
-  // ── Dispatches-per-hour entry (stripped from the shared image — the chart below shows the same numbers) ──
+  // ── Dispatches-per-hour entry: pick an hour (defaults to current), enter its count.
+  // Stripped from the shared image — the chart below shows the same numbers. ──
+  var curSlotNow=currSlot();
+  var selSlot=YARD_DISPATCH_SEL[report.id]||curSlotNow;
+  if(slots.indexOf(selSlot)<0)selSlot=curSlotNow;
   h+=`<div class="no-share" style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);padding:10px 12px">
     <div style="font-size:11px;font-weight:800;color:var(--navy);margin-bottom:8px">🚚 Dispatches Per Hour — enter as trucks leave</div>
-    <div style="display:flex;flex-wrap:wrap;gap:6px">`;
-  slots.forEach(function(s){
-    h+=`<div style="width:calc(25% - 5px)"><label style="font-size:9px;color:#888;display:block;margin-bottom:2px">${fs(s)}</label>
-      <input type="number" value="${report.simple.dispatches[s]||''}" placeholder="0" oninput="updateYardDispatch(${report.id},'${s}',this.value)" class="yard-input"/></div>`;
-  });
-  h+=`</div></div>`;
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <div style="flex:1">
+        <label style="font-size:9px;color:#888;display:block;margin-bottom:3px">HOUR</label>
+        <select onchange="setYardDispatchHour(${report.id},this.value)" style="width:100%;padding:8px 8px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;box-sizing:border-box">
+          ${slots.map(function(s){
+            var isCur=s===curSlotNow;
+            return '<option value="'+s+'"'+(s===selSlot?' selected':'')+'>'+fs(s)+(isCur?' (Current)':'')+'</option>';
+          }).join('')}
+        </select>
+      </div>
+      <div style="flex:1">
+        <label style="font-size:9px;color:#888;display:block;margin-bottom:3px">DISPATCHES</label>
+        <input type="number" value="${report.simple.dispatches[selSlot]||''}" placeholder="0" oninput="updateYardDispatch(${report.id},'${selSlot}',this.value)" class="yard-input" style="width:100%;box-sizing:border-box"/>
+      </div>
+    </div>
+  </div>`;
 
   // ── Chart — placed BELOW the tables, per request ──
   var maxV=1;slots.forEach(function(s){maxV=Math.max(maxV,report.simple.dispatches[s]||0);});
@@ -6244,10 +6254,10 @@ function renderYardReport(report){
     let vCustom=(report.customCols||[]).map(c=>{let s=0;types.forEach(t=>{const d=v.data&&v.data[t]?v.data[t]:{};s+=d[c.key]||0;});return s;});
     h+=`<tr style="background:var(--yellow)">
       <td colspan="2" style="padding:5px 10px;font-weight:800;font-size:11px;color:#000">TOTAL</td>
-      <td style="text-align:center;font-weight:800">${vEx||0}</td>
-      ${(report.customCols||[]).map((c,ci)=>`<td style="text-align:center;font-weight:800">${vCustom[ci]||0}</td>`).join('')}
-      <td style="text-align:center;font-weight:800">${vIm||0}</td>
-      <td style="text-align:center;font-weight:800">${vDep||0}</td>
+      <td id="vTotEx_${report.id}_${vi}" style="text-align:center;font-weight:800">${vEx||0}</td>
+      ${(report.customCols||[]).map((c,ci)=>`<td id="vTotCustom_${report.id}_${vi}_${ci}" style="text-align:center;font-weight:800">${vCustom[ci]||0}</td>`).join('')}
+      <td id="vTotIm_${report.id}_${vi}" style="text-align:center;font-weight:800">${vIm||0}</td>
+      <td id="vTotDep_${report.id}_${vi}" style="text-align:center;font-weight:800">${vDep||0}</td>
     </tr>`;
     // Add vessel button row
     var _remColspan=3+(report.customCols||[]).length+2; // TYPE+EXPORT+customCols+IMPORT+DEPARTED
@@ -6285,32 +6295,32 @@ function renderYardReport(report){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_exports','TOTAL EXPORTS',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandEx}</span>
+        <span data-sum="ex" style="font-size:16px;font-weight:900">${grandEx}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_gp','TOTAL "GP"',false)}</span>
-        <span style="font-size:16px;font-weight:900">${totalGP}</span>
+        <span data-sum="gp" style="font-size:16px;font-weight:900">${totalGP}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_imports','TOTAL IMPORTS',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandIm}</span>
+        <span data-sum="im" style="font-size:16px;font-weight:900">${grandIm}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_reef','TOTAL REEF',false)}</span>
-        <span style="font-size:16px;font-weight:900">${totalReef}</span>
+        <span data-sum="reef" style="font-size:16px;font-weight:900">${totalReef}</span>
       </div>
       <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_departed','TOTAL DEPARTED',false)}</span>
-        <span style="font-size:16px;font-weight:900">${grandDep}</span>
+        <span data-sum="dep" style="font-size:16px;font-weight:900">${grandDep}</span>
       </div>
       <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
         <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_mty','TOTAL MTY',false)}</span>
-        <span style="font-size:16px;font-weight:900">${totalMty}</span>
+        <span data-sum="mty" style="font-size:16px;font-weight:900">${totalMty}</span>
       </div>
     </div>
     <div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px">
       <span style="font-size:13px;font-weight:900;color:white">${_adminLbl('yrd_sum_inyard','IN YARD',true)}</span>
-      <span style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
+      <span data-sum="inyard" style="font-size:22px;font-weight:900;color:white">${totalInYard}</span>
     </div>
     <div style="margin-top:8px;display:flex;gap:6px">
       <button data-delyard="${report.id}" onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button>
@@ -7367,40 +7377,56 @@ function removeYardType(reportId,ti){
   renderYard();
 }
 
-// Update yard summary totals without full re-render (fast, no lag)
+// Update yard summary totals without full re-render (fast, no lag with large Excel data).
+// Recomputes per-vessel row totals AND the bottom grand totals, correctly including
+// any custom container types (rows) and custom columns that have been added.
 function updateYardSummary(reportId){
   var rpt=ST.yardReports.find(function(r){return r.id===reportId;});
   if(!rpt)return;
-  // Recalc totals
-  var grandEx=0,grandIm=0,grandDep=0;
+  var types=(rpt.customTypes&&rpt.customTypes.length)?rpt.customTypes:['GP/DRY','REEFER','EMPTY','OOG'];
+  var customCols=rpt.customCols||[];
+  var cap=document.getElementById('ycap_'+reportId);
+  var grandEx=0,grandIm=0,grandDep=0,grandCustomTotal=0;
   var totalGP=0,totalReef=0,totalMty=0;
-  (rpt.vessels||[]).forEach(function(v){
-    var types=rpt.customTypes&&rpt.customTypes.length?rpt.customTypes:['GP/DRY','REEFER','EMPTY','OOG'];
+
+  (rpt.vessels||[]).forEach(function(v,vi){
+    var vEx=0,vIm=0,vDep=0;
+    var vCustom=customCols.map(function(){return 0;});
     types.forEach(function(t){
       var d=v.data&&v.data[t]?v.data[t]:{};
-      grandEx+=(d.export||0);grandIm+=(d.import||0);grandDep+=(d.departed||0);
+      vEx+=(d.export||0);vIm+=(d.import||0);vDep+=(d.departed||0);
+      customCols.forEach(function(c,ci){vCustom[ci]+=(d[c.key]||0);});
     });
+    grandEx+=vEx;grandIm+=vIm;grandDep+=vDep;
+    vCustom.forEach(function(s){grandCustomTotal+=s;});
     var gpd=v.data&&v.data['GP/DRY']?v.data['GP/DRY']:{};
     var rfd=v.data&&v.data['REEFER']?v.data['REEFER']:{};
     var mty=v.data&&v.data['EMPTY']?v.data['EMPTY']:{};
     totalGP+=(gpd.export||0)+(gpd.import||0);
     totalReef+=(rfd.export||0)+(rfd.import||0);
     totalMty+=(mty.export||0)+(mty.import||0);
+    if(cap){
+      var elEx=cap.querySelector('#vTotEx_'+reportId+'_'+vi);if(elEx)elEx.textContent=vEx||0;
+      var elIm=cap.querySelector('#vTotIm_'+reportId+'_'+vi);if(elIm)elIm.textContent=vIm||0;
+      var elDep=cap.querySelector('#vTotDep_'+reportId+'_'+vi);if(elDep)elDep.textContent=vDep||0;
+      vCustom.forEach(function(s,ci){
+        var elC=cap.querySelector('#vTotCustom_'+reportId+'_'+vi+'_'+ci);if(elC)elC.textContent=s||0;
+      });
+    }
   });
-  // Update summary elements if they exist in DOM
-  var cap=document.getElementById('ycap_'+reportId);
   if(!cap)return;
-  var sums=cap.querySelectorAll('[data-sum]');
-  sums.forEach(function(el){
-    var key=el.getAttribute('data-sum');
-    if(key==='ex')el.textContent=grandEx;
-    else if(key==='im')el.textContent=grandIm;
-    else if(key==='dep')el.textContent=grandDep;
-    else if(key==='gp')el.textContent=totalGP;
-    else if(key==='reef')el.textContent=totalReef;
-    else if(key==='mty')el.textContent=totalMty;
-    else if(key==='yard')el.textContent=grandEx+grandIm;
-  });
+  var totalInYard=grandEx+grandIm+grandCustomTotal;
+  var setSum=function(key,val){
+    var el=cap.querySelector('[data-sum="'+key+'"]');
+    if(el)el.textContent=val;
+  };
+  setSum('ex',grandEx);
+  setSum('im',grandIm);
+  setSum('dep',grandDep);
+  setSum('gp',totalGP);
+  setSum('reef',totalReef);
+  setSum('mty',totalMty);
+  setSum('inyard',totalInYard);
 }
 
 function addYardCol(reportId){
