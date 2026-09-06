@@ -158,7 +158,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-heig
 .dt input[type=text]{border:1.5px solid #ccc;border-radius:6px;padding:5px 7px;font-size:12px;width:100%;min-width:100px;white-space:normal;word-break:break-word;}
 .dt .dur{font-weight:800;color:var(--navy);text-align:center;font-size:12px;white-space:nowrap;padding-top:7px;}
 .dt td.type-col{min-width:120px;}
-.dt td.desc-col{min-width:150px;}
+.dt td.code-col{min-width:190px;}
+.dt td.desc-col{min-width:170px;}
 
 /* ── CHART ── */
 .chcard{background:white;border-radius:12px;margin:8px 10px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,.06);}
@@ -330,7 +331,6 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
     <div class="sc active" id="sc-input"></div>
     <div class="sc" id="sc-results"></div>
     <div class="sc" id="sc-hourly"></div>
-    <div class="sc" id="sc-4hourly"></div>
     <div class="sc" id="sc-delays"></div>
     <div class="sc" id="sc-yard"></div>
     <div class="sc" id="sc-performance"></div>
@@ -539,11 +539,11 @@ function initSync(){
         }
         if(!Array.isArray(ST[k]))ST[k]=[];
       });
-      // Firebase also flattens nested arrays inside ST.sel (vessels/dtypes/ddescs/delayReasons)
+      // Firebase also flattens nested arrays inside ST.sel (vessels/dtypes/ddescs/delayCodes)
       // into keyed objects. Without restoring these, admin edits to selectable lists silently
       // break (arr.map is not a function) and appear to "fail to save".
       if(ST.sel&&typeof ST.sel==='object'){
-        ['vessels','dtypes','ddescs','delayReasons'].forEach(function(k){
+        ['vessels','dtypes','ddescs','delayCodes'].forEach(function(k){
           if(ST.sel[k]&&!Array.isArray(ST.sel[k])&&typeof ST.sel[k]==='object'){
             ST.sel[k]=Object.values(ST.sel[k]);
           }
@@ -734,17 +734,44 @@ const DEF={
   generators:[],
   timing:{hourlyGrace:30,fourHourlyGrace:90,shiftRolloverGrace:15},
   craneNames:{1:'CR1',2:'CR2',3:'CR3',4:'CR4'},
-  sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Weather Delay','Equipment Delay','FPT Delay','Operational Delay','Vessel Delay'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change'],
-    delayReasons:[
-      {label:'Windbound',type:'Weather Delay'},
-      {label:'Rain',type:'Weather Delay'},
-      {label:'Changing Gear',type:'Equipment Delay'},
-      {label:'Crane Breakdown',type:'Equipment Delay'},
-      {label:'A1 Waiting for unit in stack',type:'Operational Delay'},
-      {label:'Awaiting Forklift',type:'Operational Delay'},
-      {label:'Hatch Cover',type:'Vessel Delay'},
-      {label:'Crew Change',type:'Vessel Delay'},
-      {label:'FPT',type:'FPT Delay'}
+  sel:{vessels:['MSC ADA F','MSC GAIA','CMA CGM LIBRA'],dtypes:['Vessel','Stevedores','Operational','Planning','Technical','Other','Meal Break'],ddescs:['Windbound','Changing Gear','Awaiting Forklift','Hatch Cover','Crew Change'],
+    delayCodes:[
+      {code:'A1',category:'Vessel',description:'Hatch cover open & close'},
+      {code:'A2',category:'Vessel',description:"Shifting of ship's derrick"},
+      {code:'A3',category:'Vessel',description:'Vessel twist lock jam'},
+      {code:'A4',category:'Vessel',description:'Waiting on worksheets - not within AGL control (late stow instructions)'},
+      {code:'A5',category:'Vessel',description:'Waiting on agents instructions'},
+      {code:'A6',category:'Vessel',description:'Fit and replace heavy hooks'},
+      {code:'A7',category:'Vessel',description:'Damaged vessel cell guides'},
+      {code:'A8',category:'Vessel',description:'Crew unplugging reefers'},
+      {code:'B1',category:'Stevedores',description:'Use of safety cage during operations'},
+      {code:'B2',category:'Stevedores',description:'Unlashing'},
+      {code:'B3',category:'Stevedores',description:'Incorrect locks fitted/waiting on locks'},
+      {code:'C1',category:'Operational',description:'Waiting box from stack'},
+      {code:'C2',category:'Operational',description:'Shifting crane/changing bays'},
+      {code:'C3',category:'Operational',description:'Fit / remove overheight gear / handle overheights'},
+      {code:'C4',category:'Operational',description:'Remove/replace gear box (twistlock box)'},
+      {code:'C5',category:'Operational',description:'Reach stacker awaiting reefers'},
+      {code:'C6',category:'Operational',description:'Cleaning crane cabins / windows'},
+      {code:'C7',category:'Operational',description:'MHC waiting empty truck'},
+      {code:'C8',category:'Operational',description:'MHC waiting container missing'},
+      {code:'C9',category:'Operational',description:'MHC waiting reach stacker not in block'},
+      {code:'C10',category:'Operational',description:'MHC waiting no operator change over, late start / finish'},
+      {code:'C11',category:'Operational',description:'Accident or incident'},
+      {code:'D1',category:'Planning',description:'Waiting on worksheets as a result of AGL'},
+      {code:'D2',category:'Planning',description:'Reach stacker shuffling boxes'},
+      {code:'E1',category:'Technical',description:'Hauler breakdown'},
+      {code:'E2',category:'Technical',description:'Reach stacker breakdown'},
+      {code:'E3',category:'Technical',description:'Crane failure < 2 hours'},
+      {code:'E4',category:'Technical',description:'Crane failure > 2 hours'},
+      {code:'F1',category:'Other',description:'System failure (WiFi/Navis N4/XPS)'},
+      {code:'F2',category:'Other',description:'Vessel standby (planned)'},
+      {code:'F3',category:'Other',description:'Under currents'},
+      {code:'F4',category:'Other',description:'Power failure'},
+      {code:'F5',category:'Other',description:'Weather (rain, mist, fog, wind & poor visibility)'},
+      {code:'F6',category:'Other',description:'Stevedore/hatchman delay'},
+      {code:'F7',category:'Other',description:'Re-fuelling'},
+      {code:'G1',category:'Meal Break',description:'Staff meal break'}
     ]},
   vesselAbbrevs:[
     {abbrev:'ada',full:'MSC ADA F'},
@@ -785,7 +812,7 @@ if(saved&&saved.settings){
 if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.settings);
 if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
 if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
-if(!Array.isArray(ST.sel.delayReasons))ST.sel.delayReasons=DEF.sel.delayReasons.map(function(x){return Object.assign({},x);});
+if(!Array.isArray(ST.sel.delayCodes))ST.sel.delayCodes=DEF.sel.delayCodes.map(function(x){return Object.assign({},x);});
 if(!Array.isArray(ST.sel.vessels))ST.sel.vessels=[...(DEF.sel.vessels||[])];
 if(!Array.isArray(ST.sel.dtypes))ST.sel.dtypes=[...(DEF.sel.dtypes||[])];
 if(!ST.hourly||typeof ST.hourly!=='object')ST.hourly={};
@@ -1171,7 +1198,7 @@ function initApp(){
   const r=role();
   const startTab=r==='admin'?'admin':r==='supervisor'?'analysis':'input';
   switchTab(startTab);
-  RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();if(RT.tab==='4hourly')renderFour();},300000);
+  RT.timer=setInterval(()=>{if(RT.tab==='hourly')renderHourly();},300000);
   // Shift rollover — runs every minute, saves results+delays at 06:00/18:00
   RT.lastShiftType=isDay()?'DAY':'NIGHT';
   // Track the shift start date: for night shift after midnight, use yesterday's date
@@ -1395,7 +1422,6 @@ se.delays[_snapDk]=Object.assign({},_dd);});}
     if(RT.tab==='delays')renderDelays();
     if(RT.tab==='results')renderResults();
     if(RT.tab==='hourly')renderHourly();
-    if(RT.tab==='4hourly')renderFour();
     if(RT.tab==='input')renderInput();
     if(RT.tab==='history')renderHistory();
     if(RT.tab==='performance')renderPerformance();
@@ -1406,14 +1432,14 @@ se.delays[_snapDk]=Object.assign({},_dd);});}
 function tabs(){
   const r=role();
   if(r==='admin')return[{id:'admin',ico:'⚙️',l:'Admin'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'activitylog',ico:'📝',l:'Log'}];
-  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
-  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
-  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'4hourly',ico:'📅',l:'4-Hr'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='operator')return[{id:'input',ico:'📋',l:'Input'},{id:'results',ico:'📊',l:'Results'},{id:'hourly',ico:'🕐',l:'Hourly'},{id:'delays',ico:'⏸️',l:'Delays'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
+  if(r==='supervisor')return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'},{id:'analysis',ico:'📈',l:'Analysis'}];
+  return[{id:'hourly',ico:'🕐',l:'Hourly'},{id:'yard',ico:'🏗️',l:'Yard'},{id:'performance',ico:'📊',l:'CMT'},{id:'history',ico:'🗂️',l:'History'}];
 }
 function buildNav(){$('bnav').innerHTML=tabs().map(t=>`<button class="ni${RT.tab===t.id?' active':''}" onclick="switchTab('${t.id}')"><div class="ico">${t.ico}</div><span>${t.l}</span></button>`).join('');}
 function switchTab(t){
   RT.tab=t;document.querySelectorAll('.sc').forEach(s=>s.classList.remove('active'));$('sc-'+t).classList.add('active');buildNav();$('swrap').scrollTop=0;
-  ({input:renderInput,results:renderResults,hourly:renderHourly,'4hourly':renderFour,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();
+  ({input:renderInput,results:renderResults,hourly:renderHourly,delays:renderDelays,yard:renderYard,performance:renderPerformance,history:renderHistory,admin:renderAdmin,analysis:renderAnalysis,activitylog:renderActivityLog})[t]?.();
 }
 
 // ═══════════ LOGOS ═══════════
@@ -2404,16 +2430,34 @@ function pastSelectorHTML(onChangeFn,options,curValue){
   return h;
 }
 
+// ═══════════ HOURLY + 4-HOURLY (single page, toggle between the two) ═══════════
+// Which of the two reports is currently showing. Purely a UI toggle — each
+// report keeps its own live/past selection (HR_SEL / F_SEL) independently,
+// and each has its own capture div (hcap / fcap) so Share always grabs only
+// the report actually on screen, never both.
+var REPORT_VIEW='hourly';
+function setReportView(v){REPORT_VIEW=v;renderHourly();}
+function reportToggleBarHTML(){
+  return`<div class="fbar" style="display:flex;gap:8px">
+    <button class="btn btn-sm${REPORT_VIEW==='hourly'?'':' btn-out'}" style="flex:1" onclick="setReportView('hourly')">🕐 Hourly Report</button>
+    <button class="btn btn-sm${REPORT_VIEW==='four'?'':' btn-out'}" style="flex:1" onclick="setReportView('four')">📅 4 Hourly Report</button>
+  </div>`;
+}
+function renderHourly(){
+  if(REPORT_VIEW==='four'){renderFourView();return;}
+  renderHourlyView();
+}
 var HR_SEL={mode:'live',blockKey:null,slot:null};
 function hrSetSel(val){
   if(val==='live')HR_SEL={mode:'live'};
   else{var p=val.split('|');HR_SEL={mode:'past',blockKey:p[0],slot:p[1]};}
-  renderHourly();
+  renderHourlyView();
 }
-function renderHourly(){
+function renderHourlyView(){
+  const toggleBar=reportToggleBarHTML();
   const sess=getSess(),slot=currSlot(),sl=shiftSlots(),idx=sl.indexOf(slot);
   const cum=idx>=0?sl.slice(0,idx+1):[slot];
-  if(!sess){let h0=rhHTML('HOURLY REPORT',slot,'hcap');$('sc-hourly').innerHTML=`<div id="hcap">${h0}${noSess('📊','No active session.')}</div>`;return;}
+  if(!sess){let h0=rhHTML('HOURLY REPORT',slot,'hcap');$('sc-hourly').innerHTML=toggleBar+`<div id="hcap">${h0}${noSess('📊','No active session.')}</div>`;return;}
 
   const blocks=getSessionShiftBlocks(sess);
   // Build past-hour options — only hours that actually have recorded data
@@ -2434,19 +2478,19 @@ function renderHourly(){
     let h=rhHTML('HOURLY REPORT',slot,'hcap');
     h+=craneTableHTML(sess,cum,slot,'hr_');
     h+=summaryHTML(sess,{idPrefix:'hr_'});
-    // Hourly moves entry lives here, right below the report, so the numbers
-    // above update live as they're typed.
-    h+=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Enter Hourly Moves — ${fs(slot)}</div>
+    // Capture div (hcap) ends here — the entry form below is deliberately
+    // OUTSIDE it so Share never includes the input fields, only the report.
+    let entry=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Enter Hourly Moves — ${fs(slot)}</div>
       <p style="font-size:11px;color:#888;margin-bottom:12px">Enter moves completed this hour per crane. The report above updates as you type.</p>`;
     for(let i=1;i<=sess.numCranes;i++){
-      h+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
+      entry+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
         <div class="g2">
           <div class="f"><label>Discharge</label><input type="number" value="${he(sess.id,slot,i,'discharge')||''}" placeholder="0" oninput="updateHourlyLive('${sess.id}','${slot}',${i},'discharge',this.value,'hr_')"/></div>
           <div class="f"><label>Load</label><input type="number" value="${he(sess.id,slot,i,'load')||''}" placeholder="0" oninput="updateHourlyLive('${sess.id}','${slot}',${i},'load',this.value,'hr_')"/></div>
         </div></div>`;
     }
-    h+=`</div>`;
-    $('sc-hourly').innerHTML=selBar+`<div id="hcap">${h}</div>`;
+    entry+=`</div>`;
+    $('sc-hourly').innerHTML=toggleBar+selBar+`<div id="hcap">${h}</div>`+entry;
     return;
   }
 
@@ -2462,7 +2506,7 @@ function renderHourly(){
   h+=craneTableHTML(sess,[],pastSlot,'hr_',overrides);
   h+=summaryHTML(sess,{idPrefix:'hr_',totals:pastTotalsAsOf(sess,blocks,blockIdx,pastSlot)});
   const pastNote=`<div style="margin:0 10px 16px;background:#fffbea;border:1.5px dashed #d97706;border-radius:8px;padding:10px 12px;font-size:11px;color:#92400e;font-weight:700">📜 Viewing a past report (${blocks[blockIdx].label} — ${fs(pastSlot)}). Sharing will produce an image identical to a live report, just with this hour's figures.</div>`;
-  $('sc-hourly').innerHTML=selBar+pastNote+`<div id="hcap">${h}</div>`;
+  $('sc-hourly').innerHTML=toggleBar+selBar+pastNote+`<div id="hcap">${h}</div>`;
 }
 // Live-updates the hourly report cells above the entry form without a full
 // re-render, so focus/cursor position in the input isn't lost while typing.
@@ -2536,11 +2580,12 @@ var F_SEL={mode:'live',blockKey:null,winIdx:null};
 function foSetSel(val){
   if(val==='live')F_SEL={mode:'live'};
   else{const p=val.split('|');F_SEL={mode:'past',blockKey:p[0],winIdx:parseInt(p[1],10)};}
-  renderFour();
+  renderFourView();
 }
-function renderFour(){
+function renderFourView(){
+  const toggleBar=reportToggleBarHTML();
   const sess=getSess(),s4=curr4Slot();
-  if(!sess){let h0=rhHTML('4 HOURLY REPORT',s4,'fcap');$('sc-4hourly').innerHTML=`<div id="fcap">${h0}${noSess('📈','No active session.')}</div>`;return;}
+  if(!sess){let h0=rhHTML('4 HOURLY REPORT',s4,'fcap');$('sc-hourly').innerHTML=toggleBar+`<div id="fcap">${h0}${noSess('📈','No active session.')}</div>`;return;}
 
   const blocks=getSessionShiftBlocks(sess);
   // Build past 4-hour window options — only windows with recorded data
@@ -2573,7 +2618,7 @@ function renderFour(){
       function(ci){return[effSplit(sess,ci,'discharge')-getCraneTotal(sess,ci,'discharge'),effSplit(sess,ci,'load')-getCraneTotal(sess,ci,'load')];}
     );
     h+=summaryHTML(sess,{hideTargetChart:true});
-    $('sc-4hourly').innerHTML=selBar+`<div id="fcap">${h}</div>`;
+    $('sc-hourly').innerHTML=toggleBar+selBar+`<div id="fcap">${h}</div>`;
     return;
   }
 
@@ -2590,7 +2635,7 @@ function renderFour(){
   );
   h+=summaryHTML(sess,{hideTargetChart:true,totals:pastTotalsAsOf(sess,blocks,blockIdx,lastSlot)});
   const pastNote=`<div style="margin:0 10px 16px;background:#fffbea;border:1.5px dashed #d97706;border-radius:8px;padding:10px 12px;font-size:11px;color:#92400e;font-weight:700">📜 Viewing a past report (${blocks[blockIdx].label} — ${fs(winLabel)}). Sharing will produce an image identical to a live report, just with this window's figures.</div>`;
-  $('sc-4hourly').innerHTML=selBar+pastNote+`<div id="fcap">${h}</div>`;
+  $('sc-hourly').innerHTML=toggleBar+selBar+pastNote+`<div id="fcap">${h}</div>`;
 }
 
 // ═══════════ DELAYS ═══════════
@@ -2682,11 +2727,12 @@ function _doShareDelays(mode){
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
         <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
         <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
+        <td style="font-size:11px;font-weight:800;text-align:center;padding:8px 8px">${d.code||''}</td>
         <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
     });
     if(!_anyRow){
-      tbody=`<tr><td colspan="5" style="text-align:center;font-size:11px;color:#999;padding:14px;font-style:italic">No delays${mode==='recent'?' in the last 2 hours':''}</td></tr>`;
+      tbody=`<tr><td colspan="6" style="text-align:center;font-size:11px;color:#999;padding:14px;font-style:italic">No delays${mode==='recent'?' in the last 2 hours':''}</td></tr>`;
     }
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
       <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
@@ -2695,7 +2741,8 @@ function _doShareDelays(mode){
           <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
           <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
           <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Category</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800">Code</th>
           <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
@@ -2808,10 +2855,11 @@ function sharePastDelays(sessId,shiftKey){
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
         <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
         <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
+        <td style="font-size:11px;font-weight:800;text-align:center;padding:8px 8px">${d.code||''}</td>
         <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
     });
-    if(!any)tbody=`<tr><td colspan="5" style="text-align:center;font-size:11px;color:#999;padding:14px;font-style:italic">No delays recorded</td></tr>`;
+    if(!any)tbody=`<tr><td colspan="6" style="text-align:center;font-size:11px;color:#999;padding:14px;font-style:italic">No delays recorded</td></tr>`;
     h+=`<div style="background:white;border-radius:12px;margin:8px 10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)">
       <div style="background:#ffe600;color:#000;font-weight:900;font-size:14px;padding:11px 14px">${craneName(c)}</div>
       <table style="width:100%;border-collapse:collapse">
@@ -2819,7 +2867,8 @@ function sharePastDelays(sessId,shiftKey){
           <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">From</th>
           <th style="background:#1f3864;color:white;padding:8px 10px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">To</th>
           <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800;white-space:nowrap">Dur.</th>
-          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Delay Type</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Category</th>
+          <th style="background:#1f3864;color:white;padding:8px 8px;text-align:center;font-size:11px;font-weight:800">Code</th>
           <th style="background:#1f3864;color:white;padding:8px 8px;text-align:left;font-size:11px;font-weight:800">Description</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
@@ -2931,12 +2980,13 @@ function renderDelays(){
   var mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
   if(!sess){var h0=rhHTML(mainTitle,slot,'dcap');$('sc-delays').innerHTML='<div id="dcap">'+h0+noSess('⏸️','No active session.')+'</div>';return;}
 
-  var nc=sess.numCranes,dt=ST.sel.dtypes||[],dReasons=ST.sel.delayReasons||[];
+  var nc=sess.numCranes;
   var colFrom=_editColLbl('from','From');
   var colTo=_editColLbl('to','To');
   var colDur=_editColLbl('dur','Dur.');
-  var colType=_editColLbl('type','Delay Type');
-  var colDesc=_editColLbl('desc','Reason');
+  var colType=_editColLbl('type','Category');
+  var colCode=_editColLbl('code','Code');
+  var colDesc=_editColLbl('desc','Description');
 
   // ── Build same shift blocks as renderResults ──
   var curShiftType=isDay()?'DAY':'NIGHT';
@@ -3049,7 +3099,8 @@ function renderDelays(){
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'to\',this.value)"/></td>';
             rows+='<td class="dur" id="dur'+ci+'_'+r+'">'+dur(d.from,d.to)+'</td>';
             rows+='<td class="type-col" id="typecell'+ci+'_'+r+'"><span style="font-weight:800;color:#1f3864;font-size:11px">'+(d.type||'—')+'</span></td>';
-            rows+='<td class="desc-col">'+buildReasonSelect(sid,ci,r,d)+'</td>';
+            rows+='<td class="code-col" id="codecell'+ci+'_'+r+'">'+buildCodeSelect(sid,ci,r,d)+'</td>';
+            rows+='<td class="desc-col" id="desccell'+ci+'_'+r+'"><span style="font-size:11px;color:#333">'+(d.desc||'—')+'</span></td>';
             rows+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow('+sid+','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
             rows+='</tr>';
           });
@@ -3058,7 +3109,7 @@ function renderDelays(){
         var craneLblCur=_editCraneLbl(c);
         h+='<div class="dblk" style="margin:8px 10px;">';
         h+='<div class="dchd">'+craneLblCur+'<button class="add-row-btn" id="addBtn_'+c+'" onclick="addDRow('+c+')">+ Add Row</button></div>';
-        h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
+        h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colCode+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
 
       } else {
         // ── Past shift: read directly from snapshot — NEVER write to ST.delays ──
@@ -3091,9 +3142,10 @@ function renderDelays(){
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+rowKey+'\',\'to\',this.value,\''+durId+'\')"/></td>';
             rows+='<td class="dur" id="'+durId+'">'+dur(d.from,d.to)+'</td>';
             rows+='<td class="type-col"><span style="font-weight:800;color:#1f3864;font-size:11px">'+(d.type||'—')+'</span></td>';
-            rows+='<td class="desc-col">'+buildReasonSelectGeneric(d.desc||'',
-              "updateShiftDelayReason("+sid+",'"+blk.key+"','"+rowKey+"',this.value)",
-              "updateShiftDelayCustomReason("+sid+",'"+blk.key+"','"+rowKey+"')")+'</td>';
+            rows+='<td class="code-col">'+buildCodeSelectGeneric(d.code||'',
+              "updateShiftDelayCode("+sid+",'"+blk.key+"','"+rowKey+"',this.value)",
+              "updateShiftDelayCustomCode("+sid+",'"+blk.key+"','"+rowKey+"')")+'</td>';
+            rows+='<td class="desc-col"><span style="font-size:11px;color:#333">'+(d.desc||'—')+'</span></td>';
             rows+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeShiftDelay('+sid+',\''+blk.key+'\',\''+rowKey+'\')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
             rows+='</tr>';
           });
@@ -3101,7 +3153,7 @@ function renderDelays(){
         })(c, block, sess.id);
         h+='<div class="dblk" style="margin:8px 10px;">';
         h+='<div class="dchd">'+craneName(c)+'<button class="add-row-btn" onclick="addPastDRow(\''+sess.id+'\',\''+block.key+'\','+c+')">+ Add Row</button></div>';
-        h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
+        h+='<div class="twrap"><table class="dt"><thead><tr><th>'+colFrom+'</th><th>'+colTo+'</th><th>'+colDur+'</th><th>'+colType+'</th><th>'+colCode+'</th><th>'+colDesc+'</th><th></th></tr></thead><tbody>'+tbody+'</tbody></table></div></div>';
       }
     }
   });
@@ -3242,68 +3294,73 @@ function updateDelay(sid,c,r,field,val){
   if(_shiftMatch){_syncPastDelaysToShift(_shiftMatch[1],_shiftMatch[2],c);}
 }
 // ── Single-selection delay reason: picking a reason auto-fills its Delay Type ──
-function buildReasonSelect(sid,ci,r,d){
-  return buildReasonSelectGeneric(d.desc||'',
-    "updateDelayReason("+sid+","+ci+","+r+",this.value)",
-    "updateDelayCustomReason("+sid+","+ci+","+r+")");
+function buildCodeSelect(sid,ci,r,d){
+  return buildCodeSelectGeneric(d.code||'',
+    "updateDelayCode("+sid+","+ci+","+r+",this.value)",
+    "updateDelayCustomCode("+sid+","+ci+","+r+")");
 }
-function buildReasonSelectGeneric(curLabel,onSelectCall,onCustomCall){
-  var reasons=ST.sel.delayReasons||[];
-  var byType={};
-  reasons.forEach(function(rs){
-    var t=rs.type||'Other';
-    if(!byType[t])byType[t]=[];
-    byType[t].push(rs);
+function buildCodeSelectGeneric(curCode,onSelectCall,onCustomCall){
+  var codes=ST.sel.delayCodes||[];
+  var byCat={};
+  codes.forEach(function(c){
+    var cat=c.category||'Other';
+    if(!byCat[cat])byCat[cat]=[];
+    byCat[cat].push(c);
   });
-  var matched=reasons.some(function(rs){return rs.label===curLabel;});
+  var matched=codes.some(function(c){return c.code===curCode;});
   var h='<select onchange="if(this.value===\'__custom__\'){'+onCustomCall+';}else{'+onSelectCall+'}">';
-  h+='<option value=""'+(curLabel?'':' selected')+'>Select reason…</option>';
-  Object.keys(byType).forEach(function(t){
-    h+='<optgroup label="'+t+'">';
-    byType[t].forEach(function(rs){
-      if(!rs.label)return;
-      h+='<option value="'+rs.label.replace(/"/g,'&quot;')+'"'+(rs.label===curLabel?' selected':'')+'>'+rs.label+'</option>';
+  h+='<option value=""'+(curCode?'':' selected')+'>Select code…</option>';
+  Object.keys(byCat).forEach(function(cat){
+    h+='<optgroup label="'+cat+'">';
+    byCat[cat].forEach(function(c){
+      if(!c.code)return;
+      var lbl=(c.code+' — '+(c.description||'')).replace(/"/g,'&quot;');
+      h+='<option value="'+c.code.replace(/"/g,'&quot;')+'"'+(c.code===curCode?' selected':'')+'>'+lbl+'</option>';
     });
     h+='</optgroup>';
   });
-  if(curLabel&&!matched)h+='<option value="'+curLabel.replace(/"/g,'&quot;')+'" selected>'+curLabel+'</option>';
+  if(curCode&&!matched)h+='<option value="'+curCode.replace(/"/g,'&quot;')+'" selected>'+curCode+'</option>';
   h+='<option value="__custom__">✏️ Custom…</option>';
   h+='</select>';
   return h;
 }
-function updateDelayReason(sid,ci,r,label){
+function updateDelayCode(sid,ci,r,code){
   var k=sid+'_'+ci+'_'+r;
   if(!ST.delays[k])ST.delays[k]={};
-  var reason=(ST.sel.delayReasons||[]).find(function(x){return x.label===label;});
-  ST.delays[k].desc=label;
-  ST.delays[k].type=reason?(reason.type||''):'';
+  var dc=(ST.sel.delayCodes||[]).find(function(x){return x.code===code;});
+  ST.delays[k].code=code;
+  ST.delays[k].type=dc?(dc.category||''):'';
+  ST.delays[k].desc=dc?(dc.description||''):'';
   _myLastSave=Date.now();sv();
   renderDelays();
 }
-function updateDelayCustomReason(sid,ci,r){
+function updateDelayCustomCode(sid,ci,r){
   var k=sid+'_'+ci+'_'+r;
-  var current=(ST.delays[k]&&ST.delays[k].desc)||'';
-  var label=prompt('Enter a custom delay reason:',current);
-  if(label===null)return; // cancelled — leave as-is
+  var curDesc=(ST.delays[k]&&ST.delays[k].desc)||'';
+  var desc=prompt('Enter a custom delay description:',curDesc);
+  if(desc===null)return; // cancelled — leave as-is
   if(!ST.delays[k])ST.delays[k]={};
-  ST.delays[k].desc=label.trim();
+  ST.delays[k].code='';
+  ST.delays[k].desc=desc.trim();
   _myLastSave=Date.now();sv();
   renderDelays();
 }
 // Shift-snapshot equivalents (used for past shift rows, which live in sess.shifts[].delays)
-function updateShiftDelayReason(sessId,shiftKey,rowKey,label){
-  var reason=(ST.sel.delayReasons||[]).find(function(x){return x.label===label;});
-  updateShiftDelay(sessId,shiftKey,rowKey,'desc',label,'');
-  updateShiftDelay(sessId,shiftKey,rowKey,'type',reason?(reason.type||''):'','');
+function updateShiftDelayCode(sessId,shiftKey,rowKey,code){
+  var dc=(ST.sel.delayCodes||[]).find(function(x){return x.code===code;});
+  updateShiftDelay(sessId,shiftKey,rowKey,'code',code,'');
+  updateShiftDelay(sessId,shiftKey,rowKey,'type',dc?(dc.category||''):'','');
+  updateShiftDelay(sessId,shiftKey,rowKey,'desc',dc?(dc.description||''):'','');
   renderDelays();
 }
-function updateShiftDelayCustomReason(sessId,shiftKey,rowKey){
+function updateShiftDelayCustomCode(sessId,shiftKey,rowKey){
   var raw=ST.sessions.find(function(x){return x.id==sessId;});
   var sh=raw&&raw.shifts&&raw.shifts.find(function(s){return s.key===shiftKey;});
-  var current=(sh&&sh.delays&&sh.delays[rowKey]&&sh.delays[rowKey].desc)||'';
-  var label=prompt('Enter a custom delay reason:',current);
-  if(label===null)return;
-  updateShiftDelay(sessId,shiftKey,rowKey,'desc',label.trim(),'');
+  var curDesc=(sh&&sh.delays&&sh.delays[rowKey]&&sh.delays[rowKey].desc)||'';
+  var desc=prompt('Enter a custom delay description:',curDesc);
+  if(desc===null)return;
+  updateShiftDelay(sessId,shiftKey,rowKey,'code','','');
+  updateShiftDelay(sessId,shiftKey,rowKey,'desc',desc.trim(),'');
   renderDelays();
 }
 
@@ -5316,24 +5373,31 @@ function renderAdmin(){
   };
   h+=`<div class="asec"><div class="atitle">📋 Selectables (users choose or type their own)</div>
     ${selBlock('Vessel Names','vessels')}
-    ${selBlock('Delay Types','dtypes')}
+    ${selBlock('Delay Categories','dtypes')}
   </div>`;
 
-  // Delay Reasons — each reason maps to one Delay Type. Selecting the reason
-  // on the Delays screen auto-fills its type, so operators make one selection.
-  h+=`<div class="asec"><div class="atitle">⏸️ Delay Reasons</div>
-    <p style="font-size:11px;color:#888;margin-bottom:12px">Each reason belongs to one Delay Type. On the Delays screen, operators pick a reason and the type fills in automatically.</p>`;
-  (ST.sel.delayReasons||[]).forEach(function(r,i){
-    h+=`<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
-      <input value="${(r.label||'').replace(/"/g,'&quot;')}" placeholder="e.g. A1 Waiting for unit in stack" oninput="ST.sel.delayReasons[${i}].label=this.value;sv()" style="flex:2;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none"/>
-      <select onchange="ST.sel.delayReasons[${i}].type=this.value;sv()" style="flex:1;padding:8px 6px;border:1.5px solid var(--border);border-radius:7px;font-size:12px">
-        ${(ST.sel.dtypes||[]).map(function(t){return'<option value="'+t+'"'+(r.type===t?' selected':'')+'>'+t+'</option>';}).join('')}
-      </select>
-      <button onclick="ST.sel.delayReasons.splice(${i},1);sv();renderAdmin()" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px">✕</button>
-    </div>`;
+  // Delay Codes — each code has a fixed Category + Description. Selecting the
+  // code on the Delays screen auto-fills both, so operators make one selection.
+  h+=`<div class="asec"><div class="atitle">⏸️ Delay Codes</div>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Each code belongs to one category and carries a fixed description (from the AGL HHT Delay Codes list). On the Delays screen, operators pick a code and the category + description fill in automatically.</p>`;
+  (ST.sel.dtypes||[]).forEach(function(cat){
+    var codesInCat=[];
+    (ST.sel.delayCodes||[]).forEach(function(c,i){if(c.category===cat)codesInCat.push(i);});
+    h+=`<div style="margin-bottom:16px"><div style="font-weight:800;font-size:12px;color:#1f3864;margin-bottom:6px;padding-bottom:4px;border-bottom:1.5px solid #eee">${cat}</div>`;
+    codesInCat.forEach(function(i){
+      var c=ST.sel.delayCodes[i];
+      h+=`<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+        <input value="${(c.code||'').replace(/"/g,'&quot;')}" placeholder="Code" oninput="ST.sel.delayCodes[${i}].code=this.value;sv()" style="width:64px;padding:8px 8px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none;font-weight:800;text-align:center"/>
+        <input value="${(c.description||'').replace(/"/g,'&quot;')}" placeholder="Description" oninput="ST.sel.delayCodes[${i}].description=this.value;sv()" style="flex:2;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none"/>
+        <select onchange="ST.sel.delayCodes[${i}].category=this.value;sv();renderAdmin()" style="flex:1;padding:8px 6px;border:1.5px solid var(--border);border-radius:7px;font-size:12px">
+          ${(ST.sel.dtypes||[]).map(function(t){return'<option value="'+t+'"'+(c.category===t?' selected':'')+'>'+t+'</option>';}).join('')}
+        </select>
+        <button onclick="ST.sel.delayCodes.splice(${i},1);sv();renderAdmin()" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px">✕</button>
+      </div>`;
+    });
+    h+=`<button onclick="ST.sel.delayCodes.push({code:'',category:'${cat.replace(/'/g,"\\'")}',description:''});sv();renderAdmin()" style="background:white;color:var(--navy);border:2px solid var(--navy);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:800;cursor:pointer;margin-top:2px">+ Add code to ${cat}</button></div>`;
   });
-  h+=`<button onclick="ST.sel.delayReasons.push({label:'',type:(ST.sel.dtypes&&ST.sel.dtypes[0])||''});sv();renderAdmin()" style="background:white;color:var(--navy);border:2px solid var(--navy);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:800;cursor:pointer;margin-top:4px">+ Add Reason</button>
-  </div>`;
+  h+=`</div>`;
 
   h+=renderAbbrevSection();
 
