@@ -616,6 +616,14 @@ function initSync(){
           if(report.customCols&&!Array.isArray(report.customCols)&&typeof report.customCols==='object'){
             report.customCols=Object.values(report.customCols);
           }
+          // simple dashboard: locations array (same Firebase array→object flattening issue)
+          if(report.simple&&typeof report.simple==='object'){
+            if(report.simple.locations&&!Array.isArray(report.simple.locations)&&typeof report.simple.locations==='object'){
+              report.simple.locations=Object.values(report.simple.locations);
+            }
+            if(report.simple.locations&&!Array.isArray(report.simple.locations))report.simple.locations=[];
+            if(!report.simple.dispatches||typeof report.simple.dispatches!=='object')report.simple.dispatches={};
+          }
         });
       }
       // Merge remote activityLog with local (so cross-device logs are combined)
@@ -693,6 +701,10 @@ function initSync(){
             r.vessels.forEach(function(v){if(v&&(!v.data||typeof v.data!=='object'))v.data={};});
             if(r.customTypes&&!Array.isArray(r.customTypes))r.customTypes=Object.values(r.customTypes);
             if(r.customCols&&!Array.isArray(r.customCols))r.customCols=Object.values(r.customCols);
+            if(r.simple&&typeof r.simple==='object'){
+              if(r.simple.locations&&!Array.isArray(r.simple.locations))r.simple.locations=Object.values(r.simple.locations);
+              if(!r.simple.dispatches||typeof r.simple.dispatches!=='object')r.simple.dispatches={};
+            }
           });
           // Restore sanitized keys: __S__ back to /
           yardArr.forEach(function(r){
@@ -2751,7 +2763,7 @@ function _doShareDelays(mode){
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.from||''}</td>
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
         <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
+        <td style="padding:8px 8px">${d.type?`<span style="background:${categoryColor(d.type)};color:white;font-weight:800;font-size:10px;padding:3px 8px;border-radius:5px;display:inline-block;white-space:nowrap">${d.type}</span>`:''}</td>
         <td style="font-size:11px;font-weight:800;text-align:center;padding:8px 8px">${d.code||''}</td>
         <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
@@ -2879,7 +2891,7 @@ function sharePastDelays(sessId,shiftKey){
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.from||''}</td>
         <td style="text-align:center;font-size:11px;font-weight:700;white-space:nowrap;padding:8px 10px">${d.to||''}</td>
         <td style="font-weight:800;color:#1f3864;text-align:center;font-size:12px;white-space:nowrap;padding:8px 8px">${dur(d.from,d.to)}</td>
-        <td style="font-size:11px;font-weight:700;padding:8px 8px">${d.type||''}</td>
+        <td style="padding:8px 8px">${d.type?`<span style="background:${categoryColor(d.type)};color:white;font-weight:800;font-size:10px;padding:3px 8px;border-radius:5px;display:inline-block;white-space:nowrap">${d.type}</span>`:''}</td>
         <td style="font-size:11px;font-weight:800;text-align:center;padding:8px 8px">${d.code||''}</td>
         <td style="font-size:11px;padding:8px 8px">${d.desc||''}</td>
       </tr>`;
@@ -2999,6 +3011,23 @@ var D_SEL={mode:'live',blockKey:null};
 function dlSetSel(val){
   D_SEL=(val==='live')?{mode:'live'}:{mode:'past',blockKey:val};
   renderDelays();
+}
+// ── Delay category colors — each category gets a fixed, recognisable badge color ──
+var CATEGORY_COLORS={
+  'Vessel':'#2980b9','Stevedores':'#8e44ad','Operational':'#16a085',
+  'Planning':'#e67e22','Technical':'#c0392b','Other':'#7f8c8d','Meal Break':'#27ae60'
+};
+function categoryColor(cat){
+  if(!cat)return'#999';
+  if(CATEGORY_COLORS[cat])return CATEGORY_COLORS[cat];
+  // Unknown/custom category — hash to a stable color so it's still visually distinct
+  var h=0;for(var i=0;i<cat.length;i++)h=((h<<5)-h+cat.charCodeAt(i))|0;
+  var palette=['#1a3a5c','#2d6a8a','#2d8a6e','#5a7a3a','#7a5230','#5c3878'];
+  return palette[Math.abs(h)%palette.length];
+}
+function categoryBadgeHTML(cat){
+  if(!cat)return'<span style="font-weight:800;color:#999;font-size:11px">—</span>';
+  return'<span style="background:'+categoryColor(cat)+';color:white;font-weight:800;font-size:10px;padding:3px 8px;border-radius:5px;display:inline-block;white-space:nowrap">'+cat+'</span>';
 }
 function renderDelays(){
   var sess=getSess(),slot=currSlot();
@@ -3123,7 +3152,7 @@ function renderDelays(){
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'from\',this.value)"/></td>';
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateDelay('+sid+','+ci+','+r+',\'to\',this.value)"/></td>';
             rows+='<td class="dur" id="dur'+ci+'_'+r+'">'+dur(d.from,d.to)+'</td>';
-            rows+='<td class="type-col" id="typecell'+ci+'_'+r+'"><span style="font-weight:800;color:#1f3864;font-size:11px">'+(d.type||'—')+'</span></td>';
+            rows+='<td class="type-col" id="typecell'+ci+'_'+r+'">'+categoryBadgeHTML(d.type)+'</td>';
             rows+='<td class="code-col" id="codecell'+ci+'_'+r+'">'+buildCodeSelect(sid,ci,r,d)+'</td>';
             rows+='<td class="desc-col" id="desccell'+ci+'_'+r+'"><span style="font-size:11px;color:#333">'+(d.desc||'—')+'</span></td>';
             rows+='<td style="text-align:center;padding:2px 4px"><button class="del-row-btn" onclick="removeDelayRow('+sid+','+ci+','+r+')" style="background:var(--red);color:white;border:none;border-radius:5px;padding:3px 7px;font-size:12px;cursor:pointer;font-weight:800">✕</button></td>';
@@ -3166,7 +3195,7 @@ function renderDelays(){
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.from||'')+'" onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+rowKey+'\',\'from\',this.value,\''+durId+'\')"/></td>';
             rows+='<td style="white-space:nowrap"><input type="time" value="'+(d.to||'')+'" onchange="updateShiftDelay('+sid+',\''+blk.key+'\',\''+rowKey+'\',\'to\',this.value,\''+durId+'\')"/></td>';
             rows+='<td class="dur" id="'+durId+'">'+dur(d.from,d.to)+'</td>';
-            rows+='<td class="type-col"><span style="font-weight:800;color:#1f3864;font-size:11px">'+(d.type||'—')+'</span></td>';
+            rows+='<td class="type-col">'+categoryBadgeHTML(d.type)+'</td>';
             rows+='<td class="code-col">'+buildCodeSelectGeneric(d.code||'',
               "updateShiftDelayCode("+sid+",'"+blk.key+"','"+rowKey+"',this.value)",
               "updateShiftDelayCustomCode("+sid+",'"+blk.key+"','"+rowKey+"')")+'</td>';
@@ -5830,6 +5859,10 @@ function renderYard(){
             if(r.vessels&&!Array.isArray(r.vessels))r.vessels=Object.values(r.vessels);
             if(r.customTypes&&!Array.isArray(r.customTypes))r.customTypes=Object.values(r.customTypes);
             if(r.customCols&&!Array.isArray(r.customCols))r.customCols=Object.values(r.customCols);
+            if(r.simple&&typeof r.simple==='object'){
+              if(r.simple.locations&&!Array.isArray(r.simple.locations))r.simple.locations=Object.values(r.simple.locations);
+              if(!r.simple.dispatches||typeof r.simple.dispatches!=='object')r.simple.dispatches={};
+            }
           });
           // Restore sanitized keys: __S__ back to /
           arr.forEach(function(r){
@@ -5860,9 +5893,222 @@ function renderYard(){
   </div>`;
   const report=ST.yardReports[yardActiveReport];
   if(!report){$('sc-yard').innerHTML=h;return;}
-  h+=renderYardReport(report);
+  h+=`<div class="fbar" style="display:flex;gap:8px">
+    <button class="btn btn-sm${YARD_VIEW==='complex'?'':' btn-out'}" style="flex:1" onclick="setYardView('complex')">📋 Complex Report</button>
+    <button class="btn btn-sm${YARD_VIEW==='simple'?'':' btn-out'}" style="flex:1" onclick="setYardView('simple')">📊 Simplified Dashboard</button>
+  </div>`;
+  h+=(YARD_VIEW==='simple')?renderYardSimple(report):renderYardReport(report);
   h+=`<div style="height:20px"></div>`;
   $('sc-yard').innerHTML=h;
+}
+var YARD_VIEW='complex';
+function setYardView(v){YARD_VIEW=v;renderYard();}
+
+// ═══════════ YARD — SIMPLIFIED DASHBOARD ═══════════
+// A lighter, single-screen view of the same yard report: a quick staged-truck
+// count per location, a vessel Import/Export GP+RF summary (pulled straight from
+// the Complex report's vessel data), and a dispatches-per-hour chart. Vessel
+// numbers are never entered here — they're derived live from report.vessels so
+// the two views can never drift out of sync.
+function yardSimpleInit(report){
+  if(!report.simple||typeof report.simple!=='object')report.simple={locations:[],dispatches:{}};
+  if(!Array.isArray(report.simple.locations))report.simple.locations=[];
+  if(!report.simple.locations.length){
+    report.simple.locations=[{name:'MPT',total:0},{name:'FPT',total:0},{name:'AGL',total:0}];
+  }
+  if(!report.simple.dispatches||typeof report.simple.dispatches!=='object')report.simple.dispatches={};
+}
+function addYardLocation(reportId){
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
+  yardSimpleInit(r);
+  r.simple.locations.push({name:'',total:0});
+  sv();renderYard();
+}
+function removeYardLocation(reportId,li){
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
+  yardSimpleInit(r);
+  r.simple.locations.splice(li,1);
+  sv();renderYard();
+}
+function updateYardLocation(reportId,li,field,val){
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
+  yardSimpleInit(r);
+  if(!r.simple.locations[li])return;
+  r.simple.locations[li][field]=(field==='total')?(parseFloat(val)||0):val;
+  sv();
+  updateYardSimpleLive(reportId);
+}
+function updateYardDispatch(reportId,slot,val){
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
+  yardSimpleInit(r);
+  r.simple.dispatches[slot]=parseFloat(val)||0;
+  sv();
+  updateYardSimpleLive(reportId);
+}
+// Live-updates totals + chart bars without a full re-render, so focus/cursor
+// position in whichever input is being typed into isn't lost.
+function updateYardSimpleLive(reportId){
+  var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
+  yardSimpleInit(r);
+  var totalTrucks=0;r.simple.locations.forEach(function(l){totalTrucks+=l.total||0;});
+  var slots=shiftSlots();
+  var dispatched=0;slots.forEach(function(s){dispatched+=r.simple.dispatches[s]||0;});
+  var remaining=totalTrucks-dispatched;
+  var setTxt=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
+  setTxt('ys_totalTrucks_'+reportId,totalTrucks);
+  setTxt('ys_dispatched_'+reportId,dispatched);
+  var remEl=document.getElementById('ys_remaining_'+reportId);
+  if(remEl){remEl.textContent=remaining;remEl.style.color=remaining<0?'#c0392b':'';}
+  var maxV=1;slots.forEach(function(s){maxV=Math.max(maxV,r.simple.dispatches[s]||0);});
+  slots.forEach(function(s){
+    var v=r.simple.dispatches[s]||0;
+    var bar=document.getElementById('ys_bar_'+reportId+'_'+s);
+    var lbl=document.getElementById('ys_barval_'+reportId+'_'+s);
+    if(bar)bar.style.height=Math.max(v/maxV*100,v>0?6:0)+'%';
+    if(lbl)lbl.textContent=v||'';
+  });
+}
+function renderYardSimple(report){
+  yardSimpleInit(report);
+  const vessels=report.vessels||[];
+  const slots=shiftSlots();
+  const shiftRangeLabel=isDay()?'06h00 - 18h00':'18h00 - 06h00';
+  const tn=ST.settings.term||'';
+  var _yHdrStyle='background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover';
+
+  var totalTrucks=0;report.simple.locations.forEach(function(l){totalTrucks+=l.total||0;});
+  var dispatched=0;slots.forEach(function(s){dispatched+=report.simple.dispatches[s]||0;});
+  var remaining=totalTrucks-dispatched;
+
+  let h=`<div id="ycap_simple_${report.id}">`;
+
+  // ── Header + summary strip ──
+  h+=`<div style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.08);overflow:hidden">
+    <div style="${_yHdrStyle};padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:100px;height:60px;border-radius:8px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;border:1px solid rgba(255,255,255,.25)">
+          <img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:14px;font-weight:900;color:white;letter-spacing:.3px">AGL TERMINALS — YARD MOVEMENT DASHBOARD</div>
+          <div style="font-size:12px;color:rgba(255,255,255,.8)">${tn}${tn?' · ':''}@ ${shiftRangeLabel}</div>
+        </div>
+        <button class="rh-share" onclick="shareYardSimple(${report.id})" style="background:rgba(255,255,255,.18);border:1.5px solid rgba(255,255,255,.3);color:white;padding:8px 14px;border-radius:9px;font-size:12px;font-weight:800;cursor:pointer">📤 Share</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr">
+      <div style="padding:10px;text-align:center;border-right:1px solid #eee">
+        <div style="font-size:10px;font-weight:800;color:var(--navy);letter-spacing:.5px">TOTAL TRUCKS</div>
+        <div id="ys_totalTrucks_${report.id}" style="font-size:20px;font-weight:900;color:var(--navy)">${totalTrucks}</div>
+      </div>
+      <div style="padding:10px;text-align:center;border-right:1px solid #eee">
+        <div style="font-size:10px;font-weight:800;color:#e67e22;letter-spacing:.5px">DISPATCHED</div>
+        <div id="ys_dispatched_${report.id}" style="font-size:20px;font-weight:900;color:#e67e22">${dispatched}</div>
+      </div>
+      <div style="padding:10px;text-align:center">
+        <div style="font-size:10px;font-weight:800;color:#888;letter-spacing:.5px">REMAINING</div>
+        <div id="ys_remaining_${report.id}" style="font-size:20px;font-weight:900;${remaining<0?'color:#c0392b':''}">${remaining}</div>
+      </div>
+    </div>
+  </div>`;
+
+  // ── Location table — how many trucks are staged where ──
+  h+=`<div style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="background:var(--navy);color:white;padding:8px 10px;text-align:left;font-size:11px">LOCATION</th>
+        <th style="background:var(--navy);color:white;padding:8px 10px;text-align:center;font-size:11px">TRUCK TOTAL</th>
+        <th class="no-share" style="background:var(--navy);width:34px"></th>
+      </tr></thead>
+      <tbody>`;
+  report.simple.locations.forEach(function(loc,li){
+    h+=`<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:6px 8px"><input value="${(loc.name||'').replace(/"/g,'&quot;')}" placeholder="Location" oninput="updateYardLocation(${report.id},${li},'name',this.value)" style="border:none;outline:none;font-weight:700;font-size:12px;color:var(--navy);width:100%;background:transparent"/></td>
+      <td style="padding:6px 8px;text-align:center"><input type="number" value="${loc.total||''}" placeholder="0" oninput="updateYardLocation(${report.id},${li},'total',this.value)" class="yard-input"/></td>
+      <td class="no-share" style="text-align:center"><button onclick="removeYardLocation(${report.id},${li})" style="background:#fff0f0;color:var(--red);border:none;border-radius:5px;padding:3px 7px;font-size:11px;cursor:pointer">✕</button></td>
+    </tr>`;
+  });
+  h+=`</tbody></table>
+    <div class="no-share" style="padding:8px 10px"><button onclick="addYardLocation(${report.id})" style="width:100%;padding:7px;background:white;border:2px solid var(--navy);border-radius:8px;font-size:11px;font-weight:800;color:var(--navy);cursor:pointer">+ Add Location</button></div>
+  </div>`;
+
+  // ── Vessel summary — pulled from the Complex report (GP = GP/DRY, RF = REEFER) ──
+  h+=`<div style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden">
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead>
+        <tr>
+          <th rowspan="2" style="background:var(--navy);color:white;padding:8px 8px;text-align:left;vertical-align:middle">VESSEL</th>
+          <th colspan="2" style="background:#2d6a8a;color:white;padding:6px;text-align:center">IMPORT</th>
+          <th colspan="2" style="background:#c0392b;color:white;padding:6px;text-align:center">EXPORT</th>
+          <th rowspan="2" style="background:var(--yellow);color:#000;padding:8px 8px;text-align:center;vertical-align:middle">TOTAL</th>
+        </tr>
+        <tr>
+          <th style="background:#1f4d63;color:white;padding:5px;text-align:center;font-size:10px">GP</th>
+          <th style="background:#1f4d63;color:white;padding:5px;text-align:center;font-size:10px">RF</th>
+          <th style="background:#8e2a22;color:white;padding:5px;text-align:center;font-size:10px">GP</th>
+          <th style="background:#8e2a22;color:white;padding:5px;text-align:center;font-size:10px">RF</th>
+        </tr>
+      </thead>
+      <tbody>`;
+  var grandTotal=0;
+  if(!vessels.length){
+    h+=`<tr><td colspan="6" style="text-align:center;padding:14px;color:#999;font-style:italic;font-size:12px">No vessels yet — add one from the Complex report.</td></tr>`;
+  }
+  vessels.forEach(function(v){
+    var impGP=(v.data&&v.data['GP/DRY']&&v.data['GP/DRY'].import)||0;
+    var impRF=(v.data&&v.data['REEFER']&&v.data['REEFER'].import)||0;
+    var expGP=(v.data&&v.data['GP/DRY']&&v.data['GP/DRY'].export)||0;
+    var expRF=(v.data&&v.data['REEFER']&&v.data['REEFER'].export)||0;
+    var tot=impGP+impRF+expGP+expRF;
+    grandTotal+=tot;
+    h+=`<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:6px 8px;font-weight:800;color:var(--navy)">${v.name||''}${v.voyage?' <span style="color:#c0392b;font-weight:700">'+v.voyage+'</span>':''}</td>
+      <td style="padding:6px 4px;text-align:center">${impGP||'—'}</td>
+      <td style="padding:6px 4px;text-align:center">${impRF||'—'}</td>
+      <td style="padding:6px 4px;text-align:center">${expGP||'—'}</td>
+      <td style="padding:6px 4px;text-align:center">${expRF||'—'}</td>
+      <td style="padding:6px 8px;text-align:center;font-weight:900;background:#fffbea">${tot}</td>
+    </tr>`;
+  });
+  h+=`<tr style="background:var(--yellow)"><td style="padding:7px 8px;font-weight:900" colspan="5">TOTAL</td><td style="padding:7px 8px;text-align:center;font-weight:900">${grandTotal}</td></tr>`;
+  h+=`</tbody></table>
+    <div class="no-share" style="padding:8px 10px;font-size:10px;color:#888">Vessel numbers are pulled from the Complex report — switch views to add or edit vessels.</div>
+  </div>`;
+
+  // ── Dispatches-per-hour entry (stripped from the shared image — the chart below shows the same numbers) ──
+  h+=`<div class="no-share" style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);padding:10px 12px">
+    <div style="font-size:11px;font-weight:800;color:var(--navy);margin-bottom:8px">🚚 Dispatches Per Hour — enter as trucks leave</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">`;
+  slots.forEach(function(s){
+    h+=`<div style="width:calc(25% - 5px)"><label style="font-size:9px;color:#888;display:block;margin-bottom:2px">${fs(s)}</label>
+      <input type="number" value="${report.simple.dispatches[s]||''}" placeholder="0" oninput="updateYardDispatch(${report.id},'${s}',this.value)" class="yard-input"/></div>`;
+  });
+  h+=`</div></div>`;
+
+  // ── Chart — placed BELOW the tables, per request ──
+  var maxV=1;slots.forEach(function(s){maxV=Math.max(maxV,report.simple.dispatches[s]||0);});
+  h+=`<div style="background:white;margin:8px 10px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.06);padding:14px 10px 12px">
+    <div style="font-size:12px;font-weight:800;color:var(--navy);text-align:center;margin-bottom:12px;letter-spacing:.5px">DISPATCHES</div>
+    <div style="display:flex;align-items:flex-end;gap:4px;height:130px;padding:0 4px">`;
+  slots.forEach(function(s){
+    var v=report.simple.dispatches[s]||0;
+    var hPct=Math.max(v/maxV*100,v>0?6:0);
+    h+=`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+      <div id="ys_barval_${report.id}_${s}" style="font-size:9px;font-weight:800;color:var(--navy);margin-bottom:2px">${v||''}</div>
+      <div id="ys_bar_${report.id}_${s}" style="width:100%;background:#2d6a8a;border-radius:3px 3px 0 0;height:${hPct}%;min-height:${v>0?'4px':'0'}"></div>
+    </div>`;
+  });
+  h+=`</div>
+    <div style="display:flex;gap:4px;padding:2px 4px 0">`;
+  slots.forEach(function(s){
+    h+=`<div style="flex:1;text-align:center;font-size:7px;color:#888;white-space:nowrap;overflow:hidden">${fs(s)}</div>`;
+  });
+  h+=`</div>
+  </div>`;
+
+  h+=`<div style="padding:0 10px 6px" class="no-share"><button data-delyard="${report.id}" onclick="deleteYardReport(${report.id})" style="background:#fff0f0;color:var(--red);border:1px solid var(--red);border-radius:7px;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer">Delete Report</button></div>`;
+  h+=`</div>`;
+  return h;
 }
 
 function renderYardReport(report){
@@ -6828,7 +7074,13 @@ function pushToAll(){
 // YARD SHARE
 // ════════════════════════════════════
 async function shareYardReport(reportId){
-  var el=document.getElementById('ycap_'+reportId);
+  await _captureAndShareYardEl('ycap_'+reportId,'Yard-Status');
+}
+async function shareYardSimple(reportId){
+  await _captureAndShareYardEl('ycap_simple_'+reportId,'Yard-Dashboard');
+}
+async function _captureAndShareYardEl(elId,filenameBase){
+  var el=document.getElementById(elId);
   if(!el){alert('Nothing to capture.');return;}
   if(typeof html2canvas==='undefined'){alert('html2canvas not loaded.');return;}
   var numColor=ST.settings.reportNumColor||'#000000';
@@ -6928,18 +7180,18 @@ async function shareYardReport(reportId){
     });
     canvas.toBlob(async function(blob){
       if(!blob)return;
-      var file=new File([blob],'Yard-Status.png',{type:'image/png'});
+      var file=new File([blob],filenameBase+'.png',{type:'image/png'});
       var shared=false;
       try{
         if(navigator.share&&navigator.canShare&&navigator.canShare({files:[file]})){
-          await navigator.share({files:[file],title:'Yard Status'});
+          await navigator.share({files:[file],title:filenameBase.replace(/-/g,' ')});
           shared=true;
         }
       }catch(shareErr){shared=false;}
       if(!shared){
         var a=document.createElement('a');
         a.href=URL.createObjectURL(blob);
-        a.download='Yard-Status.png';
+        a.download=filenameBase+'.png';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -6975,7 +7227,6 @@ function importData(){
 // Professional POD chart colours - muted, data-viz palette
 var POD_COLORS=['#1a3a5c','#2d6a8a','#2d8a6e','#5a7a3a','#7a5230','#5c3878','#7a3a3a','#3a5c7a','#6b5a1e','#3a6b5a'];
 function podColorFor(str){var h=0;for(var i=0;i<str.length;i++)h=((h<<5)-h+str.charCodeAt(i))|0;return POD_COLORS[Math.abs(h)%POD_COLORS.length];}
-
 function renderPodChart(report){
   if(!report||!report.vessels||!report.vessels.length)return'';
   var podData={};
