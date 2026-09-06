@@ -552,6 +552,10 @@ function initSync(){
       } else {
         ST.sel=Object.assign({},DEF.sel);
       }
+      // Re-run the category/code migration after every remote sync — otherwise an old
+      // saved dtypes/delayCodes list from Firebase just stomps the merge right back to
+      // stale data on the very next sync (this was the actual cause of "codes not showing").
+      if(typeof ensureSelDefaults==='function')ensureSelDefaults();
       // CRITICAL: restore nested arrays inside each session that Firebase also converts.
       // sess.shifts is the most important — getAllSlots/getCraneTotal iterate it.
       // Without this fix sess.shifts is a keyed object and forEach fails silently,
@@ -811,25 +815,31 @@ if(saved&&saved.settings){
 // Ensure required sub-objects exist
 if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.settings);
 if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
-if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
-if(!Array.isArray(ST.sel.delayCodes))ST.sel.delayCodes=DEF.sel.delayCodes.map(function(x){return Object.assign({},x);});
-// Merge in any AGL standard codes missing from an already-saved list (matched by code),
-// so an existing installation picks up new/updated codes without losing custom ones.
-(function(){
+// Fills in / migrates ST.sel's selectable lists against DEF.sel — must be called both on
+// initial load AND every time Firebase pushes down remote data (which overwrites ST.sel
+// wholesale with whatever was last saved). Without re-running this after every remote sync,
+// an old saved category/code list keeps stomping the merge right back to stale data.
+function ensureSelDefaults(){
+  if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
+  if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
+  if(!Array.isArray(ST.sel.delayCodes))ST.sel.delayCodes=DEF.sel.delayCodes.map(function(x){return Object.assign({},x);});
+  // Merge in any AGL standard codes missing from an already-saved list (matched by code),
+  // so an existing installation picks up new/updated codes without losing custom ones.
   var existingCodes={};
   ST.sel.delayCodes.forEach(function(c){if(c&&c.code)existingCodes[c.code]=true;});
   DEF.sel.delayCodes.forEach(function(defC){
     if(!existingCodes[defC.code])ST.sel.delayCodes.push(Object.assign({},defC));
   });
-})();
-if(!Array.isArray(ST.sel.vessels))ST.sel.vessels=[...(DEF.sel.vessels||[])];
-if(!Array.isArray(ST.sel.dtypes))ST.sel.dtypes=[...(DEF.sel.dtypes||[])];
-// Same merge for categories — an already-saved dtypes list (from before Vessel/Stevedores/
-// Operational/etc. existed) won't contain the new category names, which would make the
-// admin panel's "group codes by category" loop find zero matches and look empty.
-(DEF.sel.dtypes||[]).forEach(function(cat){
-  if(ST.sel.dtypes.indexOf(cat)===-1)ST.sel.dtypes.push(cat);
-});
+  if(!Array.isArray(ST.sel.vessels))ST.sel.vessels=[...(DEF.sel.vessels||[])];
+  if(!Array.isArray(ST.sel.dtypes))ST.sel.dtypes=[...(DEF.sel.dtypes||[])];
+  // Same merge for categories — an already-saved dtypes list (from before Vessel/Stevedores/
+  // Operational/etc. existed) won't contain the new category names, which would make the
+  // admin panel's "group codes by category" loop find zero matches and look empty.
+  (DEF.sel.dtypes||[]).forEach(function(cat){
+    if(ST.sel.dtypes.indexOf(cat)===-1)ST.sel.dtypes.push(cat);
+  });
+}
+ensureSelDefaults();
 if(!ST.hourly||typeof ST.hourly!=='object')ST.hourly={};
 if(!ST.delays||typeof ST.delays!=='object')ST.delays={};
 if(!ST.delayRows||typeof ST.delayRows!=='object')ST.delayRows={};
