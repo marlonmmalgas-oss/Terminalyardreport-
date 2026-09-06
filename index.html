@@ -813,8 +813,23 @@ if(!ST.settings||typeof ST.settings!=='object')ST.settings=Object.assign({},DEF.
 if(!ST.sel||typeof ST.sel!=='object')ST.sel=Object.assign({},DEF.sel);
 if(!ST.sel.ddescs)ST.sel.ddescs=[...DEF.sel.ddescs];
 if(!Array.isArray(ST.sel.delayCodes))ST.sel.delayCodes=DEF.sel.delayCodes.map(function(x){return Object.assign({},x);});
+// Merge in any AGL standard codes missing from an already-saved list (matched by code),
+// so an existing installation picks up new/updated codes without losing custom ones.
+(function(){
+  var existingCodes={};
+  ST.sel.delayCodes.forEach(function(c){if(c&&c.code)existingCodes[c.code]=true;});
+  DEF.sel.delayCodes.forEach(function(defC){
+    if(!existingCodes[defC.code])ST.sel.delayCodes.push(Object.assign({},defC));
+  });
+})();
 if(!Array.isArray(ST.sel.vessels))ST.sel.vessels=[...(DEF.sel.vessels||[])];
 if(!Array.isArray(ST.sel.dtypes))ST.sel.dtypes=[...(DEF.sel.dtypes||[])];
+// Same merge for categories — an already-saved dtypes list (from before Vessel/Stevedores/
+// Operational/etc. existed) won't contain the new category names, which would make the
+// admin panel's "group codes by category" loop find zero matches and look empty.
+(DEF.sel.dtypes||[]).forEach(function(cat){
+  if(ST.sel.dtypes.indexOf(cat)===-1)ST.sel.dtypes.push(cat);
+});
 if(!ST.hourly||typeof ST.hourly!=='object')ST.hourly={};
 if(!ST.delays||typeof ST.delays!=='object')ST.delays={};
 if(!ST.delayRows||typeof ST.delayRows!=='object')ST.delayRows={};
@@ -5397,6 +5412,26 @@ function renderAdmin(){
     });
     h+=`<button onclick="ST.sel.delayCodes.push({code:'',category:'${cat.replace(/'/g,"\\'")}',description:''});sv();renderAdmin()" style="background:white;color:var(--navy);border:2px solid var(--navy);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:800;cursor:pointer;margin-top:2px">+ Add code to ${cat}</button></div>`;
   });
+  // Safety net: any code whose category doesn't match a known category (e.g. an old
+  // custom category that got renamed/removed) still shows up here instead of vanishing.
+  var _orphanIdx=[];
+  (ST.sel.delayCodes||[]).forEach(function(c,i){if((ST.sel.dtypes||[]).indexOf(c.category)===-1)_orphanIdx.push(i);});
+  if(_orphanIdx.length){
+    h+=`<div style="margin-bottom:16px"><div style="font-weight:800;font-size:12px;color:var(--red);margin-bottom:6px;padding-bottom:4px;border-bottom:1.5px solid #eee">⚠️ Uncategorized</div>`;
+    _orphanIdx.forEach(function(i){
+      var c=ST.sel.delayCodes[i];
+      h+=`<div style="display:flex;gap:6px;margin-bottom:6px;align-items:center">
+        <input value="${(c.code||'').replace(/"/g,'&quot;')}" placeholder="Code" oninput="ST.sel.delayCodes[${i}].code=this.value;sv()" style="width:64px;padding:8px 8px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none;font-weight:800;text-align:center"/>
+        <input value="${(c.description||'').replace(/"/g,'&quot;')}" placeholder="Description" oninput="ST.sel.delayCodes[${i}].description=this.value;sv()" style="flex:2;padding:8px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;outline:none"/>
+        <select onchange="ST.sel.delayCodes[${i}].category=this.value;sv();renderAdmin()" style="flex:1;padding:8px 6px;border:1.5px solid var(--border);border-radius:7px;font-size:12px">
+          <option value="">Pick category…</option>
+          ${(ST.sel.dtypes||[]).map(function(t){return'<option value="'+t+'">'+t+'</option>';}).join('')}
+        </select>
+        <button onclick="ST.sel.delayCodes.splice(${i},1);sv();renderAdmin()" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px">✕</button>
+      </div>`;
+    });
+    h+=`</div>`;
+  }
   h+=`</div>`;
 
   h+=renderAbbrevSection();
