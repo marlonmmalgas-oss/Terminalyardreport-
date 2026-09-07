@@ -533,7 +533,7 @@ function initSync(){
       });
       // Firebase converts JS arrays to keyed objects — restore them back to arrays
       // e.g. sessions: {"0":{...},"1":{...}} must become [{...},{...}]
-      ['sessions','yardReports','generators','vesselAbbrevs'].forEach(function(k){
+      ['sessions','yardReports','generators','vesselAbbrevs','activeIds2plus'].forEach(function(k){
         if(ST[k]&&!Array.isArray(ST[k])&&typeof ST[k]==='object'){
           ST[k]=Object.values(ST[k]);
         }
@@ -856,6 +856,7 @@ if(!ST.hourly||typeof ST.hourly!=='object')ST.hourly={};
 if(!ST.delays||typeof ST.delays!=='object')ST.delays={};
 if(!ST.delayRows||typeof ST.delayRows!=='object')ST.delayRows={};
 if(!ST.reportEdits||typeof ST.reportEdits!=='object')ST.reportEdits={};
+if(!Array.isArray(ST.activeIds2plus))ST.activeIds2plus=[];
 if(!ST.delayRowIds||typeof ST.delayRowIds!=='object')ST.delayRowIds={};
 if(!Array.isArray(ST.vesselAbbrevs))ST.vesselAbbrevs=DEF.vesselAbbrevs.map(function(x){return Object.assign({},x);});
 if(!Array.isArray(ST.yardReports))ST.yardReports=[];
@@ -881,7 +882,7 @@ const ALL=['0600-0700','0700-0800','0800-0900','0900-1000','1000-1100','1100-120
 function getAllSlots(sess){
   if(!sess)return[];
   var nc=sess.numCranes;
-  var isActive=String(sess.id)===String(ST.activeId)||(ST.activeId2&&String(sess.id)===String(ST.activeId2));
+  var isActive=allActiveIds().some(function(id){return String(sess.id)===String(id);});
   // For completed (non-active) sessions: aggregate from stored shift data only
   // This prevents a new vessel's live ST.hourly from contaminating old session totals
   if(!isActive){
@@ -1168,7 +1169,38 @@ function formatDate(dt){
   if(isNaN(d.getTime()))return dt;
   return d.toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
 }
-function getActiveId(){return(ST.vesselSlot===2&&ST.activeId2)?ST.activeId2:ST.activeId;}
+// All currently active vessel ids, in slot order (slot 1 = ST.activeId, slot 2+ = ST.activeIds2plus).
+function allActiveIds(){
+  var extra=Array.isArray(ST.activeIds2plus)?ST.activeIds2plus:[];
+  return[ST.activeId].concat(extra).filter(Boolean);
+}
+// Get/set/clear the session id occupying a given 1-based vessel slot (1 = primary,
+// 2/3/4... = additional concurrent vessels). Centralising this is what lets the
+// app scale from 2 fixed vessels to any number without touching every call site.
+function getSlotId(slot){
+  if(slot===1)return ST.activeId||null;
+  if(!Array.isArray(ST.activeIds2plus))return null;
+  return ST.activeIds2plus[slot-2]||null;
+}
+function setSlotId(slot,id){
+  if(slot===1){ST.activeId=id;return;}
+  if(!Array.isArray(ST.activeIds2plus))ST.activeIds2plus=[];
+  ST.activeIds2plus[slot-2]=id;
+}
+function clearSlotId(slot){
+  if(slot===1){ST.activeId=null;return;}
+  if(!Array.isArray(ST.activeIds2plus))return;
+  ST.activeIds2plus.splice(slot-2,1);
+  // Slots above the removed one shift down — keep the current view pointed at
+  // a slot that still exists (default back to the primary vessel).
+  var total=allActiveIds().length;
+  if((ST.vesselSlot||1)>total)ST.vesselSlot=1;
+}
+function getActiveId(){
+  var ids=allActiveIds();
+  var idx=(ST.vesselSlot||1)-1;
+  return ids[idx]!=null?ids[idx]:ST.activeId;
+}
 function getSess(){
   // Returns a deep clone so callers never mutate ST directly (Segment 4)
   var aid=getActiveId();
@@ -1177,24 +1209,31 @@ function getSess(){
   if(!raw)return null;
   try{return JSON.parse(JSON.stringify(raw));}catch(e){return raw;}
 }
-// Returns every currently-active session (1 or 2 of them), each tagged with its
-// vessel slot. Used for the combined multi-vessel Hourly/4-Hourly reports and
-// the Input page's vessel toggle — never mutate the objects this returns.
+// Returns every currently-active session (2, 3, or more), each tagged with its
+// vessel slot (1-based). Used for the vessel toggle bars on Input, Hourly,
+// 4-Hourly, Results, Delays and CMT — never mutate the objects this returns.
 function getActiveSessions(){
   var out=[];
-  if(ST.activeId){
-    var s1=ST.sessions.find(function(s){return s.id===ST.activeId;});
-    if(s1)out.push(Object.assign({},JSON.parse(JSON.stringify(s1)),{_slot:1}));
-  }
-  if(ST.activeId2){
-    var s2=ST.sessions.find(function(s){return s.id===ST.activeId2;});
-    if(s2)out.push(Object.assign({},JSON.parse(JSON.stringify(s2)),{_slot:2}));
-  }
+  allActiveIds().forEach(function(id,i){
+    var s=ST.sessions.find(function(x){return x.id===id;});
+    if(s)out.push(Object.assign({},JSON.parse(JSON.stringify(s)),{_slot:i+1}));
+  });
   return out;
+}
+// Reusable vessel toggle bar for any per-vessel screen (Results, Delays, CMT,
+// Hourly, 4-Hourly, Edit Mode). Empty string when only one vessel is active.
+// `renderFn` is the render function name to re-invoke after switching slots.
+function vesselPickBarHTML(renderFn){
+  var activeSessions=getActiveSessions();
+  if(activeSessions.length<=1)return'';
+  return'<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">'+activeSessions.map(function(s){
+    var isSel=(ST.vesselSlot||1)===s._slot;
+    return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1;min-width:120px" onclick="ST.vesselSlot='+s._slot+';'+renderFn+'()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
+  }).join('')+'</div>';
 }
 // Wipes ONLY one session's live hourly/delay/rowId data (matched by id prefix),
 // leaving any other active vessel's live data completely untouched. Ending or
-// deleting one vessel must never corrupt the other vessel currently being worked.
+// deleting one vessel must never corrupt the other vessels currently being worked.
 function wipeSessionLiveData(sessId){
   var pfx=String(sessId)+'_';
   Object.keys(ST.hourly||{}).forEach(function(k){if(k.indexOf(pfx)===0)delete ST.hourly[k];});
@@ -1293,7 +1332,7 @@ function initApp(){
     // Inspect ST.hourly keys to find which shift they belong to.
     // Keys look like: sessId_HHMM-HHMM_ci_type
     // If any key's slot belongs to a DIFFERENT shift than _curShiftKey, treat it as stale.
-    var _activeIdsCheck=[ST.activeId,ST.activeId2].filter(Boolean);
+    var _activeIdsCheck=allActiveIds();
     var _foundStale=false;
     _activeIdsCheck.forEach(function(aid){
       if(_foundStale)return;
@@ -1337,7 +1376,7 @@ function initApp(){
     //    sess.shifts[] — causing double-counting in getAllSlots step 2.
     var _missedType=_detectedStaleKey.split('_')[0];
     var _missedDate=_detectedStaleKey.split('_').slice(1).join('_');
-    var _activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
+    var _activeIds=allActiveIds();
     _activeIds.forEach(function(aid){
       var _raw=ST.sessions.find(function(x){return x.id===aid;});
       if(!_raw)return;
@@ -1405,7 +1444,7 @@ function initApp(){
     var outType=RT.lastShiftType,outDate=RT.lastShiftDate;
     RT.lastShiftType=cShift;RT.lastShiftDate=cDate;
     // Snapshot both active vessels
-    var activeIds=[ST.activeId,ST.activeId2].filter(Boolean);
+    var activeIds=allActiveIds();
     activeIds.forEach(function(aid){
       var raw=ST.sessions.find(function(x){return x.id===aid;});
       if(!raw)return;
@@ -1469,7 +1508,7 @@ se.delays[_snapDk]=Object.assign({},_dd);});}
     });
     ST.hourly={};ST.delays={};ST.delayRowIds={};
     // Reset First Lift and Last Lift on all active sessions at shift boundary
-    [ST.activeId,ST.activeId2].filter(Boolean).forEach(function(aid){
+    allActiveIds().forEach(function(aid){
       var _rs=ST.sessions.find(function(x){return x.id===aid;});
       if(_rs){_rs.firstLift='';_rs.lastLift='';}
     });
@@ -1527,16 +1566,30 @@ function renderInput(){
   const slot=currSlot(),vn=ST.sel.vessels||[];
   let h=`<div class="ph"><h2>📋 Vessel Input</h2><p>Enter vessel details for this shift</p></div>`;
 
-  // Two vessels working at once — a persistent toggle to jump between their
+  // Multiple vessels working at once — a persistent toggle to jump between their
   // Input forms directly, instead of one "Switch Vessel" button.
   const activeSessions=getActiveSessions();
-  if(activeSessions.length===2){
-    h+=`<div class="fbar" style="display:flex;gap:8px">`;
+  const activeCount=activeSessions.length;
+  const MAX_VESSELS=4;
+  if(activeCount>1){
+    h+=`<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">`;
     activeSessions.forEach(function(s){
       const isSel=(ST.vesselSlot||1)===s._slot;
-      h+=`<button class="btn btn-sm${isSel?'':' btn-out'}" style="flex:1" onclick="ST.vesselSlot=${s._slot};renderInput()">🚢 ${s.vesselName||('Vessel '+s._slot)}${s.berth?' — '+s.berth:''}</button>`;
+      h+=`<button class="btn btn-sm${isSel?'':' btn-out'}" style="flex:1;min-width:130px" onclick="ST.vesselSlot=${s._slot};renderInput()">🚢 ${s.vesselName||('Vessel '+s._slot)}${s.berth?` <span style="background:#e2e8f0;color:#1e293b;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">${s.berth}</span>`:''}</button>`;
     });
     h+=`</div>`;
+  }
+  // Scale up to 3, 4+ concurrent vessels — a dropdown instead of a fixed "add vessel" button.
+  // Choosing a higher number jumps straight to that new vessel's blank form; shrinking the
+  // count is only done via "End This Vessel" below, to avoid accidentally losing data.
+  if(activeCount>=1){
+    h+=`<div class="fbar"><label style="font-size:10px;color:#888;font-weight:700;display:block;margin-bottom:4px">VESSELS WORKING CONCURRENTLY</label>
+      <select onchange="setVesselCount(this.value)" style="width:100%;padding:9px 11px;border:1.5px solid var(--border);border-radius:8px;font-size:13px">
+        ${Array.from({length:MAX_VESSELS},(_,i)=>i+1).map(function(n){
+          return`<option value="${n}"${n===activeCount?' selected':''}${n<activeCount?' disabled':''}>${n} vessel${n>1?'s':''}</option>`;
+        }).join('')}
+      </select>
+    </div>`;
   }
 
   h+=`<div class="sec"><div class="st">Vessel Information</div>
@@ -1589,13 +1642,12 @@ function renderInput(){
   h+=`<div style="padding:0 10px 28px">`;
   if(!locked){h+=`<button class="btn" onclick="saveSession()" style="margin-bottom:10px">💾 Save Session</button>`;}
   else{
-    h+=`<div class="suc">✅ Session saved${activeSessions.length===2?' — 2 vessels active':''}</div>
+    h+=`<div class="suc">✅ Session saved${activeCount>1?(' — '+activeCount+' vessels active'):''}</div>
     <button class="btn btn-out" onclick="unlockSess()" style="margin-bottom:10px">✏️ Edit Session</button>`;
-    if(activeSessions.length<2){
-      h+=`<button class="btn" onclick="addSecondVessel()" style="background:#0891b2;margin-bottom:10px">+ Add Second Vessel</button>
-      <button class="btn" onclick="newVessel()" style="background:#475569;margin-bottom:10px">🚢 New Vessel (end this one)</button>`;
-    }else{
+    if(activeCount>1){
       h+=`<button class="btn" onclick="endThisVessel()" style="background:var(--red);margin-bottom:10px">🗑️ End This Vessel</button>`;
+    }else{
+      h+=`<button class="btn" onclick="newVessel()" style="background:#475569;margin-bottom:10px">🚢 New Vessel (end this one)</button>`;
     }
   }
   h+=`</div>`;
@@ -1642,9 +1694,8 @@ function saveSession(){
   }
   // 🔴 CRITICAL: Generate ID only once — NEVER recreate existing session
   var targetSlot=ST.vesselSlot||1;
-  if(targetSlot===2){if(!ST.activeId2)ST.activeId2=Date.now();}
-  else{if(!ST.activeId)ST.activeId=Date.now();}
-  const id=targetSlot===2?ST.activeId2:ST.activeId;
+  if(!getSlotId(targetSlot))setSlotId(targetSlot,Date.now());
+  const id=getSlotId(targetSlot);
 
   // Find existing session in ST.sessions to preserve shifts + results
   const existing=ST.sessions.find(x=>x.id===id)||{};
@@ -1727,7 +1778,7 @@ function _shiftStartDate(){
 }
 function newVessel(){
   var targetSlot=ST.vesselSlot||1;
-  var currentId=targetSlot===2?(ST.activeId2||null):ST.activeId;
+  var currentId=getSlotId(targetSlot);
   if(currentId){
     var _id=currentId;
     var _existing=ST.sessions.find(function(x){return x.id===_id;})||{};
@@ -1769,17 +1820,16 @@ function newVessel(){
     }
   }
   // Clear active slot — ONE sv() so Firebase only sees one write
-  // Only wipe THIS vessel's live data — a second active vessel's data must survive untouched.
+  // Only wipe THIS vessel's live data — other active vessels' data must survive untouched.
   if(currentId)wipeSessionLiveData(currentId);
-  if(targetSlot===2){ST.activeId2=null;}
-  else{ST.activeId=null;}
+  clearSlotId(targetSlot);
   // Clear per-shift CMT crane lifts — they belong to the shift, not the vessel
   if(ST.perfTargets&&ST.perfTargets.craneLifts){ST.perfTargets.craneLifts={};}
   // Stamp current shift key so missed-rollover detection works
   var _nvShiftType=isDay()?'DAY':'NIGHT';
   var _nvDate=_shiftStartDate(); // use canonical shift-start-date (handles night-after-midnight correctly)
   ST.hourlyShiftKey=_nvShiftType+'_'+_nvDate;
-  logActivity('New Vessel','Started new vessel slot '+(targetSlot===2?'2':'1'));
+  logActivity('New Vessel','Ended vessel in slot '+targetSlot);
   _saveProtectUntil=Date.now()+8000;
   _myLastSave=Date.now();
   sv();
@@ -1793,13 +1843,19 @@ function newVessel(){
 // newSess kept as alias for backwards compat
 function newSess(){newVessel();}
 
-// Start a second, concurrent vessel in slot 2 (doesn't touch slot 1 at all)
-function addSecondVessel(){
-  ST.vesselSlot=2;
+// Scale up how many vessels are being worked concurrently (2, 3, 4+). Only
+// increases — jumps straight to the new vessel's blank form to fill in.
+// Shrinking is intentionally not supported here; use "End This Vessel" instead,
+// so a vessel's data is never lost by an accidental dropdown change.
+function setVesselCount(n){
+  n=parseInt(n,10)||1;
+  var cur=getActiveSessions().length;
+  if(n<=cur)return;
+  ST.vesselSlot=cur+1;
   renderInput();
 }
 // End whichever vessel is currently selected via the top toggle — archives it
-// into history and frees that slot. The other active vessel (if any) is untouched.
+// into history and frees that slot. Any other active vessel is untouched.
 function endThisVessel(){
   newVessel();
 }
@@ -1965,6 +2021,7 @@ function renderResults(){
   var curShiftKey=curShiftType+'_'+_curShiftStartDate;
 
   let h=`<div class="ph"><div class="ph-row"><h2>📊 Results</h2><span class="pill pblue">${curShiftType} SHIFT</span></div></div>`;
+  h+=vesselPickBarHTML('renderResults');
   if(!sess){h+=noSess('📊','No active session. Fill Input first.');$('sc-results').innerHTML=h;return;}
   var nc=sess.numCranes;
   var sl=shiftSlots();
@@ -2212,33 +2269,6 @@ function rhHTML(title,slot,capId,dateOverride){
   </div>`;
 }
 
-// Header variant for when two vessels are being worked concurrently — shows
-// both vessel names + berths on the left instead of one.
-function rhHTMLMulti(title,slot,capId,activeSessions,dateOverride){
-  const tn=ST.settings.term;
-  const todayStr=dateOverride||new Date().toLocaleDateString('en-ZA',{day:'2-digit',month:'short',year:'numeric'});
-  var bgStyle='style="background:linear-gradient(rgba(31,56,100,.88),rgba(31,56,100,.88)),url('+HARDCODED_BG+') center/cover"';
-  var vesselLines=activeSessions.map(function(s){
-    return'<div><span class="rh-vessel" style="font-size:13px">'+(s.vesselName||'Vessel')+'</span>'+(s.berth?' <span style="font-size:11px;opacity:.8">— '+s.berth+'</span>':'')+'</div>';
-  }).join('');
-  return`<div class="rh" ${bgStyle}>
-    <div class="rh1">
-      <div class="rh-logo"><img src="${HARDCODED_LOGO}" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>
-      <div class="rh-txt"><h2>${_adminLbl("rh_"+title.replace(/[^a-zA-Z0-9]/g,"_"),title,true)}</h2><p>${_adminLbl("rh_term",tn||"Terminal",true)||tn}</p></div>
-      <button class="rh-share" id="shareBtn_${capId}" onclick="shareReport('${capId}')">📤 Share</button>
-    </div>
-    <div class="rh2" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;">
-      <div style="flex:1;min-width:0;">${vesselLines}</div>
-      <div style="flex:0 0 auto;text-align:center;">
-        <span class="rh-slot">${fs(slot)}</span>
-      </div>
-      <div style="flex:1;min-width:0;text-align:right;">
-        <span class="rh-date">${todayStr}</span>
-      </div>
-    </div>
-  </div>`;
-}
-
 // ═══════════ CRANE TABLE ═══════════
 function craneTableHTML(sess,cumSlots,curSlot,idPfx,overrides){
   idPfx=idPfx||'';
@@ -2387,7 +2417,7 @@ function renderShiftBlocks(sess,tableHTMLFn){
 // same cumulative math works whether the data came from a stored shift snapshot or live ST.hourly.
 function getSessionShiftBlocks(s){
   var blocks=[];
-  var isActiveSession=s.id===ST.activeId||s.id===ST.activeId2;
+  var isActiveSession=allActiveIds().some(function(id){return s.id===id;});
   var curShiftType=isDay()?'DAY':'NIGHT';
   var _now=new Date(),_nh=_now.getHours(),_nm=_now.getMinutes();
   var _grace=(ST.timing&&ST.timing.hourlyGrace!=null?ST.timing.hourlyGrace:30);
@@ -2557,24 +2587,20 @@ function renderHourlyView(){
   const toggleBar=reportToggleBarHTML();
   const activeSessions=getActiveSessions();
 
-  // ── Two vessels working concurrently: one combined report instead of two ──
-  if(activeSessions.length===2&&HR_SEL.mode==='live'){
-    renderHourlyViewMulti(toggleBar,activeSessions);
-    return;
-  }
-
-  // Let the user pick which vessel's past hours to browse when 2 are active
+  // Multiple vessels working concurrently — a simple toggle bar to switch which
+  // vessel's report is shown. Switching updates the vessel name in the header
+  // too, since it just changes which session getSess() resolves to.
   var vesselPickBar='';
-  if(activeSessions.length===2&&HR_SEL.mode==='past'){
-    vesselPickBar='<div class="fbar" style="display:flex;gap:8px">'+activeSessions.map(function(s){
+  if(activeSessions.length>1){
+    vesselPickBar='<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">'+activeSessions.map(function(s){
       var isSel=(ST.vesselSlot||1)===s._slot;
-      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
+      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1;min-width:120px" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
     }).join('')+'</div>';
   }
 
   const sess=getSess(),slot=currSlot(),sl=shiftSlots(),idx=sl.indexOf(slot);
   const cum=idx>=0?sl.slice(0,idx+1):[slot];
-  if(!sess){let h0=rhHTML('HOURLY REPORT',slot,'hcap');$('sc-hourly').innerHTML=toggleBar+`<div id="hcap">${h0}${noSess('📊','No active session.')}</div>`;return;}
+  if(!sess){let h0=rhHTML('HOURLY REPORT',slot,'hcap');$('sc-hourly').innerHTML=toggleBar+vesselPickBar+`<div id="hcap">${h0}${noSess('📊','No active session.')}</div>`;return;}
 
   const blocks=getSessionShiftBlocks(sess);
   // Build past-hour options — only hours that actually have recorded data
@@ -2607,7 +2633,7 @@ function renderHourlyView(){
         </div></div>`;
     }
     entry+=`</div>`;
-    $('sc-hourly').innerHTML=toggleBar+selBar+`<div id="hcap">${h}</div>`+entry;
+    $('sc-hourly').innerHTML=toggleBar+vesselPickBar+selBar+`<div id="hcap">${h}</div>`+entry;
     return;
   }
 
@@ -2627,74 +2653,6 @@ function renderHourlyView(){
 }
 // Live-updates the hourly report cells above the entry form without a full
 // re-render, so focus/cursor position in the input isn't lost while typing.
-// ── Combined report for two vessels worked concurrently — one page, not two ──
-function renderHourlyViewMulti(toggleBar,activeSessions){
-  const slot=currSlot();
-  let h=rhHTMLMulti('HOURLY REPORT',slot,'hcap',activeSessions);
-
-  activeSessions.forEach(function(v,idx){
-    var vp='hr_v'+v._slot+'_';
-    var bannerColor=idx===0?'#1a3a5c':'#2d6a8a';
-    h+=`<div style="background:${bannerColor};color:white;padding:9px 14px;margin:10px 10px 0;border-radius:8px 8px 0 0;font-size:12px;font-weight:800">🚢 ${v.vesselName||('Vessel '+v._slot)}${v.berth?' — '+v.berth:''}</div>`;
-    h+=craneTableHTML(v,[],slot,vp).replace('<div class="card"','<div class="card" style="margin-top:0;border-radius:0 0 12px 12px"');
-    h+=summaryHTML(v,{idPrefix:vp,hideTargetChart:true});
-  });
-
-  // Combined summary — sum of both vessels' totals
-  const g1=calcGlobalTotals(activeSessions[0]),g2=calcGlobalTotals(activeSessions[1]);
-  const gCombined={
-    baseTotalDisc:g1.baseTotalDisc+g2.baseTotalDisc,baseTotalLoad:g1.baseTotalLoad+g2.baseTotalLoad,
-    totalDoneDisc:g1.totalDoneDisc+g2.totalDoneDisc,totalDoneLoad:g1.totalDoneLoad+g2.totalDoneLoad,
-    totalDone:g1.totalDone+g2.totalDone,
-    total12Disc:g1.total12Disc+g2.total12Disc,total12Load:g1.total12Load+g2.total12Load,total12:g1.total12+g2.total12,
-    remaining:g1.remaining+g2.remaining
-  };
-  h+=`<div style="padding:6px 10px 0"><div class="st" style="font-size:13px;color:var(--navy);border-bottom-color:var(--navy)">🔗 Combined — Both Vessels</div></div>`;
-  h+=summaryHTML({target:(activeSessions[0].target||0)+(activeSessions[1].target||0)},{idPrefix:'hr_combined_',totals:gCombined});
-
-  // Entry form — OUTSIDE hcap, stacked per vessel with a clear banner each
-  let entry=`<div class="sec"><div class="st" style="font-size:14px;color:#d97706;border-bottom-color:#d97706;letter-spacing:.3px">⏱️ Enter Hourly Moves — ${fs(slot)}</div>
-    <p style="font-size:11px;color:#888;margin-bottom:8px">Enter moves completed this hour per crane, per vessel. The report above updates as you type.</p>`;
-  activeSessions.forEach(function(v,idx){
-    var vp='hr_v'+v._slot+'_';
-    var bannerColor=idx===0?'#1a3a5c':'#2d6a8a';
-    entry+=`<div style="background:${bannerColor};color:white;padding:7px 12px;border-radius:8px;font-size:11px;font-weight:800;margin:${idx===0?'0':'14px'} 0 8px">🚢 ${v.vesselName||('Vessel '+v._slot)}${v.berth?' — '+v.berth:''}</div>`;
-    for(let i=1;i<=v.numCranes;i++){
-      entry+=`<div class="crblk"><div class="crtag">${craneName(i)}</div>
-        <div class="g2">
-          <div class="f"><label>Discharge</label><input type="number" value="${he(v.id,slot,i,'discharge')||''}" placeholder="0" oninput="updateHourlyLive('${v.id}','${slot}',${i},'discharge',this.value,'${vp}')"/></div>
-          <div class="f"><label>Load</label><input type="number" value="${he(v.id,slot,i,'load')||''}" placeholder="0" oninput="updateHourlyLive('${v.id}','${slot}',${i},'load',this.value,'${vp}')"/></div>
-        </div></div>`;
-    }
-  });
-  entry+=`</div>`;
-  $('sc-hourly').innerHTML=toggleBar+`<div id="hcap">${h}</div>`+entry;
-}
-// Refreshes the bottom "Combined — Both Vessels" summary after a per-vessel
-// hourly-moves edit, so the grand total stays correct without a full re-render.
-function updateCombinedHourlySummary(){
-  const activeSessions=getActiveSessions();
-  if(activeSessions.length<2)return;
-  const g1=calcGlobalTotals(activeSessions[0]),g2=calcGlobalTotals(activeSessions[1]);
-  const g={
-    baseTotalDisc:g1.baseTotalDisc+g2.baseTotalDisc,baseTotalLoad:g1.baseTotalLoad+g2.baseTotalLoad,
-    totalDoneDisc:g1.totalDoneDisc+g2.totalDoneDisc,totalDoneLoad:g1.totalDoneLoad+g2.totalDoneLoad,
-    totalDone:g1.totalDone+g2.totalDone,
-    total12Disc:g1.total12Disc+g2.total12Disc,total12Load:g1.total12Load+g2.total12Load,total12:g1.total12+g2.total12,
-    remaining:g1.remaining+g2.remaining
-  };
-  const pfx='hr_combined_';
-  const setTxt=function(id,v){const e=document.getElementById(id);if(e)e.textContent=v;};
-  setTxt(pfx+'remD',g.baseTotalDisc-g.totalDoneDisc);
-  setTxt(pfx+'remL',g.baseTotalLoad-g.totalDoneLoad);
-  setTxt(pfx+'remT',g.remaining);
-  setTxt(pfx+'doneD',g.totalDoneDisc);
-  setTxt(pfx+'doneL',g.totalDoneLoad);
-  setTxt(pfx+'doneT',g.totalDone);
-  setTxt(pfx+'d12D',g.total12Disc);
-  setTxt(pfx+'d12L',g.total12Load);
-  setTxt(pfx+'d12T',g.total12);
-}
 function updateHourlyLive(sessId,slot,ci,type,val,pfx){
   ST.hourly[hk(sessId,slot,ci,type)]=parseFloat(val)||0;
   _myLastSave=Date.now();sv();
@@ -2725,8 +2683,6 @@ function updateHourlyLive(sessId,slot,ci,type,val,pfx){
   const mp=Math.max(g.total12/mx*100,g.total12>0?5:0);
   const barFill=document.getElementById(pfx+'barFill');if(barFill)barFill.style.width=mp+'%';
   setTxt(pfx+'barVal',g.total12);
-  // If a second vessel is active, refresh the combined "Both Vessels" summary too
-  updateCombinedHourlySummary();
 }
 
 // ═══════════ EDIT MODE — freeform edit of the hourly report template ═══════════
@@ -2781,10 +2737,10 @@ function renderEditMode(){
   const selBar=pastOpts.length?pastSelectorHTML('edSetSel',pastOpts,curVal):'';
 
   var vesselPickBar='';
-  if(activeSessions.length===2){
-    vesselPickBar='<div class="fbar" style="display:flex;gap:8px">'+activeSessions.map(function(s){
+  if(activeSessions.length>1){
+    vesselPickBar='<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">'+activeSessions.map(function(s){
       var isSel=(ST.vesselSlot||1)===s._slot;
-      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
+      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1;min-width:120px" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
     }).join('')+'</div>';
   }
 
@@ -2861,22 +2817,16 @@ function renderFourView(){
   const toggleBar=reportToggleBarHTML();
   const activeSessions=getActiveSessions();
 
-  // ── Two vessels working concurrently: one combined report instead of two ──
-  if(activeSessions.length===2&&F_SEL.mode==='live'){
-    renderFourViewMulti(toggleBar,activeSessions);
-    return;
-  }
-
   var vesselPickBar='';
-  if(activeSessions.length===2&&F_SEL.mode==='past'){
-    vesselPickBar='<div class="fbar" style="display:flex;gap:8px">'+activeSessions.map(function(s){
+  if(activeSessions.length>1){
+    vesselPickBar='<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">'+activeSessions.map(function(s){
       var isSel=(ST.vesselSlot||1)===s._slot;
-      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
+      return'<button class="btn btn-sm'+(isSel?'':' btn-out')+'" style="flex:1;min-width:120px" onclick="ST.vesselSlot='+s._slot+';renderHourly()">🚢 '+(s.vesselName||('Vessel '+s._slot))+'</button>';
     }).join('')+'</div>';
   }
 
   const sess=getSess(),s4=curr4Slot();
-  if(!sess){let h0=rhHTML('4 HOURLY REPORT',s4,'fcap');$('sc-hourly').innerHTML=toggleBar+`<div id="fcap">${h0}${noSess('📈','No active session.')}</div>`;return;}
+  if(!sess){let h0=rhHTML('4 HOURLY REPORT',s4,'fcap');$('sc-hourly').innerHTML=toggleBar+vesselPickBar+`<div id="fcap">${h0}${noSess('📈','No active session.')}</div>`;return;}
 
   const blocks=getSessionShiftBlocks(sess);
   // Build past 4-hour window options — only windows with recorded data
@@ -2909,7 +2859,7 @@ function renderFourView(){
       function(ci){return[effSplit(sess,ci,'discharge')-getCraneTotal(sess,ci,'discharge'),effSplit(sess,ci,'load')-getCraneTotal(sess,ci,'load')];}
     );
     h+=summaryHTML(sess,{hideTargetChart:true});
-    $('sc-hourly').innerHTML=toggleBar+selBar+`<div id="fcap">${h}</div>`;
+    $('sc-hourly').innerHTML=toggleBar+vesselPickBar+selBar+`<div id="fcap">${h}</div>`;
     return;
   }
 
@@ -2927,39 +2877,6 @@ function renderFourView(){
   h+=summaryHTML(sess,{hideTargetChart:true,totals:pastTotalsAsOf(sess,blocks,blockIdx,lastSlot)});
   const pastNote=`<div style="margin:0 10px 16px;background:#fffbea;border:1.5px dashed #d97706;border-radius:8px;padding:10px 12px;font-size:11px;color:#92400e;font-weight:700">📜 Viewing a past report (${blocks[blockIdx].label} — ${fs(winLabel)}). Sharing will produce an image identical to a live report, just with this window's figures.</div>`;
   $('sc-hourly').innerHTML=toggleBar+vesselPickBar+selBar+pastNote+`<div id="fcap">${h}</div>`;
-}
-// ── Combined 4-Hourly report for two vessels worked concurrently ──
-function renderFourViewMulti(toggleBar,activeSessions){
-  const s4=curr4Slot();
-  const[s4s,s4e]=s4.split('-');
-  const sh=parseInt(s4s.substring(0,2))*60+parseInt(s4s.substring(2,4));
-  const eh=parseInt(s4e.substring(0,2))*60+parseInt(s4e.substring(2,4));
-  const ws=ALL.filter(sl=>{const slh=parseInt(sl.substring(0,2))*60+parseInt(sl.substring(2,4));return eh>sh?(slh>=sh&&slh<eh):(slh>=sh||slh<eh);});
-
-  let h=rhHTMLMulti('4 HOURLY REPORT',s4,'fcap',activeSessions);
-
-  activeSessions.forEach(function(v,idx){
-    var bannerColor=idx===0?'#1a3a5c':'#2d6a8a';
-    h+=`<div style="background:${bannerColor};color:white;padding:9px 14px;margin:10px 10px 0;border-radius:8px 8px 0 0;font-size:12px;font-weight:800">🚢 ${v.vesselName||('Vessel '+v._slot)}${v.berth?' — '+v.berth:''}</div>`;
-    h+=fourCraneTableHTML(v,
-      function(ci){let w4d=0,w4l=0;ws.forEach(function(s){w4d+=ST.hourly[hk(v.id,s,ci,'discharge')]||0;w4l+=ST.hourly[hk(v.id,s,ci,'load')]||0;});return[w4d,w4l];},
-      function(ci){return[effSplit(v,ci,'discharge')-getCraneTotal(v,ci,'discharge'),effSplit(v,ci,'load')-getCraneTotal(v,ci,'load')];}
-    ).replace('<div class="card"','<div class="card" style="margin-top:0;border-radius:0 0 12px 12px"');
-  });
-
-  // Combined summary — sum of both vessels
-  const g1=calcGlobalTotals(activeSessions[0]),g2=calcGlobalTotals(activeSessions[1]);
-  const gCombined={
-    baseTotalDisc:g1.baseTotalDisc+g2.baseTotalDisc,baseTotalLoad:g1.baseTotalLoad+g2.baseTotalLoad,
-    totalDoneDisc:g1.totalDoneDisc+g2.totalDoneDisc,totalDoneLoad:g1.totalDoneLoad+g2.totalDoneLoad,
-    totalDone:g1.totalDone+g2.totalDone,
-    total12Disc:g1.total12Disc+g2.total12Disc,total12Load:g1.total12Load+g2.total12Load,total12:g1.total12+g2.total12,
-    remaining:g1.remaining+g2.remaining
-  };
-  h+=`<div style="padding:6px 10px 0"><div class="st" style="font-size:13px;color:var(--navy);border-bottom-color:var(--navy)">🔗 Combined — Both Vessels</div></div>`;
-  h+=summaryHTML({},{hideTargetChart:true,totals:gCombined});
-
-  $('sc-hourly').innerHTML=toggleBar+`<div id="fcap">${h}</div>`;
 }
 
 // ═══════════ DELAYS ═══════════
@@ -3319,7 +3236,7 @@ function categoryBadgeHTML(cat){
 function renderDelays(){
   var sess=getSess(),slot=currSlot();
   var mainTitle=_dlLbl('mainTitle','IDLE / DELAYS');
-  if(!sess){var h0=rhHTML(mainTitle,slot,'dcap');$('sc-delays').innerHTML='<div id="dcap">'+h0+noSess('⏸️','No active session.')+'</div>';return;}
+  if(!sess){var h0=rhHTML(mainTitle,slot,'dcap');$('sc-delays').innerHTML=vesselPickBarHTML('renderDelays')+'<div id="dcap">'+h0+noSess('⏸️','No active session.')+'</div>';return;}
 
   var nc=sess.numCranes;
   var colFrom=_editColLbl('from','From');
@@ -3501,7 +3418,7 @@ function renderDelays(){
 
   h+='<div style="height:20px"></div>';
   var pastNote=D_SEL.mode==='past'?'<div style="margin:0 10px 16px;background:#fffbea;border:1.5px dashed #d97706;border-radius:8px;padding:10px 12px;font-size:11px;color:#92400e;font-weight:700">📜 Viewing a past report ('+visibleBlocks[0].label+'). Sharing will produce an image identical to a live delays report, just with this shift\u2019s entries.</div>':'';
-  $('sc-delays').innerHTML=selBar+pastNote+'<div id="dcap">'+h+'</div>';
+  $('sc-delays').innerHTML=vesselPickBarHTML('renderDelays')+selBar+pastNote+'<div id="dcap">'+h+'</div>';
 }
 
 // Update a field on a delay row stored inside a past shift snapshot
@@ -3884,7 +3801,7 @@ function renderPerformance(){
   }
   h+='</div>';
 
-  if(!sess){h+=noSess('🏗️','No active session.');h+='</div>';$('sc-performance').innerHTML=h;return;}
+  if(!sess){h+=noSess('🏗️','No active session.');h+='</div>';$('sc-performance').innerHTML=vesselPickBarHTML('renderPerformance')+h;return;}
 
   // ── Per-crane First/Last Lift inputs ──
   if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};
@@ -4390,7 +4307,7 @@ function renderPerformance(){
 
   h+='<div style="height:14px"></div></div>';
 
-  $('sc-performance').innerHTML=h;
+  $('sc-performance').innerHTML=vesselPickBarHTML('renderPerformance')+h;
 
   // ── Draw chart ──
   function drawCMTChart(){
@@ -4639,7 +4556,7 @@ function renderHistory(){
     var uid='h_'+s.id;
     // Build shift blocks — one collapsible pair per shift
     var blocks=[];
-    var isActiveSession=s.id===ST.activeId||s.id===ST.activeId2;
+    var isActiveSession=allActiveIds().some(function(id){return s.id===id;});
     var curShiftType=isDay()?'DAY':'NIGHT';
     // Use isDay() (grace-aware) for shift start date — matches renderResults and getCraneTotal
     var _now=new Date();
@@ -4793,7 +4710,7 @@ function exportHistoryExcel(){
       sess.shifts.forEach(function(sh){shiftsFound.push(sh);});
     }
     // Live current shift for active session
-    var isActive=String(sess.id)===String(ST.activeId)||(ST.activeId2&&String(sess.id)===String(ST.activeId2));
+    var isActive=allActiveIds().some(function(id){return String(sess.id)===String(id);});
     if(isActive){
       var _n=new Date(),_hh=_n.getHours();
       var _csd;
@@ -5349,15 +5266,17 @@ function delSess(id){
   ST.sessions=ST.sessions.filter(function(s){
     return String(s.id)!==String(id)&&s.id!==nid;
   });
-  // Only wipe the deleted vessel's own live data — a second active vessel must be unaffected.
-  if(String(ST.activeId)===String(id)||ST.activeId===nid){
-    wipeSessionLiveData(id);
-    ST.activeId=null;
-  }
-  if(String(ST.activeId2)===String(id)||ST.activeId2===nid){
-    wipeSessionLiveData(id);
-    ST.activeId2=null;
-  }
+  // Only wipe the deleted vessel's own live data — any other active vessel must be unaffected.
+  var matchIds=[String(id),String(nid)];
+  var slots=[1];
+  if(Array.isArray(ST.activeIds2plus))ST.activeIds2plus.forEach(function(_,i){slots.push(i+2);});
+  slots.forEach(function(slot){
+    var sid=getSlotId(slot);
+    if(sid!=null&&matchIds.indexOf(String(sid))!==-1){
+      wipeSessionLiveData(sid);
+      clearSlotId(slot);
+    }
+  });
   logActivity('Session Deleted','Session ID: '+id);
   _pendingDeleteSave=Date.now()+5000;
   sv();
