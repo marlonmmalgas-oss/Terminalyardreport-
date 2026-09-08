@@ -1245,6 +1245,22 @@ function isSupervisor(){return RT.user&&RT.user.role==='supervisor';}
 function hk(id,slot,c,t){return id+'_'+slot+'_'+c+'_'+t;}
 function he(id,slot,c,t){return ST.hourly[hk(id,slot,c,t)]||0;}
 function effSplit(sess,c,t){const cb=sess.craneBalances[c]||{};const ob=cb[`${t}OB`];return(ob!=null&&ob!=='')?parseFloat(ob)||0:cb[`${t}Split`]||0;}
+// Correct, OB-aware "how much remains" for one crane+type.
+// Opening Balance is a correction to what remains AS OF THE MOMENT IT WAS SET —
+// it must not re-subtract moves already made before that point (that double-counts
+// them and is what caused "opening balance splits less than total done overall").
+// Without an OB set, this is identical to the original split-minus-done behaviour.
+function craneRemaining(sess,c,t){
+  const cb=sess.craneBalances[c]||{};
+  const ob=cb[`${t}OB`];
+  const doneAllTime=getCraneTotal(sess,c,t);
+  if(ob!=null&&ob!==''){
+    const baseline=cb[`${t}OBBaseline`];
+    const doneSinceOB=doneAllTime-(baseline!=null?baseline:0);
+    return(parseFloat(ob)||0)-doneSinceOB;
+  }
+  return(cb[`${t}Split`]||0)-doneAllTime;
+}
 function noSess(ico,msg){return`<div class="nosess"><div class="ico">${ico}</div><p>${msg}</p></div>`;}
 
 // ═══════════ LOGIN ═══════════
@@ -1682,16 +1698,7 @@ function onCraneChange(){
 function saveSession(){
   const fcEl=$('fc');
   const nc=fcEl?parseInt(fcEl.value)||2:2;
-  const cb={};
-  for(let i=1;i<=nc;i++){
-    const dob=$(`dob${i}`),lob=$(`lob${i}`);
-    cb[i]={
-      dischargeSplit:parseFloat($(`dst${i}`)?.value)||0,
-      loadSplit:parseFloat($(`lst${i}`)?.value)||0,
-      dischargeOB:dob&&dob.value!==''?parseFloat(dob.value):null,
-      loadOB:lob&&lob.value!==''?parseFloat(lob.value):null
-    };
-  }
+
   // 🔴 CRITICAL: Generate ID only once — NEVER recreate existing session
   var targetSlot=ST.vesselSlot||1;
   if(!getSlotId(targetSlot))setSlotId(targetSlot,Date.now());
@@ -1699,6 +1706,36 @@ function saveSession(){
 
   // Find existing session in ST.sessions to preserve shifts + results
   const existing=ST.sessions.find(x=>x.id===id)||{};
+  // A session-like object usable by getCraneTotal() to snapshot "done so far" —
+  // needs .id and .shifts even for a brand-new session that has neither yet.
+  const doneSoFarSess=Object.assign({},existing,{id:id,shifts:existing.shifts||[]});
+
+  const cb={};
+  for(let i=1;i<=nc;i++){
+    const dob=$(`dob${i}`),lob=$(`lob${i}`);
+    const newDischOB=dob&&dob.value!==''?parseFloat(dob.value):null;
+    const newLoadOB=lob&&lob.value!==''?parseFloat(lob.value):null;
+    const oldCb=(existing.craneBalances&&existing.craneBalances[i])||{};
+    // Opening Balance is a correction to what REMAINS as of right now — it should
+    // never retroactively subtract moves already made before it was set (that's
+    // what was causing "opening balance splits less total done overall"). So we
+    // snapshot how much was done AT THE MOMENT the OB is entered/changed, and
+    // remaining is calculated from that point forward only (see craneRemaining()).
+    let dischBaseline=oldCb.dischargeOBBaseline;
+    if(newDischOB!=null&&newDischOB!==oldCb.dischargeOB)dischBaseline=getCraneTotal(doneSoFarSess,i,'discharge');
+    if(newDischOB==null)dischBaseline=null;
+    let loadBaseline=oldCb.loadOBBaseline;
+    if(newLoadOB!=null&&newLoadOB!==oldCb.loadOB)loadBaseline=getCraneTotal(doneSoFarSess,i,'load');
+    if(newLoadOB==null)loadBaseline=null;
+    cb[i]={
+      dischargeSplit:parseFloat($(`dst${i}`)?.value)||0,
+      loadSplit:parseFloat($(`lst${i}`)?.value)||0,
+      dischargeOB:newDischOB,
+      dischargeOBBaseline:dischBaseline,
+      loadOB:newLoadOB,
+      loadOBBaseline:loadBaseline
+    };
+  }
 
   // Merge form values into session — DO NOT recreate the object
   const s=Object.assign({},existing,{
@@ -2276,7 +2313,6 @@ function craneTableHTML(sess,cumSlots,curSlot,idPfx,overrides){
   const nc=sess.numCranes;let rows='';
   for(let i=1;i<=nc;i++){
     const cb=sess.craneBalances[i]||{},sd=cb.dischargeSplit||0,sl=cb.loadSplit||0;
-    const ed=effSplit(sess,i,'discharge'),el2=effSplit(sess,i,'load');
     let hd,hl,rd,rl;
     if(overrides.moves){
       hd=overrides.moves(i,'discharge');hl=overrides.moves(i,'load');
@@ -2286,8 +2322,7 @@ function craneTableHTML(sess,cumSlots,curSlot,idPfx,overrides){
     if(overrides.remaining){
       rd=overrides.remaining(i,'discharge');rl=overrides.remaining(i,'load');
     }else{
-      let cd=getCraneTotal(sess,i,'discharge'),cl=getCraneTotal(sess,i,'load');
-      rd=ed-cd;rl=el2-cl;
+      rd=craneRemaining(sess,i,'discharge');rl=craneRemaining(sess,i,'load');
     }
     rows+=`<tr class="${i%2===0?'e':'o'}">
       <td class="crane-cell">${craneName(i)}</td>
@@ -2344,9 +2379,17 @@ function calcGlobalTotals(sess){
   const total12Load=shiftData.reduce(function(sum,s){return sum+(s.load||0);},0);
 
   // --- Remaining ---
-  const remaining=baseTotal-totalDone;
+  // OB-aware and per-crane: does NOT re-subtract moves made before an Opening
+  // Balance correction was set (see craneRemaining()). Falls back to the plain
+  // baseTotal-totalDone behaviour automatically for any crane with no OB set.
+  let remainingDisc=0,remainingLoad=0;
+  for(let i=1;i<=nc;i++){
+    remainingDisc+=craneRemaining(sess,i,'discharge');
+    remainingLoad+=craneRemaining(sess,i,'load');
+  }
+  const remaining=remainingDisc+remainingLoad;
 
-  return{baseTotal,baseTotalDisc,baseTotalLoad,totalDone,totalDoneDisc,totalDoneLoad,total12,total12Disc,total12Load,remaining};
+  return{baseTotal,baseTotalDisc,baseTotalLoad,totalDone,totalDoneDisc,totalDoneLoad,total12,total12Disc,total12Load,remaining,remainingDisc,remainingLoad};
 }
 
 // ═══════════ SUMMARY + CHART (Segment 7 — no view-level calculations) ═══════════
@@ -2366,7 +2409,7 @@ function summaryHTML(sess,opts){
     <table class="rt">
       <thead><tr><th class="grp" style="text-align:left;padding-left:9px">${_adminLbl('sum_hd','Summary',true)}</th><th class="grp">Discharge</th><th class="grp">Load</th><th class="grp">Total Moves</th></tr></thead>
       <tbody>
-        <tr class="ry"><td style="font-weight:800;padding-left:9px">${_adminLbl('sum_remaining','Total Remaining',false)}</td><td id="${idPfx}remD">${g.baseTotalDisc-g.totalDoneDisc}</td><td id="${idPfx}remL">${g.baseTotalLoad-g.totalDoneLoad}</td><td id="${idPfx}remT" style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
+        <tr class="ry"><td style="font-weight:800;padding-left:9px">${_adminLbl('sum_remaining','Total Remaining',false)}</td><td id="${idPfx}remD">${g.remainingDisc!=null?g.remainingDisc:(g.baseTotalDisc-g.totalDoneDisc)}</td><td id="${idPfx}remL">${g.remainingLoad!=null?g.remainingLoad:(g.baseTotalLoad-g.totalDoneLoad)}</td><td id="${idPfx}remT" style="font-weight:900;${g.remaining<0?'color:var(--red)':''}">${g.remaining}</td></tr>
         <tr class="o"><td style="padding-left:9px">${_adminLbl('sum_done','Total Done',false)}</td><td id="${idPfx}doneD">${g.totalDoneDisc}</td><td id="${idPfx}doneL">${g.totalDoneLoad}</td><td class="bold" id="${idPfx}doneT">${g.totalDone}</td></tr>
         <tr class="e"><td style="padding-left:9px">${_adminLbl('sum_done12','Total Done 12hrs',false)}</td><td id="${idPfx}d12D">${g.total12Disc}</td><td id="${idPfx}d12L">${g.total12Load}</td><td class="bold" id="${idPfx}d12T">${g.total12}</td></tr>
       </tbody>
@@ -2531,11 +2574,32 @@ function pastTotalsAsOf(sess,blocks,blockIdx,slot){
     });
   }
   var totalDoneDisc=priorDisc+shiftDisc,totalDoneLoad=priorLoad+shiftLoad;
+  // Per-crane, OB-aware remaining (same logic as craneRemaining(), just using
+  // "done as of this past slot" instead of all-time done) — a crane with no OB
+  // set behaves exactly as before; one with an OB set doesn't re-subtract moves
+  // made before the OB was set.
+  var remainingDisc=0,remainingLoad=0;
+  for(var i3=1;i3<=nc;i3++){
+    var cb=sess.craneBalances[i3]||{};
+    ['discharge','load'].forEach(function(t){
+      var doneAsOf=pastCraneCumulative(blocks,blockIdx,slot,i3,t);
+      var ob=cb[t+'OB'];
+      var rem;
+      if(ob!=null&&ob!==''){
+        var baseline=cb[t+'OBBaseline'];
+        rem=(parseFloat(ob)||0)-(doneAsOf-(baseline!=null?baseline:0));
+      }else{
+        rem=(cb[t+'Split']||0)-doneAsOf;
+      }
+      if(t==='discharge')remainingDisc+=rem;else remainingLoad+=rem;
+    });
+  }
   return{
     baseTotal:baseTotalDisc+baseTotalLoad,baseTotalDisc:baseTotalDisc,baseTotalLoad:baseTotalLoad,
     totalDone:totalDoneDisc+totalDoneLoad,totalDoneDisc:totalDoneDisc,totalDoneLoad:totalDoneLoad,
     total12:shiftDisc+shiftLoad,total12Disc:shiftDisc,total12Load:shiftLoad,
-    remaining:(baseTotalDisc+baseTotalLoad)-(totalDoneDisc+totalDoneLoad)
+    remainingDisc:remainingDisc,remainingLoad:remainingLoad,
+    remaining:remainingDisc+remainingLoad
   };
 }
 // Formats a shift's date-key (e.g. "2026-06-07") into the same style rhHTML uses for "today".
@@ -2659,9 +2723,7 @@ function updateHourlyLive(sessId,slot,ci,type,val,pfx){
   const sess=ST.sessions.find(function(s){return String(s.id)===String(sessId);})||getSess();
   if(!sess)return;
   const hd=ST.hourly[hk(sess.id,slot,ci,'discharge')],hl=ST.hourly[hk(sess.id,slot,ci,'load')];
-  const ed=effSplit(sess,ci,'discharge'),el=effSplit(sess,ci,'load');
-  const cd=getCraneTotal(sess,ci,'discharge'),cl=getCraneTotal(sess,ci,'load');
-  const rd=ed-cd,rl=el-cl;
+  const rd=craneRemaining(sess,ci,'discharge'),rl=craneRemaining(sess,ci,'load');
   const setTxt=function(id,v){const e=document.getElementById(id);if(e)e.textContent=v;};
   const setNeg=function(id,v){const e=document.getElementById(id);if(!e)return;e.textContent=v;e.classList.toggle('neg',v<0);};
   setTxt(pfx+'hd'+ci,(hd!=null&&hd!==undefined)?hd:'—');
@@ -2669,8 +2731,8 @@ function updateHourlyLive(sessId,slot,ci,type,val,pfx){
   setNeg(pfx+'rd'+ci,rd);
   setNeg(pfx+'rl'+ci,rl);
   const g=calcGlobalTotals(sess);
-  setTxt(pfx+'remD',g.baseTotalDisc-g.totalDoneDisc);
-  setTxt(pfx+'remL',g.baseTotalLoad-g.totalDoneLoad);
+  setTxt(pfx+'remD',g.remainingDisc);
+  setTxt(pfx+'remL',g.remainingLoad);
   setTxt(pfx+'remT',g.remaining);
   setTxt(pfx+'doneD',g.totalDoneDisc);
   setTxt(pfx+'doneL',g.totalDoneLoad);
@@ -2856,7 +2918,7 @@ function renderFourView(){
     let h=rhHTML('4 HOURLY REPORT',s4,'fcap');
     h+=fourCraneTableHTML(sess,
       function(ci){let w4d=0,w4l=0;ws.forEach(s=>{w4d+=ST.hourly[hk(sess.id,s,ci,'discharge')]||0;w4l+=ST.hourly[hk(sess.id,s,ci,'load')]||0;});return[w4d,w4l];},
-      function(ci){return[effSplit(sess,ci,'discharge')-getCraneTotal(sess,ci,'discharge'),effSplit(sess,ci,'load')-getCraneTotal(sess,ci,'load')];}
+      function(ci){return[craneRemaining(sess,ci,'discharge'),craneRemaining(sess,ci,'load')];}
     );
     h+=summaryHTML(sess,{hideTargetChart:true});
     $('sc-hourly').innerHTML=toggleBar+vesselPickBar+selBar+`<div id="fcap">${h}</div>`;
@@ -3720,13 +3782,24 @@ function cmtActuals(sess, slots, view){
   return slots.map(function(s){
     var t=0;
     if(view==='combined'){
-      for(var ci=1;ci<=nc;ci++) t+=(ST.hourly[hk(sess.id,s,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,s,ci,'load')]||0);
+      for(var ci=1;ci<=nc;ci++){if(!isCraneActive(ci))continue;t+=(ST.hourly[hk(sess.id,s,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,s,ci,'load')]||0);}
     } else {
       var ci=parseInt(view.replace('mhc',''))||1;
       t=(ST.hourly[hk(sess.id,s,ci,'discharge')]||0)+(ST.hourly[hk(sess.id,s,ci,'load')]||0);
     }
     return t;
   });
+}
+// A crane switched off (not working) is excluded from Combined CMT totals/averages
+// and its target line, without touching the real recorded hourly data anywhere else.
+function isCraneActive(ci){
+  return!(ST.perfTargets&&ST.perfTargets.craneActive&&ST.perfTargets.craneActive[ci]===false);
+}
+function toggleCraneActive(ci){
+  if(!ST.perfTargets)ST.perfTargets={};
+  if(!ST.perfTargets.craneActive)ST.perfTargets.craneActive={};
+  ST.perfTargets.craneActive[ci]=!isCraneActive(ci);
+  sv();renderPerformance();
 }
 
 // Colour palette for CMT: index 0=combined(blue), 1=MHC1(orange), 2=MHC2(purple), 3+=others
@@ -3803,7 +3876,7 @@ function renderPerformance(){
 
   if(!sess){h+=noSess('🏗️','No active session.');h+='</div>';$('sc-performance').innerHTML=vesselPickBarHTML('renderPerformance')+h;return;}
 
-  // ── Per-crane First/Last Lift inputs ──
+  // ── Per-crane First/Last Lift inputs + Active/Off switch ──
   if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};
   h+='<div class="cmt-crane-lifts" style="margin:0 10px 8px;padding:12px 14px;border-radius:10px;background:#1e2a3a">';
   h+='<div style="font-size:10px;color:#90a4c8;font-weight:700;margin-bottom:8px;letter-spacing:.5px">CRANE FIRST / LAST LIFT <span style="color:#4a5a72;font-weight:400;font-size:9px">— adjusts crane hrs in production stats</span></div>';
@@ -3812,21 +3885,30 @@ function renderPerformance(){
     var _clr2=CMT_COLOURS[_li]||CMT_COLOURS[CMT_COLOURS.length-1];
     var _flVal=(ST.perfTargets.craneLifts&&ST.perfTargets.craneLifts['fl_'+_li])||'';
     var _llVal=(ST.perfTargets.craneLifts&&ST.perfTargets.craneLifts['ll_'+_li])||'';
-    h+='<div style="flex:1;min-width:120px;background:#0d1521;border-radius:8px;padding:8px 10px">';
-    h+='<div style="font-size:10px;color:'+_clr2+';font-weight:800;margin-bottom:6px">MHC'+_li+'</div>';
+    var _active=isCraneActive(_li);
+    h+='<div style="flex:1;min-width:120px;background:#0d1521;border-radius:8px;padding:8px 10px;'+(_active?'':'opacity:.55')+'">';
+    h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+    h+='<div style="font-size:10px;color:'+_clr2+';font-weight:800">MHC'+_li+(_active?'':' — OFF')+'</div>';
+    h+='<label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:9px;color:#90a4c8;font-weight:700">';
+    h+='<input type="checkbox" '+(_active?'checked':'')+' onchange="toggleCraneActive('+_li+')" style="cursor:pointer"/>'+(_active?'Working':'Off')+'</label>';
+    h+='</div>';
     h+='<div style="display:flex;gap:6px">';
     h+='<div style="flex:1"><label style="font-size:9px;color:#4fc3f7;font-weight:700;display:block;margin-bottom:3px">🟢 First</label>';
-    h+='<input type="time" value="'+_flVal+'" style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'fl_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
+    h+='<input type="time" value="'+_flVal+'" '+(_active?'':'disabled')+' style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'fl_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
     h+='<div style="flex:1"><label style="font-size:9px;color:#ef5350;font-weight:700;display:block;margin-bottom:3px">🔴 Last</label>';
-    h+='<input type="time" value="'+_llVal+'" style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'ll_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
+    h+='<input type="time" value="'+_llVal+'" '+(_active?'':'disabled')+' style="width:100%;background:#1e2a3a;color:white;border:1px solid #2c4a6e;border-radius:5px;padding:4px 6px;font-size:11px;font-weight:700" oninput="if(!ST.perfTargets.craneLifts)ST.perfTargets.craneLifts={};ST.perfTargets.craneLifts[\'ll_'+_li+'\']=this.value;sv();renderPerformance()"/></div>';
     h+='</div></div>';
   }
   h+='</div></div>';
 
-  // ── View buttons (Combined + one per crane) ──
+  // ── View buttons (Combined + one per WORKING crane — an off crane has nothing to show) ──
   h+='<div style="margin:0 10px 8px;display:flex;gap:7px;align-items:center;flex-wrap:wrap">';
   var _views=['combined'];
-  for(var _vi=1;_vi<=nc;_vi++) _views.push('mhc'+_vi);
+  for(var _vi=1;_vi<=nc;_vi++){if(isCraneActive(_vi))_views.push('mhc'+_vi);}
+  // If the currently-selected individual view just got switched off, fall back to Combined
+  if(view!=='combined'&&_views.indexOf(view)<0){
+    view='combined';ST.perfTargets.cmtView='combined';sv();
+  }
   _views.forEach(function(v){
     var lbl=v==='combined'?'Combined':('MHC'+(v.replace('mhc','')));
     var active=view===v;
@@ -3960,7 +4042,7 @@ function renderPerformance(){
   // Combined cumulative = sum of all cranes across fullShiftSlots
   var cumTargetsCombined=fullShiftSlots.map(function(s,i){
     var tot=0;
-    for(var _cj2=1;_cj2<=nc;_cj2++) tot+=(cumTargetsByCrane[_cj2]||[])[i]||0;
+    for(var _cj2=1;_cj2<=nc;_cj2++){if(!isCraneActive(_cj2))continue;tot+=(cumTargetsByCrane[_cj2]||[])[i]||0;}
     return tot;
   });
 
@@ -3986,7 +4068,7 @@ function renderPerformance(){
     cumTargetsCombined=cumTargetsCombined.map(function(v){return Math.min(v,_remaining);});
     // Cap per-crane proportionally
     var _combinedMax=cumTargetsByCrane[1]&&cumTargetsByCrane[1].length?
-      (function(){var t=0;for(var _x=1;_x<=nc;_x++)t+=(cumTargetsByCrane[_x]||[])[fullShiftSlots.length-1]||0;return t;}()):0;
+      (function(){var t=0;for(var _x=1;_x<=nc;_x++){if(!isCraneActive(_x))continue;t+=(cumTargetsByCrane[_x]||[])[fullShiftSlots.length-1]||0;}return t;}()):0;
     if(_combinedMax>0){
       for(var _capCj=1;_capCj<=nc;_capCj++){
         var _craneMax=(cumTargetsByCrane[_capCj]||[])[fullShiftSlots.length-1]||0;
@@ -6480,13 +6562,31 @@ function renderYardReport(report){
   </div>`;
 
   // ── Summary totals (matches template bottom section) ──
-  let totalGP=0,totalReef=0,totalMty=0,totalInYard=0;
-  vessels.forEach(v=>{
-    if(!v||!v.data)return;
-    totalGP+=(v.data['GP/DRY']?.export||0)+(v.data['GP/DRY']?.import||0);
-    totalReef+=(v.data['REEFER']?.export||0)+(v.data['REEFER']?.import||0);
-    totalMty+=(v.data['EMPTY']?.export||0)+(v.data['EMPTY']?.import||0);
+  // Every container type AND every custom column gets its own visible total box —
+  // previously only GP/REEFER/EMPTY had boxes, so a new type (e.g. RESTOWS) or a
+  // new column (e.g. STORAGE) fed into IN YARD invisibly, and manually adding up
+  // the visible boxes never matched IN YARD. Now every number is accounted for.
+  var typeTotals={};
+  types.forEach(function(t){typeTotals[t]=0;});
+  vessels.forEach(function(v){
+    types.forEach(function(t){
+      var d=v.data&&v.data[t]?v.data[t]:{};
+      typeTotals[t]+=(d.export||0)+(d.import||0);
+    });
   });
+  var colTotals=(report.customCols||[]).map(function(){return 0;});
+  vessels.forEach(function(v){
+    types.forEach(function(t){
+      var d=v.data&&v.data[t]?v.data[t]:{};
+      (report.customCols||[]).forEach(function(c,ci){colTotals[ci]+=(d[c.key]||0);});
+    });
+  });
+  function _yTypeLabel(t){
+    if(t==='GP/DRY')return'TOTAL GP';
+    if(t==='REEFER')return'TOTAL REEFERS';
+    if(t==='EMPTY')return'TOTAL EMPTIES';
+    return'TOTAL '+t;
+  }
   // IN YARD = export + import + all custom columns (not departed)
   var grandCustomTotal=0;
   (report.customCols||[]).forEach(function(col){
@@ -6498,32 +6598,19 @@ function renderYardReport(report){
   });
   totalInYard=grandEx+grandIm+grandCustomTotal;
 
+  function _yBox(label,sumKey,val,bg){
+    return`<div style="background:${bg};border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:11px;font-weight:800">${label}</span>
+      <span data-sum="${sumKey}" style="font-size:16px;font-weight:900">${val}</span>
+    </div>`;
+  }
   h+=`<div style="padding:12px;border-top:2px solid var(--lb)">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_exports','TOTAL EXPORTS',false)}</span>
-        <span data-sum="ex" style="font-size:16px;font-weight:900">${grandEx}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_gp','TOTAL "GP"',false)}</span>
-        <span data-sum="gp" style="font-size:16px;font-weight:900">${totalGP}</span>
-      </div>
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_imports','TOTAL IMPORTS',false)}</span>
-        <span data-sum="im" style="font-size:16px;font-weight:900">${grandIm}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_reef','TOTAL REEF',false)}</span>
-        <span data-sum="reef" style="font-size:16px;font-weight:900">${totalReef}</span>
-      </div>
-      <div style="background:var(--yellow);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_departed','TOTAL DEPARTED',false)}</span>
-        <span data-sum="dep" style="font-size:16px;font-weight:900">${grandDep}</span>
-      </div>
-      <div style="background:var(--lb);border-radius:8px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:11px;font-weight:800">${_adminLbl('yrd_sum_mty','TOTAL MTY',false)}</span>
-        <span data-sum="mty" style="font-size:16px;font-weight:900">${totalMty}</span>
-      </div>
+      ${_yBox(_adminLbl('yrd_sum_exports','TOTAL EXPORTS',false),'ex',grandEx,'var(--yellow)')}
+      ${_yBox(_adminLbl('yrd_sum_imports','TOTAL IMPORTS',false),'im',grandIm,'var(--yellow)')}
+      ${_yBox(_adminLbl('yrd_sum_departed','TOTAL DEPARTED',false),'dep',grandDep,'var(--yellow)')}
+      ${types.map(function(t,ti){return _yBox(_yTypeLabel(t),'type_'+t,typeTotals[t]||0,ti%2===0?'var(--lb)':'#eef2f8');}).join('')}
+      ${(report.customCols||[]).map(function(c,ci){return _yBox('TOTAL '+c.label,'col_'+c.key,colTotals[ci]||0,'var(--lb)');}).join('')}
     </div>
     <div style="background:var(--red);border-radius:8px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;margin-top:8px">
       <span style="font-size:13px;font-weight:900;color:white">${_adminLbl('yrd_sum_inyard','IN YARD',true)}</span>
@@ -7594,7 +7681,8 @@ function updateYardSummary(reportId){
   var customCols=rpt.customCols||[];
   var cap=document.getElementById('ycap_'+reportId);
   var grandEx=0,grandIm=0,grandDep=0,grandCustomTotal=0;
-  var totalGP=0,totalReef=0,totalMty=0;
+  var typeTotals={};types.forEach(function(t){typeTotals[t]=0;});
+  var colTotals=customCols.map(function(){return 0;});
 
   (rpt.vessels||[]).forEach(function(v,vi){
     var vEx=0,vIm=0,vDep=0;
@@ -7602,16 +7690,11 @@ function updateYardSummary(reportId){
     types.forEach(function(t){
       var d=v.data&&v.data[t]?v.data[t]:{};
       vEx+=(d.export||0);vIm+=(d.import||0);vDep+=(d.departed||0);
-      customCols.forEach(function(c,ci){vCustom[ci]+=(d[c.key]||0);});
+      typeTotals[t]+=(d.export||0)+(d.import||0);
+      customCols.forEach(function(c,ci){vCustom[ci]+=(d[c.key]||0);colTotals[ci]+=(d[c.key]||0);});
     });
     grandEx+=vEx;grandIm+=vIm;grandDep+=vDep;
     vCustom.forEach(function(s){grandCustomTotal+=s;});
-    var gpd=v.data&&v.data['GP/DRY']?v.data['GP/DRY']:{};
-    var rfd=v.data&&v.data['REEFER']?v.data['REEFER']:{};
-    var mty=v.data&&v.data['EMPTY']?v.data['EMPTY']:{};
-    totalGP+=(gpd.export||0)+(gpd.import||0);
-    totalReef+=(rfd.export||0)+(rfd.import||0);
-    totalMty+=(mty.export||0)+(mty.import||0);
     if(cap){
       var elEx=cap.querySelector('#vTotEx_'+reportId+'_'+vi);if(elEx)elEx.textContent=vEx||0;
       var elIm=cap.querySelector('#vTotIm_'+reportId+'_'+vi);if(elIm)elIm.textContent=vIm||0;
@@ -7630,9 +7713,8 @@ function updateYardSummary(reportId){
   setSum('ex',grandEx);
   setSum('im',grandIm);
   setSum('dep',grandDep);
-  setSum('gp',totalGP);
-  setSum('reef',totalReef);
-  setSum('mty',totalMty);
+  types.forEach(function(t){setSum('type_'+t,typeTotals[t]||0);});
+  customCols.forEach(function(c,ci){setSum('col_'+c.key,colTotals[ci]||0);});
   setSum('inyard',totalInYard);
 }
 
