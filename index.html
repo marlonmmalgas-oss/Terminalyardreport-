@@ -182,6 +182,11 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--gray);min-heig
 /* ── ADMIN ── */
 .asec{background:white;border-radius:12px;padding:16px;margin-bottom:11px;box-shadow:0 2px 8px rgba(0,0,0,.06);}
 .atitle{font-size:13px;font-weight:800;color:var(--navy);margin-bottom:13px;}
+.asec.collapsible>.atitle{cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;}
+.asec.collapsible>.atitle::after{content:'▾';font-size:12px;color:#999;transition:transform .15s;flex-shrink:0;margin-left:8px;}
+.asec.collapsible.collapsed>.atitle{margin-bottom:0;}
+.asec.collapsible.collapsed>.atitle::after{transform:rotate(-90deg);}
+.asec.collapsible.collapsed>*:not(.atitle){display:none!important;}
 .sgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .sbox{background:var(--navy);border-radius:10px;padding:14px;text-align:center;}
 .snum{font-size:28px;font-weight:900;color:var(--yellow);}
@@ -301,18 +306,7 @@ input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;}
 <body>
 
 <!-- LOGIN -->
-<div id="loginScreen" style="display:none">
-  <div class="lcard">
-    <div class="llogo" id="loginLogo">TR</div>
-    <div class="lh">Terminal Report</div>
-    <div class="ls">Operations Management System</div>
-    <div class="fg"><label>Email</label><input class="fi" type="email" id="liE" value=""/></div>
-    <div class="fg"><label>Password</label><input class="fi" type="password" id="liP" value="" onkeydown="if(event.key==='Enter')doLogin()"/></div>
-    <button class="btn" onclick="doLogin()">Sign In</button>
-    <div class="err" id="liErr"></div>
-    <div class="credit">Developed by Marlon Malgas</div>
-  </div>
-</div>
+<div id="loginScreen" style="display:none"></div>
 
 <!-- LOADING SCREEN — shown until Firebase confirms first sync -->
 <div id="loadingScreen" style="position:fixed;inset:0;background:#0d1521;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99999">
@@ -449,6 +443,7 @@ function _dismissLoadingScreen(){
   var login=document.getElementById('loginScreen');
   if(ls)ls.style.display='none';
   if(login)login.style.display='';
+  if(typeof renderLoginScreen==='function')renderLoginScreen();
   // Show logo in loading screen while waiting
   try{
     var _lsData=ld();
@@ -647,13 +642,18 @@ function initSync(){
       if(ST.settings&&ST.settings.logo){
         updateLogos();
       }
-      // Step 3: restore users — merge local into ST.users (keep all accounts)
-      if(!Array.isArray(ST.users)) ST.users=[];
+      // Step 3: merge users — remote is the base (so a user added on another
+      // device shows up here too), plus any local-only account not yet pushed.
+      // Matched by id first, falling back to email, so edits merge sensibly.
+      var _remoteUsers=remote.users?(Array.isArray(remote.users)?remote.users:Object.values(remote.users)):[];
+      var mergedUsers=_remoteUsers.map(function(u){return JSON.parse(JSON.stringify(u));});
       localUsers.forEach(function(u){
-        if(!ST.users.find(function(x){
-          return x.email&&x.email.toLowerCase()===u.email.toLowerCase();
-        })) ST.users.push(u);
+        var idx=mergedUsers.findIndex(function(ru){
+          return(u.id!=null&&ru.id===u.id)||(u.email&&ru.email&&ru.email.toLowerCase()===u.email.toLowerCase());
+        });
+        if(idx<0)mergedUsers.push(u); // local-only account not yet synced up — keep it
       });
+      ST.users=mergedUsers;
       // Step 4: always ensure default users exist (failsafe)
       if(!ST.users||ST.users.length===0){
         ST.users=JSON.parse(JSON.stringify(DEF.users));
@@ -673,6 +673,18 @@ function initSync(){
       // Dismiss loading screen and show login on first Firebase response
       _dismissLoadingScreen();
       applyDark();
+      // If an admin remotely ended THIS device's session (removed our token from
+      // ST.activeLogins), force back to the login screen on the next sync.
+      if(RT.user&&RT.loginToken&&ST.activeLogins&&!ST.activeLogins[RT.loginToken]){
+        try{
+          $('appShell').style.display='none';
+          RT.user=null;RT.adminOp=false;RT.loginToken=null;
+          if(RT.timer)clearInterval(RT.timer);
+          renderLoginScreen();
+          $('loginScreen').style.display='flex';
+          $('liErr').textContent='You were signed out by an administrator.';
+        }catch(e){}
+      }
       // Only refresh UI if this change came from ANOTHER device
       // Use a 500ms window to avoid refreshing on our own saves
       if(RT.user&&RT.tab){
@@ -1264,23 +1276,137 @@ function craneRemaining(sess,c,t){
 function noSess(ico,msg){return`<div class="nosess"><div class="ico">${ico}</div><p>${msg}</p></div>`;}
 
 // ═══════════ LOGIN ═══════════
-function doLogin(){
-  const e=($('liE').value||'').trim().toLowerCase();
-  const p=($('liP').value||'');
-  if(!e||!p){$('liErr').textContent='Please enter email and password.';return;}
-  $('liErr').textContent='';
-  // ST.users is always a proper independent array (never a DEF reference)
-  const u=ST.users.find(function(u){
-    return u.email&&u.email.toLowerCase()===e&&u.password===p&&u.active;
+// Simplified login: pick your name from a list (built from ST.users, which admin
+// manages with Name + Role + Password), then enter your password. The original
+// generic Admin/Operator/Supervisor/Viewer accounts are just entries in that same
+// list, so they keep working exactly as before — nothing lost, just simpler.
+var _loginSelectedUserId=null;
+function renderLoginScreen(){
+  var el=document.getElementById('loginScreen');
+  if(!el)return;
+  var users=(ST.users||[]).filter(function(u){return u.active!==false;});
+  var h='<div class="lcard">';
+  h+='<div class="llogo" id="loginLogo"><img src="'+HARDCODED_LOGO+'" alt="AGL" style="width:100%;height:100%;object-fit:contain;"/></div>';
+  h+='<div class="lh">Terminal Report</div>';
+  h+='<div class="ls">Select your name to sign in</div>';
+  h+='<div id="loginUserGrid" style="margin-bottom:18px;max-height:340px;overflow-y:auto">';
+  if(!users.length){
+    h+='<div style="text-align:center;color:#999;font-size:12px;padding:14px">No login accounts yet.</div>';
+  }else{
+    // Grouped by role, each collapsible — with quite a few names this keeps
+    // the picker from turning into one long scroll of unsorted buttons.
+    var roleOrder=['admin','supervisor','operator','viewer'];
+    var byRole={};
+    users.forEach(function(u){
+      var r=(u.role||'other').toLowerCase();
+      if(!byRole[r])byRole[r]=[];
+      byRole[r].push(u);
+    });
+    var allRoles=roleOrder.filter(function(r){return byRole[r];}).concat(Object.keys(byRole).filter(function(r){return roleOrder.indexOf(r)<0;}));
+    allRoles.forEach(function(r,ri){
+      var list=byRole[r];
+      h+='<div class="login-role-block" style="margin-bottom:8px;border:1.5px solid var(--border);border-radius:10px;overflow:hidden">';
+      h+='<div class="login-role-hdr" style="display:flex;align-items:center;justify-content:space-between;background:#f6f8fc;padding:10px 13px;cursor:pointer;user-select:none">';
+      h+='<span style="font-size:12px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.4px">'+r+'</span>';
+      h+='<span style="font-size:10px;color:#888">'+list.length+' '+(list.length===1?'person':'people')+' <span class="login-role-arrow" style="display:inline-block;margin-left:4px;transition:transform .15s">▾</span></span>';
+      h+='</div>';
+      h+='<div class="login-role-body" style="display:none;padding:8px">';
+      list.forEach(function(u){
+        h+='<button class="btn btn-out" style="text-align:left;display:flex;align-items:center;justify-content:space-between;padding:10px 13px;margin-bottom:6px" onclick="selectLoginUser('+u.id+')">'
+         +'<span>👤 '+u.name+'</span>'
+         +'</button>';
+      });
+      h+='</div></div>';
+    });
+  }
+  h+='</div>';
+  h+='<div id="loginPassArea" style="display:none">';
+  h+='<div class="fg"><label id="loginSelName">Password</label><input class="fi" type="password" id="liP2" onkeydown="if(event.key===\'Enter\')doNamedLogin()"/></div>';
+  h+='<button class="btn" onclick="doNamedLogin()">Sign In</button>';
+  h+='<button class="btn btn-out" style="margin-top:9px" onclick="cancelLoginUser()">← Back</button>';
+  h+='</div>';
+  h+='<div class="err" id="liErr"></div>';
+  h+='<div class="credit">Developed by Marlon Malgas</div>';
+  h+='</div>';
+  el.innerHTML=h;
+  // Wire up the per-role collapsibles. Auto-expand automatically if there's
+  // only one role group total, so the common single-role case needs no taps.
+  var roleBlocks=el.querySelectorAll('.login-role-block');
+  roleBlocks.forEach(function(block){
+    var hdr=block.querySelector('.login-role-hdr');
+    var body=block.querySelector('.login-role-body');
+    var arrow=block.querySelector('.login-role-arrow');
+    if(!hdr||!body)return;
+    if(roleBlocks.length===1){body.style.display='block';if(arrow)arrow.style.transform='rotate(-180deg)';}
+    hdr.onclick=function(){
+      var open=body.style.display==='block';
+      body.style.display=open?'none':'block';
+      if(arrow)arrow.style.transform=open?'':'rotate(-180deg)';
+    };
   });
-  if(!u){$('liErr').textContent='Incorrect email or password.';return;}
+}
+function selectLoginUser(id){
+  _loginSelectedUserId=id;
+  var u=(ST.users||[]).find(function(x){return x.id===id;});
+  $('loginUserGrid').style.display='none';
+  $('loginPassArea').style.display='block';
+  $('loginSelName').textContent='Password for '+(u?u.name:'');
+  $('liErr').textContent='';
+  var p=$('liP2');if(p){p.value='';setTimeout(function(){p.focus();},50);}
+}
+function cancelLoginUser(){
+  _loginSelectedUserId=null;
+  $('loginUserGrid').style.display='flex';
+  $('loginPassArea').style.display='none';
+  $('liErr').textContent='';
+}
+function doNamedLogin(){
+  var u=(ST.users||[]).find(function(x){return x.id===_loginSelectedUserId;});
+  var p=$('liP2')?$('liP2').value:'';
+  if(!u||u.password!==p||u.active===false){$('liErr').textContent='Incorrect password.';return;}
+  $('liErr').textContent='';
+  completeLogin(u);
+}
+function _deviceLabel(){
+  var ua=navigator.userAgent||'';
+  if(/iPhone|iPad|iPod/i.test(ua))return'iOS';
+  if(/Android/i.test(ua))return'Android';
+  if(/Mobile/i.test(ua))return'Mobile';
+  return'Desktop';
+}
+function completeLogin(u){
   RT.user=u;
+  // A unique token for THIS device's login session — lets admin see who's
+  // logged in from where, and force a specific device to log out remotely.
+  RT.loginToken=Date.now()+'_'+Math.random().toString(36).slice(2);
+  if(!ST.activeLogins||typeof ST.activeLogins!=='object')ST.activeLogins={};
+  ST.activeLogins[RT.loginToken]={userId:u.id,name:u.name,role:u.role,loginAt:new Date().toISOString(),device:_deviceLabel()};
   $('loginScreen').style.display='none';
   $('appShell').style.display='flex';
   if(!ST.activityLog)ST.activityLog=[];
   logActivity('User Login','User: '+u.name+' ('+u.role+')');
+  sv();
   try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
   initApp();
+  showWelcomeToast(u.name);
+}
+function showWelcomeToast(name){
+  var t=document.createElement('div');
+  t.textContent='👋 Welcome, '+name+'!';
+  t.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--navy);color:white;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:800;box-shadow:0 4px 16px rgba(0,0,0,.25);z-index:99999;opacity:0;transition:opacity .3s;pointer-events:none;';
+  document.body.appendChild(t);
+  requestAnimationFrame(function(){t.style.opacity='1';});
+  setTimeout(function(){t.style.opacity='0';setTimeout(function(){if(t.parentNode)t.remove();},400);},2600);
+}
+// Admin remotely ending a session: remove that device's token from
+// ST.activeLogins. The other device notices on its next sync and is forced
+// back to the login screen — see the ST.activeLogins watcher in the sync handler.
+function forceLogoutToken(token){
+  if(!ST.activeLogins)return;
+  var who=ST.activeLogins[token];
+  delete ST.activeLogins[token];
+  logActivity('User Force-Logged-Out',who?('Ended session for '+who.name):('Token '+token));
+  sv();renderAdmin();
 }
 function toggleDark(){
   var d=document.body.classList.toggle('dark');
@@ -1292,7 +1418,17 @@ function applyDark(){
   var d=ST.settings&&ST.settings.darkMode;
   document.body.classList.toggle('dark',!!d);
 }
-function doLogout(){logActivity('User Logout','Signed out');try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}RT.user=null;RT.adminOp=false;$('loginScreen').style.display='flex';$('appShell').style.display='none';if(RT.timer)clearInterval(RT.timer);}
+function doLogout(){
+  logActivity('User Logout','Signed out');
+  if(ST.activeLogins&&RT.loginToken)delete ST.activeLogins[RT.loginToken];
+  sv();
+  try{localStorage.setItem(SK,JSON.stringify(ST));}catch(e){}
+  RT.user=null;RT.adminOp=false;RT.loginToken=null;
+  renderLoginScreen();
+  $('loginScreen').style.display='flex';
+  $('appShell').style.display='none';
+  if(RT.timer)clearInterval(RT.timer);
+}
 function initApp(){
   applyDark();
   // Prevent browser from opening dragged files
@@ -1591,7 +1727,7 @@ function renderInput(){
     h+=`<div class="fbar" style="display:flex;gap:8px;flex-wrap:wrap">`;
     activeSessions.forEach(function(s){
       const isSel=(ST.vesselSlot||1)===s._slot;
-      h+=`<button class="btn btn-sm${isSel?'':' btn-out'}" style="flex:1;min-width:130px" onclick="ST.vesselSlot=${s._slot};renderInput()">🚢 ${s.vesselName||('Vessel '+s._slot)}${s.berth?` <span style="background:#e2e8f0;color:#1e293b;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700">${s.berth}</span>`:''}</button>`;
+      h+=`<button class="btn btn-sm${isSel?'':' btn-out'}" style="flex:1;min-width:130px" onclick="ST.vesselSlot=${s._slot};renderInput()">🚢 ${s.vesselName||('Vessel '+s._slot)}${s.berth?` <span style="background:var(--yellow);color:#000;padding:2px 7px;border-radius:5px;font-size:10px;font-weight:800">${s.berth}</span>`:''}</button>`;
     });
     h+=`</div>`;
   }
@@ -5446,45 +5582,82 @@ function renderActivityLog(){
     var fv=document.getElementById('logFilter')?document.getElementById('logFilter').value.trim().toLowerCase():'';
     var filtered=fv?log.filter(function(e){return (e.user||'').toLowerCase().includes(fv)||(e.action||'').toLowerCase().includes(fv)||(e.detail||'').toLowerCase().includes(fv)||(e.extra||'').toLowerCase().includes(fv);}):log;
     h+='<div style="font-size:11px;color:#888;margin-bottom:8px">'+filtered.length+' entr'+(filtered.length===1?'y':'ies')+(fv?' matching \"'+fv+'\"':'')+'</div>';
-    // Group by date
-    var byDate={};
-    var dateOrder=[];
+    // Group by user first (collapsible — this is what makes "what did person X do" a quick tap
+    // instead of scrolling everyone's actions mixed together), then by date within each user.
+    var byUser={};
+    var userOrder=[];
     filtered.forEach(function(e){
-      var _d=e.ts?new Date(e.ts):null;
-      var d=_d?_d.toLocaleDateString('en-CA'):'Unknown';
-      if(!byDate[d]){byDate[d]=[];dateOrder.push(d);}
-      byDate[d].push(e);
+      var u=e.user||'Unknown';
+      if(!byUser[u]){byUser[u]=[];userOrder.push(u);}
+      byUser[u].push(e);
     });
-    dateOrder.forEach(function(d){
-      var entries=byDate[d];
-      var dLabel;
-      try{dLabel=new Date(d).toLocaleDateString('en-ZA',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});}catch(ex){dLabel=d;}
-      h+='<div style="font-size:10px;font-weight:900;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin:12px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--lb)">'+dLabel+'</div>';
+    // Most recently active user first
+    userOrder.sort(function(a,b){return(byUser[b][0].ts||'').localeCompare(byUser[a][0].ts||'');});
+    var actionColourMap={
+      'Session Saved':'#1e8449','Session Unlocked':'#2980b9',
+      'New Vessel':'#8e44ad','Vessel Switched':'#0891b2',
+      'Vessel Complete':'#27ae60','Session Deleted':'#c0392b',
+      'Session Activated':'#2980b9','Delay Added':'#e67e22',
+      'Delay Removed':'#e74c3c','Delay Updated':'#f39c12',
+      'Hourly Move':'#16a085','User Login':'#1F3864','User Logout':'#7f8c8d',
+      'User Force-Logged-Out':'#c0392b',
+      'Firebase Push':'#2c3e50','Shift Rollover':'#8e44ad'
+    };
+    userOrder.forEach(function(u,ui){
+      var entries=byUser[u];
+      var lastTs=entries[0].ts?new Date(entries[0].ts):null;
+      var lastStr=lastTs?lastTs.toLocaleString('en-ZA',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+      h+='<div class="log-user-block" data-log-user="'+ui+'" style="margin-bottom:8px;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.06)">';
+      h+='<div class="log-user-hdr" style="display:flex;align-items:center;justify-content:space-between;background:var(--navy);color:white;padding:10px 13px;cursor:pointer;user-select:none">';
+      h+='<span style="font-size:12px;font-weight:800">👤 '+u+'</span>';
+      h+='<span style="font-size:10px;opacity:.8">'+entries.length+' action'+(entries.length===1?'':'s')+' · last '+lastStr+' <span class="log-user-arrow" style="display:inline-block;margin-left:4px;transition:transform .15s">▾</span></span>';
+      h+='</div>';
+      h+='<div class="log-user-body" style="display:none;background:#f6f8fc;padding:8px">';
+      // Group this user's entries by date
+      var byDate={};var dateOrder=[];
       entries.forEach(function(e){
-        var _tsD=e.ts?new Date(e.ts):null;
-        var t=_tsD?_tsD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false}):'--:--';
-        var actionColour={
-          'Session Saved':'#1e8449','Session Unlocked':'#2980b9',
-          'New Vessel':'#8e44ad','Vessel Switched':'#0891b2',
-          'Vessel Complete':'#27ae60','Session Deleted':'#c0392b',
-          'Session Activated':'#2980b9','Delay Added':'#e67e22',
-          'Delay Removed':'#e74c3c','Delay Updated':'#f39c12',
-          'Hourly Move':'#16a085','User Login':'#1F3864','User Logout':'#7f8c8d',
-          'Firebase Push':'#2c3e50','Shift Rollover':'#8e44ad'
-        }[e.action]||'#555';
-        h+='<div style="display:flex;gap:10px;padding:8px 10px;background:white;border-radius:8px;margin-bottom:5px;box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid '+actionColour+'">';
-        h+='<div style="flex-shrink:0;min-width:38px;font-size:11px;font-weight:700;color:#888;padding-top:1px">'+t+'</div>';
-        h+='<div style="flex:1;min-width:0">';
-        h+='<div style="font-size:12px;font-weight:800;color:'+actionColour+'">'+e.action+'</div>';
-        if(e.detail)h+='<div style="font-size:11px;color:#444;margin-top:2px">'+e.detail+'</div>';
-        if(e.extra)h+='<div style="font-size:10px;color:#888;margin-top:1px">'+e.extra+'</div>';
-        h+='<div style="font-size:10px;color:#aaa;margin-top:3px">'+e.user+(e.device?' · '+e.device:'')+'</div>';
-        h+='</div></div>';
+        var _d=e.ts?new Date(e.ts):null;
+        var d=_d?_d.toLocaleDateString('en-CA'):'Unknown';
+        if(!byDate[d]){byDate[d]=[];dateOrder.push(d);}
+        byDate[d].push(e);
       });
+      dateOrder.forEach(function(d){
+        var dEntries=byDate[d];
+        var dLabel;
+        try{dLabel=new Date(d).toLocaleDateString('en-ZA',{weekday:'short',day:'2-digit',month:'short',year:'numeric'});}catch(ex){dLabel=d;}
+        h+='<div style="font-size:10px;font-weight:900;color:var(--navy);text-transform:uppercase;letter-spacing:.6px;margin:10px 4px 6px;padding-bottom:4px;border-bottom:2px solid var(--lb)">'+dLabel+'</div>';
+        dEntries.forEach(function(e){
+          var _tsD=e.ts?new Date(e.ts):null;
+          var t=_tsD?_tsD.toLocaleTimeString('en-ZA',{hour:'2-digit',minute:'2-digit',hour12:false}):'--:--';
+          var actionColour=actionColourMap[e.action]||'#555';
+          h+='<div style="display:flex;gap:10px;padding:8px 10px;background:white;border-radius:8px;margin-bottom:5px;box-shadow:0 1px 4px rgba(0,0,0,.06);border-left:3px solid '+actionColour+'">';
+          h+='<div style="flex-shrink:0;min-width:38px;font-size:11px;font-weight:700;color:#888;padding-top:1px">'+t+'</div>';
+          h+='<div style="flex:1;min-width:0">';
+          h+='<div style="font-size:12px;font-weight:800;color:'+actionColour+'">'+e.action+'</div>';
+          if(e.detail)h+='<div style="font-size:11px;color:#444;margin-top:2px">'+e.detail+'</div>';
+          if(e.extra)h+='<div style="font-size:10px;color:#888;margin-top:1px">'+e.extra+'</div>';
+          if(e.device)h+='<div style="font-size:10px;color:#aaa;margin-top:3px">'+e.device+'</div>';
+          h+='</div></div>';
+        });
+      });
+      h+='</div></div>';
     });
   }
   h+='</div>';
   document.getElementById('sc-activitylog').innerHTML=h;
+  // Wire up the per-user collapsibles (kept out of the string-building above to
+  // avoid escaping headaches with onclick attributes around dynamic user names)
+  document.querySelectorAll('#sc-activitylog .log-user-block').forEach(function(block){
+    var hdr=block.querySelector('.log-user-hdr');
+    var body=block.querySelector('.log-user-body');
+    var arrow=block.querySelector('.log-user-arrow');
+    if(!hdr||!body)return;
+    hdr.onclick=function(){
+      var open=body.style.display==='block';
+      body.style.display=open?'none':'block';
+      if(arrow)arrow.style.transform=open?'':'rotate(-180deg)';
+    };
+  });
 }
 
 // ═══════════ ADMIN ═══════════
@@ -5764,32 +5937,86 @@ function renderAdmin(){
 
   h+=renderAbbrevSection();
 
-  // Users - editable
-  h+=`<div class="asec"><div class="atitle">👥 Users</div>
-    ${ST.users.map((u,ui)=>`<div class="urow" style="flex-direction:column;align-items:stretch;gap:6px">
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <span style="font-size:12px;font-weight:800;color:var(--navy)">${u.name}</span>
-        <span class="badge b${u.role==='supervisor'?'s':u.role[0]}">${u.role.toUpperCase()}</span>
+  // Who's logged in right now — live from ST.activeLogins, admin can force-logout any device.
+  h+=`<div class="asec"><div class="atitle">🟢 Who's Logged In</div>`;
+  var _logins=ST.activeLogins&&typeof ST.activeLogins==='object'?ST.activeLogins:{};
+  var _loginTokens=Object.keys(_logins).sort(function(a,b){return(_logins[b].loginAt||'').localeCompare(_logins[a].loginAt||'');});
+  if(!_loginTokens.length){
+    h+=`<div style="text-align:center;color:#999;font-size:12px;padding:14px">No one is currently logged in.</div>`;
+  }else{
+    _loginTokens.forEach(function(tok){
+      var l=_logins[tok];
+      var isMe=(tok===RT.loginToken);
+      var t=l.loginAt?new Date(l.loginAt):null;
+      var tStr=t?t.toLocaleString('en-ZA',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'';
+      h+=`<div style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;background:#f6f8fc;border-radius:8px;margin-bottom:6px">
+        <div style="min-width:0">
+          <div style="font-size:12px;font-weight:800;color:var(--navy)">👤 ${l.name}${isMe?' <span style="color:#27ae60;font-size:10px;font-weight:700">(you)</span>':''}</div>
+          <div style="font-size:10px;color:#888;margin-top:2px">${(l.role||'').toUpperCase()} · ${l.device||''} · since ${tStr}</div>
+        </div>
+        ${isMe?'':'<button onclick="if(confirm(\'Log out '+l.name.replace(/'/g,"\\'")+'?\'))forceLogoutToken(\''+tok+'\')" style="background:var(--red);color:white;border:none;border-radius:6px;padding:6px 11px;font-size:11px;font-weight:800;cursor:pointer;flex-shrink:0">Log Out</button>'}
+      </div>`;
+    });
+  }
+  h+=`</div>`;
+
+  // Users - Name / Role / Password only, per the simplified login system.
+  // Email is still stored internally (auto-generated if not set) so the
+  // account has a stable unique key, but admin never needs to think about it.
+  h+=`<div class="asec"><div class="atitle">👥 Team Logins</div>
+    <p style="font-size:11px;color:#888;margin-bottom:12px">Add a name, role and password for each person. They'll appear on the login screen to pick from.</p>
+    ${ST.users.map((u,ui)=>`<div class="urow" style="flex-direction:column;align-items:stretch;gap:6px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid #eee">
+      <div style="display:flex;gap:6px">
+        <input value="${(u.name||'').replace(/"/g,'&quot;')}" placeholder="Full name" oninput="ST.users[${ui}].name=this.value;sv()"
+          style="flex:2;padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px"/>
+        <select onchange="ST.users[${ui}].role=this.value;sv();renderAdmin()" style="flex:1;padding:7px 6px;border:1.5px solid var(--border);border-radius:7px;font-size:12px">
+          ${['admin','supervisor','operator','viewer'].map(function(r){return'<option value="'+r+'"'+(u.role===r?' selected':'')+'>'+r.charAt(0).toUpperCase()+r.slice(1)+'</option>';}).join('')}
+        </select>
       </div>
-      <input value="${u.email}" placeholder="Email" oninput="ST.users[${ui}].email=this.value;sv()"
+      <input type="password" value="${u.password}" placeholder="Password" oninput="ST.users[${ui}].password=this.value||u.password;sv()"
         style="padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;width:100%"/>
-      <input type="password" value="${u.password}" placeholder="New password" oninput="ST.users[${ui}].password=this.value||u.password;sv()"
-        style="padding:7px 10px;border:1.5px solid var(--border);border-radius:7px;font-size:12px;width:100%"/>
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:#666;font-weight:700;cursor:pointer">
+          <input type="checkbox" ${u.active!==false?'checked':''} onchange="ST.users[${ui}].active=this.checked;sv()"/> Active
+        </label>
+        <button onclick="if(confirm('Remove '+${JSON.stringify(u.name)}.replace(/'/g,\"\\\\'\")+'?')){ST.users.splice(${ui},1);sv();renderAdmin();}" style="background:#fff0f0;color:var(--red);border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer">Remove</button>
+      </div>
     </div>`).join('')}
-    <button class="btn" style="margin-top:12px" onclick="addUser()">+ Add User</button>
+    <button class="btn" style="margin-top:6px" onclick="addUser()">+ Add Person</button>
   </div>`;
 
   h+=`<div class="asec"><button class="btn btn-red" onclick="doLogout()">🚪 Sign Out</button></div></div>`;
   $('sc-admin').innerHTML=h;
+  // Make every admin sub-section collapsible — non-invasive: wraps whatever
+  // content each .asec already has, keyed by its position so state survives
+  // re-renders within the session (collapsed by default to de-clutter).
+  if(!RT.adminCollapse)RT.adminCollapse={};
+  document.querySelectorAll('#sc-admin .asec').forEach(function(sec,idx){
+    var title=sec.querySelector(':scope > .atitle');
+    if(!title)return;
+    var key='sec'+idx;
+    if(RT.adminCollapse[key]===undefined)RT.adminCollapse[key]=true;
+    sec.classList.add('collapsible');
+    sec.classList.toggle('collapsed',!!RT.adminCollapse[key]);
+    title.onclick=function(){
+      sec.classList.toggle('collapsed');
+      RT.adminCollapse[key]=sec.classList.contains('collapsed');
+    };
+  });
 }
 
 
 function addUser(){
   const n=prompt('Full name:');if(!n)return;
-  const e=prompt('Email:');if(!e)return;
   const p=prompt('Password:');if(!p)return;
-  const r=prompt('Role (operator / viewer):');if(!r)return;
-  ST.users.push({id:Date.now(),email:e,password:p,role:r.toLowerCase(),name:n,active:true});sv();renderAdmin();
+  const r=prompt('Role (admin / supervisor / operator / viewer):','operator');if(!r)return;
+  const role=r.toLowerCase().trim();
+  // Email isn't shown to admin anymore — auto-generated as a stable unique key
+  // so the simplified Name+Role+Password flow still works with the existing
+  // account-matching logic (login, Firebase merge-by-email, etc.) unchanged.
+  const autoEmail=n.toLowerCase().replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'')+'.'+Date.now()+'@local.user';
+  ST.users.push({id:Date.now(),email:autoEmail,password:p,role:role,name:n,active:true});
+  sv();renderAdmin();
 }
 function toggleOp(v){RT.adminOp=v;$('abanner').style.display=v?'block':'none';buildNav();if(v)switchTab('input');}
 function exitAdminMode(){RT.adminOp=false;$('abanner').style.display='none';buildNav();switchTab('admin');}
@@ -6210,6 +6437,15 @@ function yardSimpleInit(report){
     report.simple.locations=[{name:'MPT',total:0},{name:'FPT',total:0},{name:'AGL',total:0}];
   }
   if(!report.simple.dispatches||typeof report.simple.dispatches!=='object')report.simple.dispatches={};
+  // Truck totals (and dispatches) are a "right now" snapshot, not a running
+  // record — they must reset to 0 every day rather than carrying yesterday's
+  // stale numbers forward. Location NAMES are kept; only the counts reset.
+  var todayStr=new Date().toLocaleDateString('en-CA');
+  if(report.simple.countsDate!==todayStr){
+    report.simple.locations.forEach(function(l){l.total=0;});
+    report.simple.dispatches={};
+    report.simple.countsDate=todayStr;
+  }
 }
 function addYardLocation(reportId){
   var r=ST.yardReports.find(function(x){return x.id===reportId;});if(!r)return;
